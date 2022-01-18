@@ -4,9 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-[dependencies.rocksdb]
-git = "https://github.com/tikv/rust-rocksdb.git"
 
 [dependencies]
 rand = "0.8.4"
 uuid = { version = "0.8", features = ["serde", "v4"] }
+rocksdb = "0.17.0"
