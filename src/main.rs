@@ -6,7 +6,6 @@ mod db;
 mod gen;
 mod rock_test;
 use clap::Parser;
-use rand::Rng;
 use rock_test::*;
 
 /// Simple program to greet a person

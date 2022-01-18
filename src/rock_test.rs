@@ -16,6 +16,7 @@ pub fn test_point_put_max_ops(qps: u16, mut ticks: u8, delay: u8, sample: u16) {
         println!("测试ticks数目: {}", ticks);
         let mut total_time = 0;
         let mut total_num = 0;
+        println!("Current qps set is {}", qps);
 
         loop {
             if ticks <= 0 {
@@ -23,7 +24,6 @@ pub fn test_point_put_max_ops(qps: u16, mut ticks: u8, delay: u8, sample: u16) {
             }
             let now = Instant::now();
             let mut db_idx = 0;
-            println!("current qps is {}", qps);
             for i in 0..qps {
                 let uuid = Uuid::new_v4().to_string();
                 let data: String = gen_data_binary();
