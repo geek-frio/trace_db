@@ -6,6 +6,7 @@ mod db;
 mod gen;
 mod rock_test;
 use clap::Parser;
+use rand::Rng;
 use rock_test::*;
 
 /// Simple program to greet a person
@@ -27,7 +28,7 @@ pub struct Args {
 
 fn main() {
     let args = Args::parse();
-    test_point_put_max_ops(args.qps, args.ticks, args.delay);
+    test_point_put_max_ops(args.qps, args.ticks, args.delay, args.sample);
 }
 
 #[cfg(test)]
