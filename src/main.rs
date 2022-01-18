@@ -23,11 +23,14 @@ pub struct Args {
 
     #[clap(short, long, default_value_t = 1000)]
     sample: u16,
+
+    #[clap(short, long)]
+    path: String,
 }
 
 fn main() {
     let args = Args::parse();
-    test_point_put_max_ops(args.qps, args.ticks, args.delay, args.sample);
+    test_point_put_max_ops(args.path, args.qps, args.ticks, args.delay, args.sample);
 }
 
 #[cfg(test)]

@@ -2,14 +2,14 @@ use rocksdb::{DBWithThreadMode, SingleThreaded};
 use rocksdb::{Options, DB};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-pub fn init_db() -> Vec<DB> {
+pub fn init_db(path: &str) -> Vec<DB> {
     let mut dbs = Vec::new();
     let mut opts = Options::default();
     opts.set_disable_auto_compactions(true);
     opts.create_if_missing(true);
 
     for i in 0..1 {
-        let path = format!("/home/frio/rocksdb{}", i);
+        let path = format!("{}{}", path, i);
         dbs.push(DB::open(&opts, &path).unwrap());
     }
     dbs
