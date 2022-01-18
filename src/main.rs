@@ -20,6 +20,9 @@ pub struct Args {
 
     #[clap(short, long, default_value_t = 60)]
     delay: u8,
+
+    #[clap(short, long, default_value_t = 1000)]
+    sample: u16,
 }
 
 fn main() {

@@ -6,7 +6,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-pub fn test_point_put_max_ops(qps: u16, mut ticks: u8, delay: u8) {
+pub fn test_point_put_max_ops(qps: u16, mut ticks: u8, delay: u8, sample: u16) {
     let dbs = Arc::new(Mutex::new(init_db()));
 
     let dbs_w = dbs.clone();
@@ -30,7 +30,7 @@ pub fn test_point_put_max_ops(qps: u16, mut ticks: u8, delay: u8) {
 
                 let dbs = dbs_w.lock().unwrap();
                 dbs[db_idx].put(uuid.as_bytes(), data.as_bytes()).unwrap();
-                if i % 10000 == 1 {
+                if i % sample == 1 {
                     tx.send(uuid).unwrap();
                 }
                 total_num += 1;
@@ -58,7 +58,7 @@ pub fn test_point_put_max_ops(qps: u16, mut ticks: u8, delay: u8) {
         // delay 查询, 尽量不命中缓存
         sleep(Duration::from_secs(delay as u64));
         loop {
-            let query_key_r = rx.recv();
+            let query_key_r = rx.recv_timeout(Duration::from_secs(10));
             if let Ok(query_key) = query_key_r {
                 let (_, time) = key_get(query_key, dbs.clone());
                 println!("读@@@@@@@@@@@@本次查询耗时:{} micros; ", time);
