@@ -16,7 +16,7 @@ pub struct Args {
     qps: u16,
 
     #[clap(short, long, default_value_t = 10)]
-    ticks: u8,
+    ticks: u32,
 
     #[clap(short, long, default_value_t = 60)]
     delay: u32,
