@@ -6,7 +6,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-pub fn test_point_put_max_ops(path: String, qps: u16, mut ticks: u8, delay: u8, sample: u16) {
+pub fn test_point_put_max_ops(path: String, qps: u16, mut ticks: u8, delay: u32, sample: u16) {
     let dbs = Arc::new(Mutex::new(init_db(&path)));
 
     let dbs_w = dbs.clone();

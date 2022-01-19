@@ -19,7 +19,7 @@ pub struct Args {
     ticks: u8,
 
     #[clap(short, long, default_value_t = 60)]
-    delay: u8,
+    delay: u32,
 
     #[clap(short, long, default_value_t = 1000)]
     sample: u16,
