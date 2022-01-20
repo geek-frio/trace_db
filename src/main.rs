@@ -30,8 +30,9 @@ pub struct Args {
 }
 
 fn main() {
-    let args = Args::parse();
-    test_point_put_max_ops(args.path, args.qps, args.ticks, args.delay, args.sample);
+    // let args = Args::parse();
+    // test_point_put_max_ops(args.path, args.qps, args.ticks, args.delay, args.sample);
+    tag::test_search();
 }
 
 #[cfg(test)]

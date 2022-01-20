@@ -20,12 +20,12 @@ pub fn gen_data_binary() -> String {
     s
 }
 
-pub fn gen_tag(len: u32, range: u32) -> String {
+pub fn gen_tag(len: u32, range: u32, start_c: char) -> String {
     let mut rng = rand::thread_rng();
     let mut s = String::new();
     for _ in 0..len {
         let rand_idx = rng.gen_range(0..range);
-        let c = (('a' as u8) + rand_idx as u8) as char;
+        let c = ((start_c as u8) + rand_idx as u8) as char;
         s.push(c);
     }
     s
