@@ -4,9 +4,10 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
+use tantivy::chrono::Local;
 use uuid::Uuid;
 
-pub fn test_point_put_max_ops(path: String, qps: u16, mut ticks: u32, delay: u32, sample: u16) {
+pub fn test_point_put_max_ops(path: String, qps: u16, mut ticks: u32, delay: i32, sample: u16) {
     let dbs = Arc::new(Mutex::new(init_db(&path)));
 
     let dbs_w = dbs.clone();
@@ -19,7 +20,7 @@ pub fn test_point_put_max_ops(path: String, qps: u16, mut ticks: u32, delay: u32
         println!("Current qps set is {}", qps);
 
         loop {
-            if ticks <= 0 {
+            if ticks == 0 {
                 break;
             }
             let now = Instant::now();
@@ -43,6 +44,7 @@ pub fn test_point_put_max_ops(path: String, qps: u16, mut ticks: u32, delay: u32
                 "写#############到目前为止导入时速: {}",
                 total_num * 1000 / total_time
             );
+            println!("当前时间:{:?}", Local::now());
             println!("elpase:{}ms", elapse);
             if elapse < 1000 {
                 sleep(Duration::from_millis((1000 - elapse) as u64))
@@ -55,6 +57,13 @@ pub fn test_point_put_max_ops(path: String, qps: u16, mut ticks: u32, delay: u32
     let r = thread::spawn(move || {
         let mut total_time = 0;
         let mut num = 0;
+
+        println!("delay 配置为-1，不需要进行reader启动");
+        if delay == -1 {
+            return;
+        }
+        // let rate_num = 0;
+        // let rate_now = Instant::now();
         // delay 查询, 尽量不命中缓存
         sleep(Duration::from_secs(delay as u64));
         loop {

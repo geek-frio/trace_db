@@ -5,6 +5,7 @@ extern crate uuid;
 mod db;
 mod gen;
 mod rock_test;
+mod tag;
 use clap::Parser;
 use rock_test::*;
 
@@ -18,8 +19,8 @@ pub struct Args {
     #[clap(short, long, default_value_t = 10)]
     ticks: u32,
 
-    #[clap(short, long, default_value_t = 60)]
-    delay: u32,
+    #[clap(short, long, default_value_t = -1)]
+    delay: i32,
 
     #[clap(short, long, default_value_t = 1000)]
     sample: u16,
