@@ -31,7 +31,7 @@ pub fn test_point_put_max_ops(path: String, qps: u16, mut ticks: u32, delay: i32
 
                 let dbs = dbs_w.lock().unwrap();
                 dbs[db_idx].put(uuid.as_bytes(), data.as_bytes()).unwrap();
-                if i % sample == 1 {
+                if i % sample == 1 && delay != -1 {
                     tx.send(uuid).unwrap();
                 }
                 total_num += 1;
