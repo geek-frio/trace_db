@@ -22,7 +22,8 @@ pub fn test_search() {
 
     let current = Instant::now();
 
-    let batch_size = 50_0000;
+    let batch_size = 500000;
+    let mut commit_num = 0;
     for i in 0..batch_size {
         let mut doc = Document::new();
         let zone = local_gen::gen_tag(3, 20, 'a');
@@ -37,18 +38,25 @@ pub fn test_search() {
         let uuid = uuid::Uuid::new_v4();
         doc.add_text(uuid_field, uuid.to_string());
         index_writer.add_document(doc);
-        if i % 5000 == 1 {
+        if i % 50000 == 1 {
             println!(
                 "zone:{}, service:{}, api_id:{}, uuid:{}",
                 zone, service, api_id, uuid
             );
+            commit_num += 1;
+            println!("进行多次commit, 第{}次", commit_num);
+            index_writer.commit().unwrap();
         }
     }
     index_writer.commit().unwrap();
     println!(
-        "elapse: {}ms, batch size is:{}",
+        "Elapse: {}ms, batch size is:{}",
         current.elapsed().as_millis(),
         batch_size
+    );
+    println!(
+        "Average speed is:{}",
+        batch_size / current.elapsed().as_secs()
     );
 }
 
