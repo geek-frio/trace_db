@@ -38,6 +38,13 @@ impl<N: Fsm> FsmState<N> {
         }
     }
 
+    pub fn notify<S: FsmScheduler<F = N>>(&self, s: &S) {
+        match self.take_fsm() {
+            None => {}
+            Some(n) => s.schedule(n),
+        }
+    }
+
     pub fn take_fsm(&self) -> Option<Box<N>> {
         let res = self.status.compare_exchange(
             NOTIFYSTATE_IDLE,
@@ -123,4 +130,12 @@ pub trait Fsm {
     fn take_mailbox(&mut self) -> Option<BasicMailbox<Self>>
     where
         Self: Sized;
+}
+
+pub trait FsmScheduler {
+    type F: Fsm;
+
+    fn schedule(&self, fsm: Box<Self::F>);
+
+    fn shutdown(&self);
 }

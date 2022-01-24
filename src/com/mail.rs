@@ -1,6 +1,7 @@
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
 
 use super::fsm::Fsm;
+use super::fsm::FsmScheduler;
 use super::fsm::FsmState;
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc;
@@ -32,7 +33,11 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
         self.state.take_fsm()
     }
 
-    pub fn send(&self, msg: Owner::Message) -> Result<(), SendError<Owner::Message>> {
+    pub fn send<S: FsmScheduler<F = Owner>>(
+        &self,
+        msg: Owner::Message,
+        scheduler: &S,
+    ) -> Result<(), SendError<Owner::Message>> {
         self.sender.send(msg)?;
         todo!("引入scheduler");
     }
