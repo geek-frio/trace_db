@@ -1,5 +1,5 @@
 use super::db::*;
-use super::gen::*;
+use super::test::gen::*;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::thread::sleep;

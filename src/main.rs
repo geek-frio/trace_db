@@ -3,9 +3,9 @@ extern crate rocksdb;
 extern crate uuid;
 
 mod db;
-mod gen;
 mod rock_test;
 mod tag;
+mod test;
 use clap::Parser;
 use rock_test::*;
 
@@ -38,7 +38,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gen::gen_data_binary;
+    use test::gen::gen_data_binary;
 
     #[test]
     fn test_xx() {

@@ -1,6 +1,7 @@
+mod rolling;
 use std::time::Instant;
 
-use super::gen as local_gen;
+use super::test::gen as local_gen;
 use rand::Rng;
 use tantivy::collector::Count;
 use tantivy::query::{BooleanQuery, Occur, PhraseQuery, Query, TermQuery};
