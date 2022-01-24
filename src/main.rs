@@ -2,7 +2,7 @@ extern crate rand;
 extern crate rocksdb;
 extern crate uuid;
 
-mod db;
+mod kv;
 mod rock_test;
 mod tag;
 mod test;

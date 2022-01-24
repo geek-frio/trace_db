@@ -1,4 +1,4 @@
-use super::db::*;
+use super::kv::db::*;
 use super::test::gen::*;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
