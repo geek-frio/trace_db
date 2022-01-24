@@ -1,5 +1,5 @@
-use super::kv::db::*;
-use super::test::gen::*;
+use super::gen::*;
+use crate::kv::db::*;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::thread::sleep;

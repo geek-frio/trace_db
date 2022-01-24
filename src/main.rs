@@ -1,13 +1,14 @@
 extern crate rand;
 extern crate rocksdb;
 extern crate uuid;
+extern crate tantivy;
 
+mod com;
 mod kv;
-mod rock_test;
 mod tag;
 mod test;
 use clap::Parser;
-use rock_test::*;
+use test::rock_test::*;
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
