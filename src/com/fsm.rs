@@ -1,4 +1,5 @@
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
+use super::mail::BasicMailbox;
 use core::panic;
 use core::ptr;
 use core::sync::atomic::Ordering;
@@ -11,24 +12,6 @@ use std::sync::Arc;
 const NOTIFYSTATE_NOTIFIED: usize = 0;
 const NOTIFYSTATE_IDLE: usize = 1;
 const NOTIFYSTATE_DROP: usize = 2;
-
-pub struct BasicMailbox<Owner: Fsm> {
-    sender: mpsc::Sender<Owner::Message>,
-    state: Arc<FsmState<Owner>>,
-}
-
-impl<Owner: Fsm> BasicMailbox<Owner> {
-    pub fn new(
-        sender: mpsc::Sender<Owner::Message>,
-        fsm: Box<Owner>,
-        state_cnt: Arc<AtomicUsize>,
-    ) -> BasicMailbox<Owner> {
-        BasicMailbox {
-            sender,
-            state: Arc::new(FsmState::new(fsm, state_cnt)),
-        }
-    }
-}
 
 impl<Owner: Fsm> Clone for BasicMailbox<Owner> {
     fn clone(&self) -> BasicMailbox<Owner> {
@@ -46,7 +29,7 @@ pub struct FsmState<N> {
 }
 
 impl<N: Fsm> FsmState<N> {
-    fn new(data: Box<N>, state_cnt: Arc<AtomicUsize>) -> FsmState<N> {
+    pub fn new(data: Box<N>, state_cnt: Arc<AtomicUsize>) -> FsmState<N> {
         state_cnt.fetch_add(1, Ordering::Relaxed);
         FsmState {
             status: AtomicUsize::new(NOTIFYSTATE_IDLE),
