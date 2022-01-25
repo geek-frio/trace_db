@@ -39,7 +39,8 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
         scheduler: &S,
     ) -> Result<(), SendError<Owner::Message>> {
         self.sender.send(msg)?;
-        todo!("引入scheduler");
+        self.state.notify(scheduler);
+        Ok(())
     }
 
     pub(crate) fn close(&self) {

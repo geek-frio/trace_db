@@ -1,3 +1,4 @@
+mod batch;
 mod fsm;
 mod mail;
 
