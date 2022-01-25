@@ -3,19 +3,18 @@
 use super::fsm::Fsm;
 use super::fsm::FsmScheduler;
 use super::fsm::FsmState;
+use crossbeam_channel::{SendError, Sender};
 use std::sync::atomic::AtomicUsize;
-use std::sync::mpsc;
-use std::sync::mpsc::SendError;
 use std::sync::Arc;
 
 pub struct BasicMailbox<Owner: Fsm> {
-    pub(crate) sender: mpsc::Sender<Owner::Message>,
+    pub(crate) sender: Sender<Owner::Message>,
     pub(crate) state: Arc<FsmState<Owner>>,
 }
 
 impl<Owner: Fsm> BasicMailbox<Owner> {
     pub fn new(
-        sender: mpsc::Sender<Owner::Message>,
+        sender: Sender<Owner::Message>,
         fsm: Box<Owner>,
         state_cnt: Arc<AtomicUsize>,
     ) -> BasicMailbox<Owner> {

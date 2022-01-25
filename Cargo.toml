@@ -11,3 +11,4 @@ rand = "0.8.4"
 rocksdb = "0.17.0"
 tantivy = "0.16.1"
 uuid = {version = "0.8", features = ["serde", "v4"]}
+crossbeam-channel = "0.5.2"

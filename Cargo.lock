@@ -983,6 +983,7 @@ name = "skdb"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "crossbeam-channel",
  "rand 0.8.4",
  "rocksdb",
  "tantivy",
