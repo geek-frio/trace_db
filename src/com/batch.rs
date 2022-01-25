@@ -32,6 +32,10 @@ impl<N: Fsm> Batch<N> {
         self.normals.is_empty()
     }
 
+    fn clear(&mut self) {
+        self.normals.clear();
+    }
+
     // pub fn schedule(&mut self, router: )
 }
 
@@ -182,12 +186,26 @@ impl<N: Fsm, H: PollHandler<N>> Poller<N, H> {
             self.handler.light_end(&mut batch.normals);
             for offset in &to_skip_end {
                 todo!("重新schedual操作!");
+                // 这里的操作会将batch中对应第fsm设置为None
             }
             to_skip_end.clear();
             self.handler.end(&mut batch.normals);
             while let Some(r) = reschedule_fsms.pop() {
-                todo!("重新schedual操作!")
+                todo!("重新schedual操作!");
+                // 这里的操作会将batch中对应第fsm设置为None
             }
+
+            let left_fsm_cnt = batch.normals.len();
+            if left_fsm_cnt > 0 {
+                for i in 0..left_fsm_cnt {
+                    let to_schedule = match batch.normals[i].take() {
+                        Some(f) => f,
+                        None => continue,
+                    };
+                    todo!("重新schedual操作!");
+                }
+            }
+            batch.clear();
         }
     }
 }
