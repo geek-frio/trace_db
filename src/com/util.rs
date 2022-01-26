@@ -1,6 +1,7 @@
 // Copyright 2019 TiKV Project Authors. Licensed under Apache-2.0.
 
 use std::collections::hash_map::Entry as HashMapEntry;
+use std::collections::hash_map::Iter;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -17,7 +18,7 @@ struct Record<K> {
     key: MaybeUninit<K>,
 }
 
-struct ValueEntry<K, V> {
+pub struct ValueEntry<K, V> {
     value: V,
     record: *mut Record<K>,
 }
@@ -228,5 +229,98 @@ where
     K: Eq + Hash + Clone + std::fmt::Debug,
     T: SizePolicy<K, V>,
 {
-    pub fn insert(&mut self, key: K, value: V) {}
+    pub fn insert(&mut self, key: K, value: V) {
+        let mut old_key: Option<K> = None;
+        let current_size = SizePolicy::<K, V>::current(&self.size_policy);
+
+        match self.map.entry(key) {
+            HashMapEntry::Occupied(mut e) => {
+                self.size_policy.on_remove(e.key(), &e.get().value);
+                self.size_policy.on_insert(e.key(), &value);
+                let mut entry = e.get_mut();
+                self.trace.promote(entry.record);
+                entry.value = value;
+            }
+            HashMapEntry::Vacant(v) => {
+                let record = if self.capacity <= current_size {
+                    let res = self.trace.reuse_tail(v.key().clone());
+                    old_key = Some(res.0);
+                    res.1
+                } else {
+                    self.trace.create(v.key().clone())
+                };
+                self.size_policy.on_insert(v.key(), &value);
+                v.insert(ValueEntry { value, record });
+            }
+        }
+        // 到达trace控制第容量上限，需要移出Trace最后一条
+        if let Some(o) = old_key {
+            let entry = self.map.remove(&o).unwrap();
+            self.size_policy.on_remove(&o, &entry.value);
+        }
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        if let Some(v) = self.map.remove(key) {
+            self.trace.delete(v.record);
+            self.size_policy.on_remove(key, &v.value);
+            return Some(v.value);
+        }
+        None
+    }
+
+    pub fn get(&mut self, key: &K) -> Option<&V> {
+        match self.map.get(key) {
+            Some(v) => {
+                self.trace.maybe_promote(v.record);
+                Some(&v.value)
+            }
+            None => None,
+        }
+    }
+
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        match self.map.get_mut(key) {
+            Some(v) => {
+                self.trace.maybe_promote(v.record);
+                Some(&mut v.value)
+            }
+            None => None,
+        }
+    }
+
+    pub fn iter(&self) -> Iter<K, ValueEntry<K, V>> {
+        self.map.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    pub fn resize(&mut self, mut new_cap: usize) {
+        if new_cap == 0 {
+            new_cap = 1;
+        }
+        if new_cap < self.capacity && self.size() > new_cap {
+            while self.size() > new_cap {
+                let key = self.trace.remove_tail();
+                let entry = self.map.remove(&key).unwrap();
+                self.size_policy.on_remove(&key, &entry.value);
+            }
+            self.map.shrink_to_fit();
+        }
+        self.capacity = new_cap;
+    }
+}
+
+unsafe impl<K, V, T> Send for LruCache<K, V, T>
+where
+    K: Send,
+    V: Send,
+    T: Send + SizePolicy<K, V>,
+{
 }
