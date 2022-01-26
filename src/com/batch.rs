@@ -1,5 +1,7 @@
 use super::fsm::Fsm;
 use super::mail;
+use super::router::Router;
+use super::sched::FsmScheduler;
 use crossbeam_channel::Receiver;
 use std::borrow::Cow;
 use std::ops::Deref;
@@ -40,7 +42,7 @@ impl<N: Fsm> Batch<N> {
 
     fn release(&mut self, mut fsm: NormalFsm<N>, checked_len: usize) -> Option<NormalFsm<N>> {
         let mailbox = fsm.take_mailbox().unwrap();
-        // 交换回NormalFsm手中的fsm
+        // 交换回NormalFsm手中的fsm到mailbox之中
         mailbox.release(fsm.fsm);
         if mailbox.len() == checked_len {
             None
@@ -53,6 +55,52 @@ impl<N: Fsm> Batch<N> {
                     Some(fsm)
                 }
             }
+        }
+    }
+
+    fn remove(&mut self, mut fsm: NormalFsm<N>) -> Option<NormalFsm<N>> {
+        let mailbox = fsm.take_mailbox().unwrap();
+        if mailbox.is_empty() {
+            mailbox.release(fsm.fsm);
+            None
+        } else {
+            fsm.set_mailbox(Cow::Owned(mailbox));
+            Some(fsm)
+        }
+    }
+
+    pub fn schedule<S: FsmScheduler<F = N>>(
+        &mut self,
+        router: &Router<N, S>,
+        index: usize,
+        inplace: bool,
+    ) {
+        let to_schedule = match self.normals[index].take() {
+            Some(f) => f,
+            None => {
+                // 是否保留占位
+                if !inplace {
+                    self.normals.swap_remove(index);
+                }
+                return;
+            }
+        };
+        let mut res = match to_schedule.policy {
+            Some(ReschedulePolicy::Release(l)) => self.release(to_schedule, l),
+            Some(ReschedulePolicy::Remove) => self.remove(to_schedule),
+            Some(ReschedulePolicy::Schedule) => {
+                router.normal_scheduler.schedule(to_schedule.fsm);
+                None
+            }
+            None => Some(to_schedule),
+        };
+
+        // 处理重新调度结果
+        if let Some(f) = &mut res {
+            f.policy.take();
+            self.normals[index] = res;
+        } else if !inplace {
+            self.normals.swap_remove(index);
         }
     }
 

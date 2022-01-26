@@ -1,5 +1,6 @@
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
 use super::mail::BasicMailbox;
+use super::sched::FsmScheduler;
 use core::panic;
 use core::ptr;
 use core::sync::atomic::Ordering;
@@ -130,12 +131,4 @@ pub trait Fsm {
     fn take_mailbox(&mut self) -> Option<BasicMailbox<Self>>
     where
         Self: Sized;
-}
-
-pub trait FsmScheduler {
-    type F: Fsm;
-
-    fn schedule(&self, fsm: Box<Self::F>);
-
-    fn shutdown(&self);
 }

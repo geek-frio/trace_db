@@ -1,8 +1,8 @@
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
 
 use super::fsm::Fsm;
-use super::fsm::FsmScheduler;
 use super::fsm::FsmState;
+use super::sched::FsmScheduler;
 use crossbeam_channel::{SendError, Sender};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
@@ -48,5 +48,9 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
 
     pub fn len(&self) -> usize {
         self.sender.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        return self.sender.is_empty();
     }
 }
