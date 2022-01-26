@@ -1,5 +1,7 @@
 use super::fsm::Fsm;
+use super::mail;
 use crossbeam_channel::Receiver;
+use std::borrow::Cow;
 use std::ops::Deref;
 use std::time::Duration;
 use std::{
@@ -34,6 +36,24 @@ impl<N: Fsm> Batch<N> {
 
     fn clear(&mut self) {
         self.normals.clear();
+    }
+
+    fn release(&mut self, mut fsm: NormalFsm<N>, checked_len: usize) -> Option<NormalFsm<N>> {
+        let mailbox = fsm.take_mailbox().unwrap();
+        // 交换回NormalFsm手中的fsm
+        mailbox.release(fsm.fsm);
+        if mailbox.len() == checked_len {
+            None
+        } else {
+            match mailbox.take_fsm() {
+                None => None,
+                Some(mut s) => {
+                    s.set_mailbox(Cow::Owned(mailbox));
+                    fsm.fsm = s;
+                    Some(fsm)
+                }
+            }
+        }
     }
 
     // pub fn schedule(&mut self, router: )

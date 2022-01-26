@@ -45,4 +45,8 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
     pub(crate) fn close(&self) {
         self.state.clear();
     }
+
+    pub fn len(&self) -> usize {
+        self.sender.len()
+    }
 }
