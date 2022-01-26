@@ -144,13 +144,14 @@ impl<N> NormalFsm<N> {
     }
 }
 
-pub struct BatchSystem<N> {
+pub struct BatchSystem<N: Fsm, S> {
     receiver: Receiver<N>,
     pool_size: usize,
     max_batch_size: usize,
+    router: Router<N, S>,
 }
 
-impl<N> BatchSystem<N>
+impl<N, S> BatchSystem<N, S>
 where
     N: Fsm + Send + 'static,
 {
@@ -162,15 +163,16 @@ pub enum FsmTypes<N> {
     Empty,
 }
 
-pub struct Poller<N, H> {
+pub struct Poller<N: Fsm, H, S> {
     pub fsm_receiver: Receiver<FsmTypes<N>>,
     pub handler: H,
     pub max_batch_size: usize,
     pub joinable_workers: Option<Arc<Mutex<Vec<ThreadId>>>>,
     pub reschedule_duration: Duration,
+    pub router: Router<N, S>,
 }
 
-impl<N: Fsm, H: PollHandler<N>> Poller<N, H> {
+impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
     fn fetch_fsm(&mut self, batch: &mut Batch<N>) -> bool {
         if let Ok(fsm) = self.fsm_receiver.try_recv() {
             return batch.push(fsm);
@@ -253,14 +255,13 @@ impl<N: Fsm, H: PollHandler<N>> Poller<N, H> {
             }
             self.handler.light_end(&mut batch.normals);
             for offset in &to_skip_end {
-                todo!("重新schedual操作!");
                 // 这里的操作会将batch中对应第fsm设置为None
+                batch.schedule(&self.router, *offset, true);
             }
             to_skip_end.clear();
             self.handler.end(&mut batch.normals);
             while let Some(r) = reschedule_fsms.pop() {
-                todo!("重新schedual操作!");
-                // 这里的操作会将batch中对应第fsm设置为None
+                batch.schedule(&self.router, r, false);
             }
 
             let left_fsm_cnt = batch.normals.len();
@@ -270,7 +271,7 @@ impl<N: Fsm, H: PollHandler<N>> Poller<N, H> {
                         Some(f) => f,
                         None => continue,
                     };
-                    todo!("重新schedual操作!");
+                    self.router.normal_scheduler.schedule(to_schedule.fsm);
                 }
             }
             batch.clear();
@@ -278,7 +279,7 @@ impl<N: Fsm, H: PollHandler<N>> Poller<N, H> {
     }
 }
 
-impl<N, H> Drop for Poller<N, H> {
+impl<N: Fsm, H, S> Drop for Poller<N, H, S> {
     fn drop(&mut self) {
         if let Some(joinable_workers) = &self.joinable_workers {
             joinable_workers.lock().unwrap().push(current().id());
