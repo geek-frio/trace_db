@@ -5,6 +5,8 @@ use std::{collections::HashMap, sync::atomic::AtomicUsize};
 
 use crossbeam_channel::TrySendError;
 
+use crate::com::mail;
+
 use super::fsm::{Fsm, FsmScheduler};
 use super::mail::BasicMailbox;
 use super::util::{CountTracker, LruCache};
@@ -73,7 +75,7 @@ where
                 map: HashMap::default(),
                 alive_cnt: Arc::default(),
             })),
-            caches: Cell::new(LruCache::with_capacity_and_sample(1024, 7)),
+            caches: RefCell::new(LruCache::with_capacity_and_sample(1024, 7)),
             normal_scheduler,
             state_cnt,
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -88,7 +90,7 @@ where
     where
         F: FnMut(&BasicMailbox<N>) -> Option<R>,
     {
-        let caches = self.caches.borrow_mut();
+        let mut caches = self.caches.borrow_mut();
         // 缓存命中，走缓存获取
         if let Some(mailbox) = caches.get(&addr) {
             if let Some(r) = f(mailbox) {
@@ -188,7 +190,7 @@ where
     }
 
     pub fn alive_cnt(&self) -> Arc<AtomicUsize> {
-        self.normals.lock().unwrap().alive_cnt
+        self.normals.lock().unwrap().alive_cnt.clone()
     }
 }
 
