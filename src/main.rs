@@ -1,7 +1,7 @@
 extern crate rand;
 extern crate rocksdb;
-extern crate uuid;
 extern crate tantivy;
+extern crate uuid;
 
 mod com;
 mod kv;
@@ -33,7 +33,6 @@ pub struct Args {
 fn main() {
     // let args = Args::parse();
     // test_point_put_max_ops(args.path, args.qps, args.ticks, args.delay, args.sample);
-    tag::test_search();
 }
 
 #[cfg(test)]

@@ -5,10 +5,20 @@ version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[workspace]
+members = [
+    "cmd/skdb-server",
+    "cmd/skdb-ctl",
+    "cmd/skdb-test",
+]
+
 [dependencies]
 clap = {version = "3.0.9", features = ["derive"]}
 rand = "0.8.4"
 rocksdb = "0.17.0"
 tantivy = "0.16.1"
 uuid = {version = "0.8", features = ["serde", "v4"]}
-crossbeam-channel = "0.5.2"
+crossbeam-channel = "0.5.2" 
+
+[dev-dependencies]
+pretty_assertions = "1"

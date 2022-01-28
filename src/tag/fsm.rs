@@ -8,6 +8,10 @@ pub struct TagFsm {
     mailbox: Option<BasicMailbox<Self>>,
 }
 
+impl Drop for TagFsm {
+    fn drop(&mut self) {}
+}
+
 impl Fsm for TagFsm {
     type Message = TagMsg;
 
