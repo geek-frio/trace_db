@@ -19,6 +19,8 @@ rocksdb = "0.17.0"
 tantivy = "0.16.1"
 uuid = {version = "0.8", features = ["serde", "v4"]}
 crossbeam-channel = "0.5.2" 
+grpcio = { version = "0.9",  default-features = true, features = ["openssl-vendored", "protobuf-codec"] }
+
 
 [dev-dependencies]
 pretty_assertions = "1"

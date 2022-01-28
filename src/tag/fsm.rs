@@ -9,7 +9,9 @@ pub struct TagFsm {
 }
 
 impl Drop for TagFsm {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        
+    }
 }
 
 impl Fsm for TagFsm {
