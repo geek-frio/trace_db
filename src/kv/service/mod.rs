@@ -1,17 +1,26 @@
-mod tracing;
-mod tracing_grpc;
+use crate::TOKIO_RUN;
+use futures::StreamExt;
+
+pub mod tracing;
+pub mod tracing_grpc;
 
 #[derive(Clone)]
-struct SkyTracingService;
+pub struct SkyTracingService;
 
 impl tracing_grpc::SkyTracing for SkyTracingService {
     fn push_msgs(
         &mut self,
-        ctx: ::grpcio::RpcContext,
-        _stream: ::grpcio::RequestStream<tracing::StreamReqData>,
+        _: ::grpcio::RpcContext,
+        stream: ::grpcio::RequestStream<tracing::StreamReqData>,
         sink: ::grpcio::DuplexSink<tracing::StreamResData>,
     ) {
-        println!("xx");
+        let f = async {
+            let mut stream = stream.fuse();
+            let record = stream.next();
+            let record = record.await;
+            println!("here comes a record:{:?}", record);
+        };
+        TOKIO_RUN.spawn(f);
     }
 }
 
@@ -22,7 +31,6 @@ mod tests {
     use super::tracing_grpc;
     use crate::kv::service::SkyTracingService;
     use ::grpcio::ServerBuilder;
-    use crossbeam_channel::internal::SelectHandle;
     use grpcio::Environment;
     #[test]
     fn test_start_server() {

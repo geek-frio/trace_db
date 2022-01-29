@@ -1215,11 +1215,13 @@ dependencies = [
  "crossbeam-channel",
  "futures",
  "grpcio",
+ "lazy_static",
  "pretty_assertions",
  "protobuf",
  "rand 0.8.4",
  "rocksdb",
  "tantivy",
+ "tokio",
  "uuid",
 ]
 
@@ -1235,7 +1237,12 @@ dependencies = [
 name = "skdb-server"
 version = "0.1.0"
 dependencies = [
+ "clap",
+ "futures",
+ "grpcio",
+ "protobuf",
  "skdb",
+ "tokio",
 ]
 
 [[package]]
@@ -1425,6 +1432,16 @@ dependencies = [
  "libc",
  "wasi 0.10.0+wasi-snapshot-preview1",
  "winapi",
+]
+
+[[package]]
+name = "tokio"
+version = "1.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbbf1c778ec206785635ce8ad57fe52b3009ae9e0c9f574a728f3049d3e55838"
+dependencies = [
+ "num_cpus",
+ "pin-project-lite",
 ]
 
 [[package]]

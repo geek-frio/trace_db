@@ -22,7 +22,8 @@ crossbeam-channel = "0.5.2"
 grpcio = { version = "0.9",  default-features = true, features = ["openssl-vendored", "protobuf-codec"] }
 protobuf = "2.18.2"
 futures = "0.3"
-
+tokio = { version = "1.15", features = ["rt", "rt-multi-thread"] }
+lazy_static = "1.4.0"
 
 [dev-dependencies]
 pretty_assertions = "1"

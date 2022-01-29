@@ -7,6 +7,17 @@ pub mod com;
 pub mod kv;
 pub mod tag;
 mod test;
+use lazy_static::lazy_static;
+use tokio::runtime::Builder;
+use tokio::runtime::Runtime;
+
+lazy_static! {
+    pub static ref TOKIO_RUN: Runtime = Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("grpc worker")
+        .build()
+        .unwrap();
+}
 
 #[cfg(test)]
 mod tests {
