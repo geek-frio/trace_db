@@ -42,15 +42,13 @@ impl SkyTracingClient {
     pub fn push_msgs(&self) -> ::grpcio::Result<(::grpcio::ClientDuplexSender<super::tracing::StreamReqData>, ::grpcio::ClientDuplexReceiver<super::tracing::StreamResData>)> {
         self.push_msgs_opt(::grpcio::CallOption::default())
     }
-    pub fn spawn<F>(&self, f: F) where F: ::futures::Future<Output = ()> + Send + 'static {
+    pub fn spawn<F>(&self, f: F) where F: ::futures::Future<Output=()> + Send + 'static {
         self.client.spawn(f)
     }
 }
 
 pub trait SkyTracing {
-    fn push_msgs(&mut self, ctx: ::grpcio::RpcContext, _stream: ::grpcio::RequestStream<super::tracing::StreamReqData>, sink: ::grpcio::DuplexSink<super::tracing::StreamResData>) {
-        grpcio::unimplemented_call!(ctx, sink)
-    }
+    fn push_msgs(&mut self, ctx: ::grpcio::RpcContext, _stream: ::grpcio::RequestStream<super::tracing::StreamReqData>, sink: ::grpcio::DuplexSink<super::tracing::StreamResData>);
 }
 
 pub fn create_sky_tracing<S: SkyTracing + Send + Clone + 'static>(s: S) -> ::grpcio::Service {
