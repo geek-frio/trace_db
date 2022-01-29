@@ -1213,8 +1213,10 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "crossbeam-channel",
+ "futures",
  "grpcio",
  "pretty_assertions",
+ "protobuf",
  "rand 0.8.4",
  "rocksdb",
  "tantivy",
