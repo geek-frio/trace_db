@@ -8,3 +8,6 @@ edition = "2021"
 [dependencies]
 clap = {version = "3.0.9", features = ["derive"]}
 skdb = { path = "../.." }
+grpcio = { version = "0.9",  default-features = true, features = ["openssl-vendored", "protobuf-codec"] }
+protobuf = "2.18.2"
+futures = "0.3"
