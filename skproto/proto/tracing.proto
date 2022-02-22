@@ -3,7 +3,7 @@ syntax = "proto3";
 package tracing;
 
 service SkyTracing {
-    rpc pushMsgs(stream StreamReqData) returns (stream StreamResData) {}
+    rpc PushMsgs(stream StreamReqData) returns (stream StreamResData) {}
 }
 
 message StreamReqData {

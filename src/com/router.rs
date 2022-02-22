@@ -5,8 +5,6 @@ use std::{collections::HashMap, sync::atomic::AtomicUsize};
 
 use crossbeam_channel::TrySendError;
 
-use crate::com::mail;
-
 use super::fsm::Fsm;
 use super::mail::BasicMailbox;
 use super::sched::FsmScheduler;

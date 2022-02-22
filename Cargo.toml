@@ -10,6 +10,7 @@ members = [
     "cmd/skdb-server",
     "cmd/skdb-ctl",
     "cmd/skdb-test",
+    "skproto",
 ]
 
 [dependencies]
@@ -19,10 +20,8 @@ rocksdb = "0.17.0"
 tantivy = "0.16.1"
 uuid = {version = "0.8", features = ["serde", "v4"]}
 crossbeam-channel = "0.5.2" 
-grpcio = { version = "0.9",  default-features = true, features = ["openssl-vendored", "protobuf-codec"] }
-protobuf = "2.18.2"
 futures = "0.3"
-tokio = { version = "1.15", features = ["rt", "rt-multi-thread"] }
+tokio = { version = "1.15", features = ["rt", "rt-multi-thread", "time"] }
 lazy_static = "1.4.0"
 
 [dev-dependencies]

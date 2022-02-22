@@ -1,0 +1,22 @@
+[package]
+name = "skproto"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "skproto"
+path = "src/lib.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = ["protobuf-build/grpcio-protobuf-codec", "grpcio/protobuf-codec"]
+
+[dependencies]
+protobuf = "=2.8.0"
+futures = "0.3.5"
+grpcio = { version = "0.9.0", default-features = false, features = ["secure"] }
+
+
+[build-dependencies]
+protobuf-build = { version = "0.12", default-features = false }
