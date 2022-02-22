@@ -3,9 +3,9 @@ use crate::com::{fsm::Fsm, mail::BasicMailbox};
 use crossbeam_channel::Receiver;
 pub struct TagFsm {
     pub receiver: Receiver<TagMsg>,
-    stopped: bool,
-    has_ready: bool,
-    mailbox: Option<BasicMailbox<Self>>,
+    _stopped: bool,
+    _has_ready: bool,
+    _mailbox: Option<BasicMailbox<Self>>,
 }
 
 impl Drop for TagFsm {

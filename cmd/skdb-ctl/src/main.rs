@@ -1,22 +1,14 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use clap::Parser;
 use futures::SinkExt;
-use futures_util::{join, stream};
-use futures_util::{
-    FutureExt as _, SinkExt as _, StreamExt as _, TryFutureExt as _, TryStreamExt as _,
-};
+use futures::StreamExt;
+use futures_util::stream;
+use futures_util::TryStreamExt as _;
 use grpcio::Environment;
-use grpcio::{
-    ChannelBuilder, ClientStreamingSink, DuplexSink, EnvBuilder, RequestStream, RpcContext,
-    ServerBuilder, ServerStreamingSink, UnarySink, WriteFlags,
-};
+use grpcio::{ChannelBuilder, WriteFlags};
 use skdb::TOKIO_RUN;
-use skproto::diner::*;
-use skproto::diner_grpc::*;
 use skproto::tracing::*;
-use skproto::tracing_grpc::*;
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -33,22 +25,13 @@ fn main() {
     println!("port:{}, ip:{}", args.port, args.ip);
     let env = Environment::new(3);
     let channel = ChannelBuilder::new(Arc::new(env)).connect("127.0.0.1:9000");
-    // let client = DinerClient::new(channel);
-    // let mut order = Order::new();
-    // let items = order.mut_items();
-    // items.push(Item::SPAM);
-    // items.push(Item::HAM);
-    // println!("Query result is:{:?}", client.eat(&order));
-
-    // let mut sink = duplex.0;
-    // // let source = duplex.1;
 
     let client = SkyTracingClient::new(channel);
     let exec_f = async move {
         let (mut sink, mut receiver) = client.push_msgs().unwrap();
 
         let mut send_data = vec![];
-        for i in 0..10 {
+        for _ in 0..10 {
             let mut p = StreamReqData::default();
             p.set_data("xxxxxx".to_string());
             send_data.push(p);

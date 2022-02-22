@@ -2,15 +2,10 @@ use std::sync::Arc;
 
 use clap::Parser;
 use futures::SinkExt;
-use futures::StreamExt;
 use futures::TryStreamExt;
-use futures_util::{FutureExt as _, SinkExt as _, TryFutureExt as _, TryStreamExt as _};
+use futures_util::{FutureExt as _, TryFutureExt as _, TryStreamExt as _};
 use grpcio::*;
-use skproto::diner::*;
-use skproto::diner_grpc::*;
 use skproto::tracing::*;
-
-use skproto::tracing_grpc::*;
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
@@ -23,15 +18,6 @@ pub struct Args {
     ip: String,
 }
 
-// struct DinerService;
-
-// impl Diner for DinerService {
-//     fn eat(&mut self, _ctx: ::grpcio::RpcContext, req: Order, sink: ::grpcio::UnarySink<Check>) {
-//         println!("here comes order:{:?}", req);
-//         sink.success(Check::default());
-//     }
-// }
-
 #[derive(Clone)]
 struct SkyTracingService;
 impl SkyTracing for SkyTracingService {
@@ -41,17 +27,17 @@ impl SkyTracing for SkyTracingService {
         mut stream: ::grpcio::RequestStream<StreamReqData>,
         mut sink: ::grpcio::DuplexSink<StreamResData>,
     ) {
-        println!("entered!");
         let f = async move {
+            let mut res_data = StreamResData::default();
+            res_data.set_data("here comes response data".to_string());
             while let Some(data) = stream.try_next().await? {
                 println!("Now we have the data:{:?}", data);
-                sink.send((StreamResData::default(), WriteFlags::default()))
-                    .await?;
+                sink.send((res_data.clone(), WriteFlags::default())).await?;
             }
             sink.close().await?;
             Ok(())
         }
-        .map_err(|e: grpcio::Error| println!("xx"))
+        .map_err(|_: grpcio::Error| println!("xx"))
         .map(|_| ());
 
         ctx.spawn(f)

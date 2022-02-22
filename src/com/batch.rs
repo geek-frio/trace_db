@@ -1,5 +1,4 @@
 use super::fsm::Fsm;
-use super::mail;
 use super::router::Router;
 use super::sched::FsmScheduler;
 use crossbeam_channel::Receiver;

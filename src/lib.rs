@@ -24,7 +24,7 @@ lazy_static! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test::gen::gen_data_binary;
+    use test::gen::_gen_data_binary;
 
     #[test]
     fn test_xx() {

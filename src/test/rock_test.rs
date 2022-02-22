@@ -1,4 +1,3 @@
-use super::gen::*;
 use crate::kv::db::*;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;

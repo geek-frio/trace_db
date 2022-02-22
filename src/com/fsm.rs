@@ -7,7 +7,6 @@ use core::sync::atomic::Ordering;
 use std::borrow::Cow;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicUsize;
-use std::sync::mpsc;
 use std::sync::Arc;
 
 const NOTIFYSTATE_NOTIFIED: usize = 0;
