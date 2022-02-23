@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-mod chan;
+pub(crate) mod chan;
+pub(crate) mod conn;
+pub(crate) mod gen;
 
 use clap::Parser;
 use futures::SinkExt;
