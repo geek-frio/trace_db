@@ -1,14 +1,19 @@
-use skproto::tracing::*;
-use std::borrow::BorrowMut;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::ops::Add;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::{SendError, TryRecvError, TrySendError};
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::time::sleep;
+
+pub struct SeqMail<T, C> {
+    seq_vals: Arc<Mutex<BTreeMap<i64, C>>>,
+    sender: IndexSender<T>,
+    cur_seqid: i64,
+    ack_sender: Sender<MailSignal>,
+}
 
 fn chan<T>(buf_size: usize) -> (IndexSender<T>, IndexReceiver<T>) {
     let (tx, rx) = mpsc::channel(buf_size);
@@ -25,13 +30,6 @@ fn chan<T>(buf_size: usize) -> (IndexSender<T>, IndexReceiver<T>) {
     )
 }
 
-pub struct SeqMail<T, C> {
-    seq_vals: Arc<Mutex<BTreeMap<i64, C>>>,
-    sender: IndexSender<T>,
-    cur_seqid: i64,
-    ack_sender: Sender<MailSignal>,
-}
-
 enum MailSignal {
     Ack(i64),
     Shutdown,
@@ -45,12 +43,18 @@ impl<T, C: Clone + Send + 'static> SeqMail<T, C> {
         let snap_map = map.clone();
         tokio::spawn(async move {
             loop {
-                // TODO: add drain method
+                // TODO: add drain method, we only need the lastest ack number
                 let ack_signal = s_r.recv().await;
                 if let Some(o) = ack_signal {
                     match o {
                         MailSignal::Ack(seq_id) => {
                             let mut current_map_guard = snap_map.lock().unwrap();
+                            current_map_guard.iter().for_each(|(k, _c)| {
+                                if *k <= seq_id {
+                                    // TODO: callback logic
+                                    println!("{} callback is invoked", k);
+                                }
+                            });
                             // iterate this map, remove lower seq id key value
                             current_map_guard.retain(|k, _| {
                                 if *k < seq_id {
@@ -60,10 +64,13 @@ impl<T, C: Clone + Send + 'static> SeqMail<T, C> {
                             });
                         }
                         MailSignal::Shutdown => {
+                            // TODO: add callback invoke logic
                             return;
                         }
                     }
                 }
+                // Control frequency
+                sleep(Duration::from_secs(1)).await;
             }
         });
 
@@ -88,9 +95,10 @@ impl<T, C: Clone + Send + 'static> SeqMail<T, C> {
 
     // Ack operation is incremented, never come back
     pub fn ack_id(&self, seq_id: i64) {
-        if seq_id < self.cur_seqid {
+        if seq_id <= self.cur_seqid {
             return;
         }
+        let _ = self.ack_sender.try_send(MailSignal::Ack(seq_id));
     }
 }
 
@@ -118,6 +126,7 @@ impl<T> IndexSender<T> {
                 e
             });
     }
+
     pub fn try_send(&self, value: T) -> Result<i64, TrySendError<T>> {
         let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed) + 1;
         return self
