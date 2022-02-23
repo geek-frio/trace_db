@@ -28,7 +28,7 @@ mod tests {
 
     #[test]
     fn test_xx() {
-        let s = gen_data_binary();
+        let s = _gen_data_binary();
         println!("{}", s);
     }
 }

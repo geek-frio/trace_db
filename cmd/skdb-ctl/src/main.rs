@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+mod chan;
+
 use clap::Parser;
 use futures::SinkExt;
 use futures::StreamExt;

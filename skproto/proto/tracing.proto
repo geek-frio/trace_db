@@ -4,6 +4,7 @@ package tracing;
 
 service SkyTracing {
     rpc PushMsgs(stream StreamReqData) returns (stream StreamResData) {}
+    rpc PushSegments(stream SegmentData) returns (stream SegmentRes) {}
 }
 
 message StreamReqData {
@@ -12,4 +13,31 @@ message StreamReqData {
 
 message StreamResData {
     string data = 1;
+}
+
+message SegmentData {
+    Meta meta = 1;
+    string trace_id = 2;
+    string zone = 3;
+    string ser_key = 4;
+    int32 api_id = 5;
+    string payload = 6;
+}
+
+message SegmentRes {
+    Meta meta = 1;
+    enum Code {
+        ACK = 0;
+    }
+}
+
+message Meta {
+    int32 connId = 1;
+    int64 seqId = 2;
+    string source = 3;
+    enum RequestType {
+        HANDSHAKE = 0;
+        TRANS = 1;
+    }
+    RequestType type = 4;
 }

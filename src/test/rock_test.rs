@@ -1,4 +1,5 @@
 use crate::kv::db::*;
+use crate::test::gen::*;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::thread::sleep;
@@ -26,7 +27,7 @@ pub fn test_point_put_max_ops(path: String, qps: u16, mut ticks: u32, delay: i32
             let mut db_idx = 0;
             for i in 0..qps {
                 let uuid = Uuid::new_v4().to_string();
-                let data: String = gen_data_binary();
+                let data: String = _gen_data_binary();
 
                 let dbs = dbs_w.lock().unwrap();
                 dbs[db_idx].put(uuid.as_bytes(), data.as_bytes()).unwrap();
