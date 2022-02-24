@@ -1,3 +1,4 @@
+use super::*;
 use futures::SinkExt;
 use futures::TryStreamExt;
 use futures_util::{FutureExt as _, TryFutureExt as _, TryStreamExt as _};
@@ -32,8 +33,37 @@ impl SkyTracing for SkyTracingService {
     fn push_segments(
         &mut self,
         ctx: ::grpcio::RpcContext,
-        _stream: ::grpcio::RequestStream<SegmentData>,
-        sink: ::grpcio::DuplexSink<SegmentRes>,
+        mut stream: ::grpcio::RequestStream<SegmentData>,
+        mut sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
+        let handshake_exec = |_: SegmentData, mut sink: grpcio::DuplexSink<SegmentRes>| async {
+            let conn_id = CONN_MANAGER.gen_new_conn_id();
+            let mut resp = SegmentRes::new();
+            let mut meta = Meta::new();
+            meta.connId = conn_id;
+            meta.field_type = Meta_RequestType::HANDSHAKE;
+            resp.set_meta(meta);
+            // We don't care handshake is success or not, client should retry for this
+            let _ = sink.send((resp, WriteFlags::default())).await;
+            let _ = sink.flush().await;
+            return sink;
+        };
+
+        let get_data_exec = async move {
+            while let Some(data) = stream.try_next().await.unwrap() {
+                if !data.has_meta() {
+                    continue;
+                }
+                match data.get_meta().get_field_type() {
+                    Meta_RequestType::HANDSHAKE => {
+                        sink = handshake_exec(data, sink).await;
+                    }
+                    _ => {
+                        todo!();
+                    }
+                }
+            }
+        };
+        tokio::spawn(get_data_exec);
     }
 }
