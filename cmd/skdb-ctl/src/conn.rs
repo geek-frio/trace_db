@@ -10,9 +10,10 @@ use grpcio::{ChannelBuilder, Environment};
 use grpcio::{Error as GrpcError, WriteFlags};
 use skproto::tracing::SkyTracingClient;
 use skproto::tracing::*;
-struct Connector {}
+pub struct Connector;
 
-enum ConnectStatus {
+#[derive(Debug)]
+pub enum ConnectStatus {
     GrpcCallFailed(GrpcError),
     HandShakeSendFailed(GrpcError),
     HandShakeRespFailed(GrpcError),
@@ -23,7 +24,7 @@ enum ConnectStatus {
 impl Connector {
     // Connect and complete handshake
     // TODO: Need to add config for address
-    async fn sk_connect_handshake() -> Result<
+    pub async fn sk_connect_handshake() -> Result<
         (
             StreamingCallSink<SegmentData>,
             ClientDuplexReceiver<SegmentRes>,
@@ -50,6 +51,7 @@ impl Connector {
                     stream::iter(send_data).map(|item| Ok((item, WriteFlags::default())));
 
                 let res = sink.send_all(&mut send_stream).await;
+                println!("we have sent the handshake packet!");
                 let a = match res {
                     Err(e) => Err(ConnectStatus::HandShakeSendFailed(e)),
                     Ok(_) => match r.try_next().await {

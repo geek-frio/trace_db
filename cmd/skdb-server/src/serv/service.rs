@@ -1,10 +1,13 @@
 use super::*;
+use futures::task::SpawnExt;
 use futures::SinkExt;
 use futures::TryStreamExt;
 use futures_util::{FutureExt as _, TryFutureExt as _, TryStreamExt as _};
 use grpcio::*;
 use skproto::tracing::*;
-struct SkyTracingService;
+use tokio::runtime::Runtime;
+#[derive(Clone)]
+pub struct SkyTracingService;
 
 impl SkyTracing for SkyTracingService {
     // Just for push msg test
@@ -45,6 +48,7 @@ impl SkyTracing for SkyTracingService {
             resp.set_meta(meta);
             // We don't care handshake is success or not, client should retry for this
             let _ = sink.send((resp, WriteFlags::default())).await;
+            println!("Has sent handshake response!");
             let _ = sink.flush().await;
             return sink;
         };
@@ -64,6 +68,6 @@ impl SkyTracing for SkyTracingService {
                 }
             }
         };
-        tokio::spawn(get_data_exec);
+        ctx.spawn(get_data_exec);
     }
 }

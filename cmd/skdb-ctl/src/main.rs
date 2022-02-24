@@ -13,6 +13,8 @@ use grpcio::Environment;
 use grpcio::{ChannelBuilder, WriteFlags};
 use skdb::TOKIO_RUN;
 use skproto::tracing::*;
+
+use conn::Connector;
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -50,4 +52,27 @@ fn main() {
         }
     };
     TOKIO_RUN.block_on(exec_f);
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::conn::Connector;
+    use tokio::runtime::Runtime;
+
+    #[test]
+    fn test_handshake_success() {
+        let runtime = Runtime::new().unwrap();
+        runtime.block_on(async {
+            let res = Connector::sk_connect_handshake().await;
+            match res {
+                Ok((_sink, _recv, conn_id)) => {
+                    println!("connect id is:{:?}", conn_id);
+                }
+                Err(e) => {
+                    println!("handshake failed, connect status is:{:?}", e);
+                }
+            }
+        });
+    }
 }
