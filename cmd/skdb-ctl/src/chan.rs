@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::{SendError, TryRecvError, TrySendError};
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 pub struct SeqMail<T, C> {
@@ -17,7 +17,7 @@ pub struct SeqMail<T, C> {
 
 fn chan<T>(buf_size: usize) -> (IndexSender<T>, IndexReceiver<T>) {
     let (tx, rx) = mpsc::channel(buf_size);
-    let seq_id = Arc::new(AtomicI64::new(0));
+    let seq_id = Arc::new(AtomicI64::new(1));
     (
         IndexSender {
             seq_id: seq_id.clone(),
@@ -48,7 +48,7 @@ impl<T, C: Clone + Send + 'static> SeqMail<T, C> {
                 if let Some(o) = ack_signal {
                     match o {
                         MailSignal::Ack(seq_id) => {
-                            let mut current_map_guard = snap_map.lock().unwrap();
+                            let mut current_map_guard = snap_map.lock().await;
                             current_map_guard.iter().for_each(|(k, _c)| {
                                 if *k <= seq_id {
                                     // TODO: callback logic
@@ -86,9 +86,9 @@ impl<T, C: Clone + Send + 'static> SeqMail<T, C> {
         )
     }
 
-    pub fn try_send_msg(&self, msg: T, callback: C) -> Result<i64, TrySendError<T>> {
+    pub async fn try_send_msg(&self, msg: T, callback: C) -> Result<i64, TrySendError<T>> {
         let seq_id = self.sender.try_send(msg)?;
-        let mut seq_ref = self.seq_vals.lock().unwrap();
+        let mut seq_ref = self.seq_vals.lock().await;
         seq_ref.insert(seq_id, callback);
         Ok(seq_id)
     }
@@ -115,7 +115,7 @@ pub struct IndexSender<T> {
 
 impl<T> IndexSender<T> {
     pub async fn send(&self, value: T) -> Result<i64, SendError<T>> {
-        let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed);
         return self
             .sender
             .send(value)
@@ -128,7 +128,7 @@ impl<T> IndexSender<T> {
     }
 
     pub fn try_send(&self, value: T) -> Result<i64, TrySendError<T>> {
-        let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed);
         return self
             .sender
             .try_send(value)

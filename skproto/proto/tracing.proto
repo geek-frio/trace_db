@@ -38,6 +38,8 @@ message Meta {
     enum RequestType {
         HANDSHAKE = 0;
         TRANS = 1;
+        CLIENT_SHUTDOWN = 2;
+        SERVER_SHUTDOWN = 3;
     }
     RequestType type = 4;
 }
