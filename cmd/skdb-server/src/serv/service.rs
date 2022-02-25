@@ -61,6 +61,7 @@ impl SkyTracing for SkyTracingService {
         let get_data_exec = async move {
             while let Some(data) = stream.try_next().await.unwrap() {
                 if !data.has_meta() {
+                    println!("Has no meta ,quit");
                     continue;
                 }
                 match data.get_meta().get_field_type() {
@@ -68,6 +69,7 @@ impl SkyTracing for SkyTracingService {
                         sink = handshake_exec(data, sink).await;
                     }
                     Meta_RequestType::TRANS => {
+                        println!("TRANS data coming");
                         ack_ctl.process_timely_ack_ctl(data).await;
                     }
                     _ => {

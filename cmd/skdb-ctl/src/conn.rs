@@ -36,7 +36,7 @@ impl Connector {
         // TODO: config change
         let channel = ChannelBuilder::new(Arc::new(env)).connect("127.0.0.1:9000");
 
-        let client = SkyTracingClient::new(channel);
+        let client = Box::new(SkyTracingClient::new(channel));
         match client.push_segments() {
             Ok((mut sink, mut r)) => {
                 // handshake logic
@@ -55,7 +55,12 @@ impl Connector {
                 let a = match res {
                     Err(e) => Err(ConnectStatus::HandShakeSendFailed(e)),
                     Ok(_) => match r.try_next().await {
-                        Ok(resp) => Ok((sink, r, resp.unwrap().meta.unwrap().connId)),
+                        Ok(resp) => {
+                            // TODO: we may store the client somewhere to be used in the future
+                            // currently we don't need it, so we leak it
+                            Box::leak(client);
+                            Ok((sink, r, resp.unwrap().meta.unwrap().connId))
+                        }
                         Err(e) => Err(ConnectStatus::HandShakeRespFailed(e)),
                     },
                 };

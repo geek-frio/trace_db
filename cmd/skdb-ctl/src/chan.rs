@@ -127,7 +127,7 @@ impl<T> IndexSender<T> {
             .await
             .map(|_| current_id)
             .map_err(|e| {
-                self.seq_id.fetch_sub(1, Ordering::Relaxed);
+                println!("Send error");
                 e
             });
     }
@@ -139,7 +139,7 @@ impl<T> IndexSender<T> {
             .try_send(value)
             .map(|_| current_id)
             .map_err(|e| {
-                self.seq_id.fetch_sub(1, Ordering::Relaxed);
+                println!("Try send error");
                 e
             });
     }

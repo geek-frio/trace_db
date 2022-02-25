@@ -18,6 +18,7 @@ impl AckCtl {
     }
 
     pub async fn process_timely_ack_ctl(&mut self, segment: SegmentData) {
+        println!("segment data is:{:?}", segment);
         if self.sink.is_none() {
             return;
         }

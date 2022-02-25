@@ -4,6 +4,8 @@ use crate::{
     conn::Connector,
 };
 use futures::{SinkExt, StreamExt};
+use futures_util::stream;
+use futures_util::TryStreamExt as _;
 use grpcio::WriteFlags;
 use skdb::test::gen::*;
 use skdb::*;
@@ -40,22 +42,37 @@ pub async fn test_unbounded_gen_sksegments(qp_10ms: usize) {
                 segment.set_zone(_gen_tag(3, 5, 'a'));
 
                 let send_rs = seq_mail.try_send_msg(segment, ()).await;
-                println!("send result is:{:?}", send_rs);
+                match send_rs {
+                    Ok(seq_id) => {
+                        if seq_id % 11 == 1 {
+                            println!("current seqid:{}", seq_id);
+                        }
+                    }
+                    Err(e) => {
+                        println!("Send failed!, error is:{:?}", e);
+                    }
+                }
             }
             sleep(Duration::from_millis(qp_10ms as u64)).await;
         }
     });
 
-    // create client and handshake
-
+    println!("Handshake and connect success ,conn_id is:{}", conn_id);
     TOKIO_RUN.spawn(async move {
-        while let a = r.next().await {
-            println!("Get a TRANS response from server, a:{:?}", a);
+        let segment = r.try_next().await;
+        match segment {
+            Ok(s) => {
+                println!("Received server response");
+            }
+            Err(e) => {
+                println!("Error is :{:?}", e);
+            }
         }
     });
-    println!("Handshake and connect success ,conn_id is:{}", conn_id);
+
     loop {
         let seg = recv.recv().await;
+        println!("seg data is:{:?}", seg);
         let s = sink.send((seg.unwrap(), WriteFlags::default())).await;
         println!("sent result is:{:?}", s);
     }
