@@ -69,8 +69,8 @@ impl SkyTracing for SkyTracingService {
                         sink = handshake_exec(data, sink).await;
                     }
                     Meta_RequestType::TRANS => {
-                        println!("TRANS data coming");
-                        ack_ctl.process_timely_ack_ctl(data).await;
+                        println!("TRANS data coming, data:{:?}", data);
+                        ack_ctl.process_timely_ack_ctl(data, &mut sink).await;
                     }
                     _ => {
                         todo!();

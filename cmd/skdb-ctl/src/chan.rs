@@ -118,9 +118,10 @@ pub struct IndexSender<T> {
     sender: Sender<T>,
 }
 
-impl<T> IndexSender<T> {
-    pub async fn send(&self, value: T) -> Result<i64, SendError<T>> {
+impl<T: SeqIdFill> IndexSender<T> {
+    pub async fn send(&self, mut value: T) -> Result<i64, SendError<T>> {
         let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed);
+        value.fill_seqid(current_id);
         return self
             .sender
             .send(value)
@@ -132,8 +133,9 @@ impl<T> IndexSender<T> {
             });
     }
 
-    pub fn try_send(&self, value: T) -> Result<i64, TrySendError<T>> {
+    pub fn try_send(&self, mut value: T) -> Result<i64, TrySendError<T>> {
         let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed);
+        value.fill_seqid(current_id);
         return self
             .sender
             .try_send(value)
