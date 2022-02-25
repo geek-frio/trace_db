@@ -1,3 +1,4 @@
+use crate::*;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -7,6 +8,10 @@ use tokio::sync::mpsc::error::{SendError, TryRecvError, TrySendError};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+
+pub trait SeqIdFill {
+    fn fill_seqid(&mut self, seq_id: i64);
+}
 
 pub struct SeqMail<T, C> {
     seq_vals: Arc<Mutex<BTreeMap<i64, C>>>,
@@ -35,13 +40,13 @@ enum MailSignal {
     Shutdown,
 }
 
-impl<T, C: Clone + Send + 'static> SeqMail<T, C> {
+impl<T: SeqIdFill, C: Clone + Send + 'static> SeqMail<T, C> {
     pub fn new(buf_size: usize) -> (SeqMail<T, C>, IndexReceiver<T>) {
         let (s_t, mut s_r) = mpsc::channel(256);
 
         let map: Arc<Mutex<BTreeMap<i64, C>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let snap_map = map.clone();
-        tokio::spawn(async move {
+        TOKIO_RUN.spawn(async move {
             loop {
                 // TODO: add drain method, we only need the lastest ack number
                 let ack_signal = s_r.recv().await;

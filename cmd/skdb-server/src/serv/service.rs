@@ -1,4 +1,5 @@
 use super::*;
+use ack::*;
 use futures::task::SpawnExt;
 use futures::SinkExt;
 use futures::TryStreamExt;
@@ -39,6 +40,7 @@ impl SkyTracing for SkyTracingService {
         mut stream: ::grpcio::RequestStream<SegmentData>,
         mut sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
+        // Logic for handshake
         let handshake_exec = |_: SegmentData, mut sink: grpcio::DuplexSink<SegmentRes>| async {
             let conn_id = CONN_MANAGER.gen_new_conn_id();
             let mut resp = SegmentRes::new();
@@ -53,6 +55,9 @@ impl SkyTracing for SkyTracingService {
             return sink;
         };
 
+        // TODO: change a better name, process logic currently is not involved
+        let mut ack_ctl = AckCtl::new();
+        // Logic for processing segment datas
         let get_data_exec = async move {
             while let Some(data) = stream.try_next().await.unwrap() {
                 if !data.has_meta() {
@@ -61,6 +66,9 @@ impl SkyTracing for SkyTracingService {
                 match data.get_meta().get_field_type() {
                     Meta_RequestType::HANDSHAKE => {
                         sink = handshake_exec(data, sink).await;
+                    }
+                    Meta_RequestType::TRANS => {
+                        ack_ctl.process_timely_ack_ctl(data).await;
                     }
                     _ => {
                         todo!();

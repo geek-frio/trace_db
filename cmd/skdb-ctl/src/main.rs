@@ -11,10 +11,12 @@ use futures_util::stream;
 use futures_util::TryStreamExt as _;
 use grpcio::Environment;
 use grpcio::{ChannelBuilder, WriteFlags};
+use lazy_static::lazy_static;
 use skdb::TOKIO_RUN;
 use skproto::tracing::*;
 
 use conn::Connector;
+
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -58,12 +60,12 @@ fn main() {
 mod tests {
 
     use super::conn::Connector;
-    use tokio::runtime::Runtime;
+    use crate::gen::*;
+    use skdb::*;
 
     #[test]
     fn test_handshake_success() {
-        let runtime = Runtime::new().unwrap();
-        runtime.block_on(async {
+        TOKIO_RUN.block_on(async {
             let res = Connector::sk_connect_handshake().await;
             match res {
                 Ok((_sink, _recv, conn_id)) => {
@@ -73,6 +75,13 @@ mod tests {
                     println!("handshake failed, connect status is:{:?}", e);
                 }
             }
+        });
+    }
+
+    #[test]
+    fn test_send_msg() {
+        TOKIO_RUN.block_on(async {
+            test_unbounded_gen_sksegments(1).await;
         });
     }
 }
