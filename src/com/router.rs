@@ -68,7 +68,7 @@ impl<N: Fsm, S> Router<N, S>
 where
     S: FsmScheduler<F = N> + Clone,
 {
-    pub(crate) fn new(normal_scheduler: S, state_cnt: Arc<AtomicUsize>) -> Router<N, S> {
+    pub fn new(normal_scheduler: S, state_cnt: Arc<AtomicUsize>) -> Router<N, S> {
         Router {
             normals: Arc::new(Mutex::new(NormalMailMap {
                 map: HashMap::default(),

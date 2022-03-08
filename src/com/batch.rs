@@ -4,10 +4,12 @@ use super::sched::FsmScheduler;
 use crossbeam_channel::Receiver;
 use std::borrow::Cow;
 use std::ops::Deref;
+use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{
     ops::DerefMut,
     sync::{Arc, Mutex},
+    thread,
     thread::{current, ThreadId},
     time::Instant,
 };
@@ -144,17 +146,61 @@ impl<N> NormalFsm<N> {
 }
 
 pub struct BatchSystem<N: Fsm, S> {
-    receiver: Receiver<N>,
+    receiver: Receiver<FsmTypes<N>>,
     pool_size: usize,
     max_batch_size: usize,
     router: Router<N, S>,
+    joinable_workers: Arc<Mutex<Vec<ThreadId>>>,
+    workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    name_prefix: String,
 }
 
-impl<N, S> BatchSystem<N, S>
+impl<N, S: FsmScheduler<F = N> + Clone + Send + 'static> BatchSystem<N, S>
 where
     N: Fsm + Send + 'static,
 {
-    // fn start_poller(&mut self, name: String) {}
+    pub fn new(
+        router: Router<N, S>,
+        receiver: Receiver<FsmTypes<N>>,
+        pool_size: usize,
+        max_batch_size: usize,
+    ) -> BatchSystem<N, S> {
+        BatchSystem {
+            receiver,
+            pool_size,
+            max_batch_size,
+            router,
+            joinable_workers: Arc::new(Mutex::new(Vec::new())),
+            workers: Arc::new(Mutex::new(Vec::new())),
+            name_prefix: String::new(),
+        }
+    }
+
+    pub fn start_poller(&mut self, name: String, max_batch_size: usize) {
+        let handler = TagPollHandler;
+        let mut poller = Poller::new(
+            &self.receiver,
+            handler,
+            max_batch_size,
+            self.router.clone(),
+            self.joinable_workers.clone(),
+        );
+
+        let t = thread::Builder::new()
+            .name(name)
+            .spawn(move || {
+                poller.poll();
+            })
+            .unwrap();
+        self.workers.lock().unwrap().push(t);
+    }
+
+    pub fn spawn(&mut self, name_prefix: String) {
+        self.name_prefix = name_prefix.clone();
+        for i in 0..self.pool_size {
+            self.start_poller(format!("{}-{}", name_prefix, i), self.max_batch_size);
+        }
+    }
 }
 
 pub enum FsmTypes<N> {
@@ -166,12 +212,29 @@ pub struct Poller<N: Fsm, H, S> {
     pub fsm_receiver: Receiver<FsmTypes<N>>,
     pub handler: H,
     pub max_batch_size: usize,
-    pub joinable_workers: Option<Arc<Mutex<Vec<ThreadId>>>>,
+    pub joinable_workers: Arc<Mutex<Vec<ThreadId>>>,
     pub reschedule_duration: Duration,
     pub router: Router<N, S>,
 }
 
 impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
+    pub fn new(
+        receiver: &Receiver<FsmTypes<N>>,
+        handler: H,
+        max_batch_size: usize,
+        router: Router<N, S>,
+        joinable_workers: Arc<Mutex<Vec<ThreadId>>>,
+    ) -> Poller<N, H, S> {
+        Poller {
+            fsm_receiver: receiver.clone(),
+            handler,
+            max_batch_size,
+            router,
+            joinable_workers,
+            reschedule_duration: Duration::from_secs(30),
+        }
+    }
+
     fn fetch_fsm(&mut self, batch: &mut Batch<N>) -> bool {
         if let Ok(fsm) = self.fsm_receiver.try_recv() {
             return batch.push(fsm);
@@ -280,9 +343,9 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
 
 impl<N: Fsm, H, S> Drop for Poller<N, H, S> {
     fn drop(&mut self) {
-        if let Some(joinable_workers) = &self.joinable_workers {
-            joinable_workers.lock().unwrap().push(current().id());
-        }
+        // if let Some(joinable_workers) = &self.joinable_workers {
+        //     joinable_workers.lock().unwrap().push(current().id());
+        // }
     }
 }
 
@@ -297,4 +360,28 @@ pub trait PollHandler<N: Fsm>: Send + 'static {
     fn light_end(&mut self, _batch: &mut [Option<impl DerefMut<Target = N>>]);
     fn end(&mut self, _batch: &mut [Option<impl DerefMut<Target = N>>]);
     fn pause(&mut self);
+}
+
+struct TagPollHandler;
+
+impl<N: Fsm> PollHandler<N> for TagPollHandler {
+    fn begin(&mut self, batch_size: usize) {
+        todo!()
+    }
+
+    fn handle(&mut self, normal: &mut impl DerefMut<Target = N>) -> HandleResult {
+        todo!()
+    }
+
+    fn light_end(&mut self, _batch: &mut [Option<impl DerefMut<Target = N>>]) {
+        todo!()
+    }
+
+    fn end(&mut self, _batch: &mut [Option<impl DerefMut<Target = N>>]) {
+        todo!()
+    }
+
+    fn pause(&mut self) {
+        todo!()
+    }
 }

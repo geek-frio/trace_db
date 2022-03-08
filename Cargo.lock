@@ -1224,6 +1224,7 @@ dependencies = [
  "pretty_assertions",
  "rand 0.8.4",
  "rocksdb",
+ "skproto",
  "tantivy",
  "tokio",
  "uuid",
@@ -1233,6 +1234,7 @@ dependencies = [
 name = "skdb-ctl"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "futures",
  "futures-util",
@@ -1249,7 +1251,9 @@ name = "skdb-server"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "clap",
+ "crossbeam-channel",
  "futures",
  "futures-util",
  "grpcio",

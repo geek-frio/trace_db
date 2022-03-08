@@ -24,7 +24,6 @@ impl AckCtl {
     ) {
         let elapsed_time = self.lask_ack_time.elapsed();
         if elapsed_time > Duration::from_secs(1) {
-            println!("elapse time is coming!!!!");
             // Gen ack packet
             let mut resp = SegmentRes::default();
             let mut meta = Meta::new();

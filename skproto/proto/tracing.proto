@@ -22,6 +22,7 @@ message SegmentData {
     string ser_key = 4;
     int32 api_id = 5;
     string payload = 6;
+    uint64 biz_timestamp = 7;
 }
 
 message SegmentRes {
@@ -42,5 +43,6 @@ message Meta {
         CLIENT_SHUTDOWN = 3;
         SERVER_SHUTDOWN = 4;
     }
-    RequestType type = 4;
+    uint64 send_timestamp= 4;
+    RequestType type = 5;
 }

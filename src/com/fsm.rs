@@ -1,3 +1,5 @@
+use skproto::tracing::SegmentData;
+
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
 use super::mail::BasicMailbox;
 use super::sched::FsmScheduler;
@@ -130,4 +132,29 @@ pub trait Fsm {
     fn take_mailbox(&mut self) -> Option<BasicMailbox<Self>>
     where
         Self: Sized;
+}
+
+// For tag fsm 处理
+pub struct TagFsm;
+
+impl Fsm for TagFsm {
+    type Message = SegmentData;
+
+    fn is_stopped(&self) -> bool {
+        todo!()
+    }
+
+    fn set_mailbox(&mut self, _mailbox: Cow<'_, BasicMailbox<Self>>)
+    where
+        Self: Sized,
+    {
+        todo!()
+    }
+
+    fn take_mailbox(&mut self) -> Option<BasicMailbox<Self>>
+    where
+        Self: Sized,
+    {
+        todo!()
+    }
 }

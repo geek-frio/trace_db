@@ -17,7 +17,7 @@ impl ConnManager {
     pub fn new() -> ConnManager {
         ConnManager {
             conns: Arc::new(Mutex::new(HashMap::new())),
-            connId: AtomicI32::new(0),
+            connId: AtomicI32::new(1),
         }
     }
 

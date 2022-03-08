@@ -2,6 +2,7 @@ use rocksdb::{DBWithThreadMode, SingleThreaded};
 use rocksdb::{Options, DB};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
 pub fn init_db(path: &str) -> Vec<DB> {
     let mut dbs = Vec::new();
     let mut opts = Options::default();

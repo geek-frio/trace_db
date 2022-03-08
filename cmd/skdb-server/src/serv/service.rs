@@ -1,14 +1,61 @@
 use super::*;
 use ack::*;
-use futures::task::SpawnExt;
+use chrono::prelude::*;
+use chrono::Duration;
+
+use crossbeam_channel::*;
 use futures::SinkExt;
 use futures::TryStreamExt;
-use futures_util::{FutureExt as _, TryFutureExt as _, TryStreamExt as _};
+use futures_util::{FutureExt as _, TryFutureExt as _};
 use grpcio::*;
+use skdb::com::fsm::TagFsm;
+use skdb::com::router::Router;
+use skdb::com::sched::NormalScheduler;
+use skdb::*;
 use skproto::tracing::*;
-use tokio::runtime::Runtime;
+use std::thread;
+
 #[derive(Clone)]
-pub struct SkyTracingService;
+pub struct SkyTracingService {
+    sender: Sender<SegmentData>,
+    router: Router<TagFsm, NormalScheduler<TagFsm>>,
+}
+
+impl SkyTracingService {
+    // do new and spawn two things
+    pub fn new_spawn(router: Router<TagFsm, NormalScheduler<TagFsm>>) -> SkyTracingService {
+        let (s, r) = unbounded::<SegmentData>();
+        let m_router = router.clone();
+
+        thread::spawn(move || loop {
+            let res = r.recv();
+            match res {
+                Ok(seg_data) => {
+                    // We don't need segment data before 30 days ago
+                    let biz_timestamp = seg_data.biz_timestamp;
+                    let now = Utc::now();
+                    let d = Utc.timestamp_nanos(biz_timestamp as i64);
+
+                    // We only need biz data 30 days ago
+                    if now - Duration::days(30) > d {
+                        continue;
+                    }
+                    let day = d.day();
+                    let hour = d.hour();
+                    let minute = d.minute() / 15;
+
+                    // Only reserve last 30 days segment data
+                    let s = format!("{}{:0>2}{:0>2}", day, hour, minute);
+                    let addr = s.parse::<u64>().unwrap();
+
+                    m_router.send(addr, seg_data);
+                }
+                Err(e) => {}
+            }
+        });
+        SkyTracingService { sender: s, router }
+    }
+}
 
 impl SkyTracing for SkyTracingService {
     // Just for push msg test
@@ -61,7 +108,7 @@ impl SkyTracing for SkyTracingService {
         let get_data_exec = async move {
             while let Some(data) = stream.try_next().await.unwrap() {
                 if !data.has_meta() {
-                    println!("Has no meta ,quit");
+                    println!("Has no meta,quit");
                     continue;
                 }
                 match data.get_meta().get_field_type() {
@@ -69,7 +116,6 @@ impl SkyTracing for SkyTracingService {
                         sink = handshake_exec(data, sink).await;
                     }
                     Meta_RequestType::TRANS => {
-                        println!("TRANS data coming, data:{:?}", data);
                         ack_ctl.process_timely_ack_ctl(data, &mut sink).await;
                     }
                     _ => {
@@ -78,6 +124,6 @@ impl SkyTracing for SkyTracingService {
                 }
             }
         };
-        ctx.spawn(get_data_exec);
+        TOKIO_RUN.spawn(get_data_exec);
     }
 }

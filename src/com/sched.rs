@@ -9,7 +9,7 @@ pub trait FsmScheduler {
 }
 
 pub struct NormalScheduler<N> {
-    sender: Sender<FsmTypes<N>>,
+    pub sender: Sender<FsmTypes<N>>,
 }
 
 impl<N> Clone for NormalScheduler<N> {

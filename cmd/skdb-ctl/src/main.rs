@@ -11,11 +11,8 @@ use futures_util::stream;
 use futures_util::TryStreamExt as _;
 use grpcio::Environment;
 use grpcio::{ChannelBuilder, WriteFlags};
-use lazy_static::lazy_static;
 use skdb::TOKIO_RUN;
 use skproto::tracing::*;
-
-use conn::Connector;
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]

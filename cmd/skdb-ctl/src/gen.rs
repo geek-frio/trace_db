@@ -1,10 +1,9 @@
-use super::conn;
 use crate::{
     chan::{SeqIdFill, SeqMail},
     conn::Connector,
 };
-use futures::{SinkExt, StreamExt};
-use futures_util::stream;
+use chrono::prelude::*;
+use futures::SinkExt;
 use futures_util::TryStreamExt as _;
 use grpcio::WriteFlags;
 use skdb::test::gen::*;
@@ -13,7 +12,6 @@ use std::time::Duration;
 use tokio::time::sleep;
 use uuid;
 
-use super::chan;
 use skproto::tracing::{Meta, Meta_RequestType, SegmentData};
 
 impl SeqIdFill for SegmentData {
@@ -34,13 +32,15 @@ pub async fn test_unbounded_gen_sksegments(qp_10ms: usize) {
                 let mut meta = Meta::new();
                 meta.connId = conn_id;
                 meta.field_type = Meta_RequestType::TRANS;
-                segment.set_meta(meta);
+                let now = Local::now();
+                meta.set_send_timestamp(now.timestamp_nanos() as u64);
                 let uuid = uuid::Uuid::new_v4();
+                segment.set_meta(meta);
                 segment.set_trace_id(uuid.to_string());
                 segment.set_api_id(i as i32);
                 segment.set_payload(_gen_data_binary());
                 segment.set_zone(_gen_tag(3, 5, 'a'));
-
+                segment.set_biz_timestamp(now.timestamp_millis() as u64);
                 let send_rs = seq_mail.try_send_msg(segment, ()).await;
                 match send_rs {
                     Ok(seq_id) => {

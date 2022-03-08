@@ -1,6 +1,5 @@
 mod fsm;
 mod msg;
-mod rolling;
 #[cfg(tests)]
 mod tests {
     use std::time::Instant;

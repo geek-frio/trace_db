@@ -1,11 +1,15 @@
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use clap::Parser;
-use futures::SinkExt;
-use futures::TryStreamExt;
-use futures_util::{FutureExt as _, TryFutureExt as _, TryStreamExt as _};
+use crossbeam_channel::*;
 use grpcio::*;
 use serv::service::*;
+use skdb::com::batch::BatchSystem;
+use skdb::com::batch::FsmTypes;
+use skdb::com::fsm::TagFsm;
+use skdb::com::router::Router;
+use skdb::com::sched::NormalScheduler;
 use skproto::tracing::*;
 
 mod serv;
@@ -24,7 +28,14 @@ fn main() {
     let args = Args::parse();
     println!("service port:{}, ip:{}", args.port, args.ip);
 
-    let skytracing = SkyTracingService;
+    let (s, r) = unbounded::<FsmTypes<TagFsm>>();
+    let fsm_sche = NormalScheduler { sender: s };
+    let atomic = AtomicUsize::new(1);
+    let router = Router::new(fsm_sche, Arc::new(atomic));
+
+    let mut batch_system = BatchSystem::new(router.clone(), r, 1, 500);
+    batch_system.start_poller("tag poll batch system".to_string(), 500);
+    let skytracing = SkyTracingService::new_spawn(router.clone());
     let env = Environment::new(1);
     let service = create_sky_tracing(skytracing);
     let mut server = ServerBuilder::new(Arc::new(env))
