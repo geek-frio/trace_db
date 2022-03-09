@@ -23,6 +23,7 @@ message SegmentData {
     int32 api_id = 5;
     string payload = 6;
     uint64 biz_timestamp = 7;
+    string seg_id = 8;
 }
 
 message SegmentRes {

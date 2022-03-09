@@ -255,6 +255,8 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
         let mut to_skip_end = Vec::with_capacity(self.max_batch_size);
         let mut run = true;
 
+        // 尝试取一个fsm,并放入batch之中
+        // 如果没有取到，小等一会儿
         while run && self.fetch_fsm(&mut batch) {
             let max_batch_size = std::cmp::max(self.max_batch_size, batch.normals.len());
             self.handler.begin(max_batch_size);
@@ -268,8 +270,8 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                     p.policy = Some(ReschedulePolicy::Remove);
                     reschedule_fsms.push(i);
                 } else {
-                    // 对于执行时间过长的fsm，说明其压力较大, 取其中第一半继续进行重新调度(重新fetch才能获取到)
-                    // 目前看起来也就只有这里第
+                    // 判断这个fsm的处理时间，如果过长，需要重点关注
+                    // 将batch发生了处理时间过长的fsm其中的一半进行重新调度处理
                     if p.timer.elapsed() >= self.reschedule_duration {
                         hot_fsm_count += 1;
                         if hot_fsm_count % 2 == 0 {
@@ -292,13 +294,14 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
             // 起始下标从这里开始的原因是现在batch中的fsm已经处理过了
             // 只需要处理新增第fsm
             let mut fsm_cnt = batch.normals.len();
+            // 这里会把batch进行多次填充
             while batch.normals.len() < max_batch_size {
                 if let Ok(fsm) = self.fsm_receiver.try_recv() {
                     // 如果收到了终止信号, 终止
                     run = batch.push(fsm);
                 }
                 // 没有获取到新第fsm,就break掉
-                if !run || fsm_cnt >= batch.normals.len() {
+                if !run || fsm_cnt == batch.normals.len() {
                     break;
                 }
                 let p = batch.normals[fsm_cnt].as_mut().unwrap();
@@ -317,7 +320,7 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
             }
             self.handler.light_end(&mut batch.normals);
             for offset in &to_skip_end {
-                // 这里的操作会将batch中对应第fsm设置为None
+                // 这里的操作会将batch中对应的fsm设置为None
                 batch.schedule(&self.router, *offset, true);
             }
             to_skip_end.clear();

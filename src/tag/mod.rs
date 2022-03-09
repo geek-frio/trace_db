@@ -1,3 +1,4 @@
+mod engine;
 mod fsm;
 mod msg;
 #[cfg(tests)]
@@ -11,6 +12,8 @@ mod tests {
     use tantivy::schema::{IndexRecordOption, Schema, INDEXED, STORED, STRING, TEXT};
     use tantivy::{doc, Document, Index};
 
+    #[test]
+    fn test_open_reopen() {}
     #[test]
     fn test_normal_search() {}
     pub fn test_search() {
