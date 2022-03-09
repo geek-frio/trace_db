@@ -1,4 +1,4 @@
-use super::fsm::Fsm;
+use super::fsm::{Fsm, TagFsm};
 use super::router::Router;
 use super::sched::FsmScheduler;
 use crossbeam_channel::Receiver;
@@ -365,22 +365,21 @@ pub trait PollHandler<N: Fsm>: Send + 'static {
     fn pause(&mut self);
 }
 
-struct TagPollHandler;
+struct TagPollHandler {}
 
-impl<N: Fsm> PollHandler<N> for TagPollHandler {
+impl PollHandler<TagFsm> for TagPollHandler {
     fn begin(&mut self, batch_size: usize) {
+        // currently do nothing
+        println!("begin is called");
+    }
+
+    fn handle(&mut self, normal: &mut impl DerefMut<Target = TagFsm>) -> HandleResult {}
+
+    fn light_end(&mut self, _batch: &mut [Option<impl DerefMut<Target = TagFsm>>]) {
         todo!()
     }
 
-    fn handle(&mut self, normal: &mut impl DerefMut<Target = N>) -> HandleResult {
-        todo!()
-    }
-
-    fn light_end(&mut self, _batch: &mut [Option<impl DerefMut<Target = N>>]) {
-        todo!()
-    }
-
-    fn end(&mut self, _batch: &mut [Option<impl DerefMut<Target = N>>]) {
+    fn end(&mut self, _batch: &mut [Option<impl DerefMut<Target = TagFsm>>]) {
         todo!()
     }
 

@@ -1,3 +1,4 @@
+use crossbeam_channel::Receiver;
 use skproto::tracing::SegmentData;
 
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
@@ -135,27 +136,30 @@ pub trait Fsm {
 }
 
 // For tag fsm 处理
-pub struct TagFsm;
-
+pub struct TagFsm {
+    receiver: Receiver<SegmentData>,
+    mailbox: Option<BasicMailbox<TagFsm>>,
+}
 
 impl Fsm for TagFsm {
     type Message = SegmentData;
 
     fn is_stopped(&self) -> bool {
-        todo!()
+        // TODO: later we will add condition control
+        false
     }
 
-    fn set_mailbox(&mut self, _mailbox: Cow<'_, BasicMailbox<Self>>)
+    fn set_mailbox(&mut self, mailbox: Cow<'_, BasicMailbox<Self>>)
     where
         Self: Sized,
     {
-        todo!()
+        self.mailbox = Some(mailbox.into_owned());
     }
 
     fn take_mailbox(&mut self) -> Option<BasicMailbox<Self>>
     where
         Self: Sized,
     {
-        todo!()
+        self.mailbox.take()
     }
 }
