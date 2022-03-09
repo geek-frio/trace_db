@@ -3,17 +3,23 @@ use std::collections::HashMap;
 use skproto::tracing::SegmentData;
 use tantivy::collector::Count;
 use tantivy::directory::MmapDirectory;
+use tantivy::error::TantivyError;
 use tantivy::query::{BooleanQuery, Occur, PhraseQuery, Query, TermQuery};
 use tantivy::schema::{
     Field, FieldValue, IndexRecordOption, Schema, Value, INDEXED, STORED, STRING, TEXT,
 };
-use tantivy::{doc, Directory, Document, Index, IndexWriter};
+use tantivy::{doc, Directory, Document, Index, IndexReader, IndexWriter};
+
+pub trait TagSearch {
+    fn query_any(&self);
+}
 
 pub struct TagWriteEngine {
     dir: &'static str,
     // tag data gps (Every 15 minutes of a day, we create a new directory)
     addr: u64,
     index_writer: Option<IndexWriter>,
+    index: Option<Index>,
     field_map: HashMap<TagField, Field>,
 }
 
@@ -28,9 +34,14 @@ pub enum TagField {
     Payload,
 }
 
-pub enum TagEngineErrorCode {
+#[derive(Debug)]
+pub enum TagEngineError {
     DirOpenFailed,
     WriterCreateFailed,
+    RecordsCommitError(TantivyError),
+    WriterNotInit,
+    IndexNotExist,
+    Other(TantivyError),
 }
 
 impl TagWriteEngine {
@@ -40,10 +51,11 @@ impl TagWriteEngine {
             addr,
             index_writer: None,
             field_map: HashMap::new(),
+            index: None,
         }
     }
 
-    pub fn init(&mut self) -> Result<(), TagEngineErrorCode> {
+    pub fn init(&mut self) -> Result<(), TagEngineError> {
         let mut schema_builder = Schema::builder();
         self.field_map.insert(
             TagField::Zone,
@@ -81,6 +93,7 @@ impl TagWriteEngine {
         let dir = MmapDirectory::open(path).unwrap();
         let index = Index::open_or_create(dir, schema).unwrap();
         self.index_writer = Some(index.writer(100_100_000).unwrap());
+        self.index = Some(index);
         return Ok(());
     }
 
@@ -93,16 +106,19 @@ impl TagWriteEngine {
         0
     }
 
-    pub fn create_doc(&self, data: SegmentData) -> Document {
+    fn create_doc(&self, data: SegmentData) -> Document {
         let mut doc = Document::new();
         doc.add(FieldValue::new(
             self.field_map.get(&TagField::TraceId).unwrap().clone(),
             Value::Str(data.trace_id),
         ));
-        // TODO: segment id need to be added
         doc.add(FieldValue::new(
             self.field_map.get(&TagField::Zone).unwrap().clone(),
             Value::Str(data.zone),
+        ));
+        doc.add(FieldValue::new(
+            self.field_map.get(&TagField::SegId).unwrap().clone(),
+            Value::Str(data.seg_id),
         ));
         doc.add(FieldValue::new(
             self.field_map.get(&TagField::ApiId).unwrap().clone(),
@@ -123,5 +139,69 @@ impl TagWriteEngine {
         doc
     }
 
-    pub fn commit() {}
+    pub fn flush(&mut self) -> Result<u64, TagEngineError> {
+        if let Some(writer) = &mut self.index_writer {
+            match writer.commit() {
+                Ok(commit_idx) => return Ok(commit_idx),
+                Err(e) => return Err(TagEngineError::RecordsCommitError(e)),
+            }
+        }
+        return Err(TagEngineError::WriterNotInit);
+    }
+
+    pub fn reader(&self) -> Result<(IndexReader, &Index), TagEngineError> {
+        match &self.index {
+            Some(i) => i
+                .reader()
+                .map(|r| (r, i))
+                .map_err(|e| TagEngineError::Other(e)),
+            None => Err(TagEngineError::IndexNotExist),
+        }
+    }
+
+    pub fn get_field(&self, key: TagField) -> Field {
+        self.field_map.get(&key).unwrap().clone()
+    }
+}
+
+mod tests {
+
+    use tantivy::{chrono::Local, collector::TopDocs, query::QueryParser, DocAddress, Score};
+
+    use super::*;
+    use crate::{
+        com::util::*,
+        test::gen::{_gen_data_binary, _gen_tag},
+    };
+
+    #[test]
+    fn test_normal_write() {
+        let mut engine = TagWriteEngine::new(123, "/tmp/tantivy_records");
+
+        println!("{:?}", engine.init());
+
+        let (reader, index) = engine.reader().unwrap();
+        let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::ApiId)]);
+        let searcher = reader.searcher();
+
+        for i in 0..10 {
+            for j in 0..100 {
+                let now = Local::now();
+                let mut record = SegmentData::new();
+                let uuid = uuid::Uuid::new_v4();
+                record.set_api_id(j);
+                record.set_biz_timestamp(now.timestamp_nanos() as u64);
+                record.set_zone(_gen_tag(3, 3, 'a'));
+                record.set_seg_id(uuid.to_string());
+                record.set_trace_id(uuid.to_string());
+                record.set_ser_key(_gen_tag(20, 3, 'e'));
+                record.set_payload(_gen_data_binary());
+                engine.add_record(record);
+            }
+            let query = query_parser.parse_query("api_id:1").unwrap();
+            let top_docs: Vec<(Score, DocAddress)> =
+                searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
+            println!("Top docs length is:{}", top_docs.len());
+        }
+    }
 }
