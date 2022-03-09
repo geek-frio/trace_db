@@ -42,6 +42,7 @@ pub enum TagEngineError {
     WriterNotInit,
     IndexNotExist,
     Other(TantivyError),
+    IndexDirCreateFailed,
 }
 
 impl TagWriteEngine {
@@ -89,6 +90,11 @@ impl TagWriteEngine {
         // TODO: check if it is an outdated directory
         // create directory
         let path = &format!("{}/{}", self.dir, self.addr);
+        // Create index directory
+        let result = std::fs::create_dir_all(path);
+        if result.is_err() {
+            return Err(TagEngineError::IndexDirCreateFailed);
+        }
         // TODO: check open operation valid
         let dir = MmapDirectory::open(path).unwrap();
         let index = Index::open_or_create(dir, schema).unwrap();
@@ -175,6 +181,18 @@ mod tests {
     };
 
     #[test]
+    fn create_multiple_dir_test() {
+        println!(
+            "Create result is:{:?}",
+            std::fs::create_dir_all("/tmp/test1/abc1")
+        );
+        println!(
+            "Retry create result is:{:?}",
+            std::fs::create_dir_all("/tmp/test1/abc1")
+        );
+    }
+
+    #[test]
     fn test_normal_write() {
         let mut engine = TagWriteEngine::new(123, "/tmp/tantivy_records");
 
@@ -184,7 +202,7 @@ mod tests {
         let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::ApiId)]);
         let searcher = reader.searcher();
 
-        for i in 0..10 {
+        for _ in 0..10 {
             for j in 0..100 {
                 let now = Local::now();
                 let mut record = SegmentData::new();
@@ -198,10 +216,12 @@ mod tests {
                 record.set_payload(_gen_data_binary());
                 engine.add_record(record);
             }
-            let query = query_parser.parse_query("api_id:1").unwrap();
+            println!("flushed result is:{:?}", engine.flush());
+            let query = query_parser.parse_query("1").unwrap();
             let top_docs: Vec<(Score, DocAddress)> =
                 searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
             println!("Top docs length is:{}", top_docs.len());
+            println!("Top docs result is:{:?}", top_docs);
         }
     }
 }
