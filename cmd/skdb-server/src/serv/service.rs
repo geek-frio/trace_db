@@ -9,12 +9,15 @@ use futures::TryStreamExt;
 use futures_util::{FutureExt as _, TryFutureExt as _};
 use grpcio::*;
 use skdb::com::mail::BasicMailbox;
+use skdb::com::router::Either;
 use skdb::com::router::Router;
 use skdb::com::sched::NormalScheduler;
+use skdb::tag::engine::TagWriteEngine;
 use skdb::tag::fsm::TagFsm;
 use skdb::*;
 use skproto::tracing::*;
 use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 use std::thread;
 
 #[derive(Clone)]
@@ -61,15 +64,24 @@ impl SkyTracingService {
                         Either::Right(msg) => {
                             // Mailbox not exists, so we regists a new one
                             let (s, r) = unbounded();
+                            // TODO: use config struct
+                            let mut engine = TagWriteEngine::new(addr, "/tmp");
+                            // TODO: error process logic is emitted currently
+                            let _ = engine.init();
                             let fsm = Box::new(TagFsm {
                                 receiver: r,
                                 mailbox: None,
+                                engine: engine,
                             });
                             let state_cnt = Arc::new(AtomicUsize::new(0));
                             let mailbox = BasicMailbox::new(s, fsm, state_cnt);
-                            fsm.mailbox = mailbox.clone();
-                            m_router.register(u64, mailbox);
-                            m_router.send(addr, seg_data);
+                            let fsm = mailbox.take_fsm();
+                            if let Some(mut f) = fsm {
+                                f.mailbox = Some(mailbox.clone());
+                                mailbox.release(f);
+                            }
+                            m_router.register(addr, mailbox);
+                            m_router.send(addr, msg);
                         }
                     }
                 }

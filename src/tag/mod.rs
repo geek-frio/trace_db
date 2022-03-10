@@ -1,4 +1,4 @@
-mod engine;
+pub mod engine;
 pub mod fsm;
 #[cfg(tests)]
 mod tests {

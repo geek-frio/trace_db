@@ -24,11 +24,11 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
         }
     }
 
-    pub(crate) fn release(&self, fsm: Box<Owner>) {
+    pub fn release(&self, fsm: Box<Owner>) {
         self.state.release(fsm);
     }
 
-    pub(crate) fn take_fsm(&self) -> Option<Box<Owner>> {
+    pub fn take_fsm(&self) -> Option<Box<Owner>> {
         self.state.take_fsm()
     }
 

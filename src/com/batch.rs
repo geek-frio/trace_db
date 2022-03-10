@@ -179,7 +179,9 @@ where
     }
 
     pub fn start_poller(&mut self, name: String, max_batch_size: usize) {
-        let handler = TagPollHandler;
+        let handler = TagPollHandler {
+            msg_buf: Vec::new(),
+        };
         let mut poller = Poller::new(
             &self.receiver,
             handler,
