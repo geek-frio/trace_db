@@ -1,6 +1,5 @@
 mod engine;
-mod fsm;
-mod msg;
+pub mod fsm;
 #[cfg(tests)]
 mod tests {
     use std::time::Instant;

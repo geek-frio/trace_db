@@ -8,11 +8,13 @@ use futures::SinkExt;
 use futures::TryStreamExt;
 use futures_util::{FutureExt as _, TryFutureExt as _};
 use grpcio::*;
-use skdb::com::fsm::TagFsm;
+use skdb::com::mail::BasicMailbox;
 use skdb::com::router::Router;
 use skdb::com::sched::NormalScheduler;
+use skdb::tag::fsm::TagFsm;
 use skdb::*;
 use skproto::tracing::*;
+use std::sync::atomic::AtomicUsize;
 use std::thread;
 
 #[derive(Clone)]
@@ -48,7 +50,28 @@ impl SkyTracingService {
                     let s = format!("{}{:0>2}{:0>2}", day, hour, minute);
                     let addr = s.parse::<u64>().unwrap();
 
-                    m_router.send(addr, seg_data);
+                    let res = m_router.send(addr, seg_data);
+                    match res {
+                        Either::Left(r) => {
+                            if let Err(e) = r {
+                                // TODO: Err process operation
+                            }
+                            continue;
+                        }
+                        Either::Right(msg) => {
+                            // Mailbox not exists, so we regists a new one
+                            let (s, r) = unbounded();
+                            let fsm = Box::new(TagFsm {
+                                receiver: r,
+                                mailbox: None,
+                            });
+                            let state_cnt = Arc::new(AtomicUsize::new(0));
+                            let mailbox = BasicMailbox::new(s, fsm, state_cnt);
+                            fsm.mailbox = mailbox.clone();
+                            m_router.register(u64, mailbox);
+                            m_router.send(addr, seg_data);
+                        }
+                    }
                 }
                 Err(e) => {}
             }

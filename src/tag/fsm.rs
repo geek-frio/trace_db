@@ -1,35 +1,41 @@
-use super::msg::TagMsg;
+use std::borrow::Cow;
+
 use crate::com::{fsm::Fsm, mail::BasicMailbox};
 use crossbeam_channel::Receiver;
-pub struct TagFsm {
-    pub receiver: Receiver<TagMsg>,
-    _stopped: bool,
-    _has_ready: bool,
-    _mailbox: Option<BasicMailbox<Self>>,
-}
+use skproto::tracing::SegmentData;
 
 impl Drop for TagFsm {
     fn drop(&mut self) {}
 }
 
+pub struct TagFsm {
+    pub receiver: Receiver<SegmentData>,
+    pub mailbox: Option<BasicMailbox<TagFsm>>,
+}
+
+impl TagFsm {
+    fn handle_tasks(msgs: &mut Vec<SegmentData>) {}
+}
+
 impl Fsm for TagFsm {
-    type Message = TagMsg;
+    type Message = SegmentData;
 
     fn is_stopped(&self) -> bool {
-        todo!()
+        // TODO: later we will add condition control
+        false
     }
 
-    fn set_mailbox(&mut self, _mailbox: std::borrow::Cow<'_, BasicMailbox<Self>>)
+    fn set_mailbox(&mut self, mailbox: Cow<'_, BasicMailbox<Self>>)
     where
         Self: Sized,
     {
-        todo!()
+        self.mailbox = Some(mailbox.into_owned());
     }
 
     fn take_mailbox(&mut self) -> Option<BasicMailbox<Self>>
     where
         Self: Sized,
     {
-        todo!()
+        self.mailbox.take()
     }
 }

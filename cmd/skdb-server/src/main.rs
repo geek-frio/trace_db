@@ -7,9 +7,9 @@ use grpcio::*;
 use serv::service::*;
 use skdb::com::batch::BatchSystem;
 use skdb::com::batch::FsmTypes;
-use skdb::com::fsm::TagFsm;
 use skdb::com::router::Router;
 use skdb::com::sched::NormalScheduler;
+use skdb::tag::fsm::TagFsm;
 use skproto::tracing::*;
 
 mod serv;

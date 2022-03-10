@@ -1,7 +1,9 @@
-use super::fsm::{Fsm, TagFsm};
+use super::fsm::Fsm;
 use super::router::Router;
 use super::sched::FsmScheduler;
-use crossbeam_channel::Receiver;
+use crate::tag::fsm::TagFsm;
+use crossbeam_channel::{Receiver, TryRecvError};
+use skproto::tracing::SegmentData;
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::thread::JoinHandle;
@@ -10,7 +12,7 @@ use std::{
     ops::DerefMut,
     sync::{Arc, Mutex},
     thread,
-    thread::{current, ThreadId},
+    thread::ThreadId,
     time::Instant,
 };
 
@@ -155,16 +157,16 @@ pub struct BatchSystem<N: Fsm, S> {
     name_prefix: String,
 }
 
-impl<N, S: FsmScheduler<F = N> + Clone + Send + 'static> BatchSystem<N, S>
+impl<S> BatchSystem<TagFsm, S>
 where
-    N: Fsm + Send + 'static,
+    S: FsmScheduler<F = TagFsm> + Clone + Send + 'static,
 {
     pub fn new(
-        router: Router<N, S>,
-        receiver: Receiver<FsmTypes<N>>,
+        router: Router<TagFsm, S>,
+        receiver: Receiver<FsmTypes<TagFsm>>,
         pool_size: usize,
         max_batch_size: usize,
-    ) -> BatchSystem<N, S> {
+    ) -> BatchSystem<TagFsm, S> {
         BatchSystem {
             receiver,
             pool_size,
@@ -365,15 +367,31 @@ pub trait PollHandler<N: Fsm>: Send + 'static {
     fn pause(&mut self);
 }
 
-struct TagPollHandler {}
+struct TagPollHandler {
+    msg_buf: Vec<SegmentData>,
+}
 
 impl PollHandler<TagFsm> for TagPollHandler {
     fn begin(&mut self, batch_size: usize) {
-        // currently do nothing
-        println!("begin is called");
+        // TODO: currently do nothing
+        println!("Begin is called, currently we don't need to do anything");
     }
 
-    fn handle(&mut self, normal: &mut impl DerefMut<Target = TagFsm>) -> HandleResult {}
+    fn handle(&mut self, normal: &mut impl DerefMut<Target = TagFsm>) -> HandleResult {
+        loop {
+            match normal.receiver.try_recv() {
+                Ok(msg) => {
+                    self.msg_buf.push(msg);
+                }
+                Err(TryRecvError::Empty) => {
+                    println!("Has consumed all the msgs in ");
+                }
+                Err(TryRecvError::Disconnected) => {}
+            }
+        }
+
+        HandleResult::KeepProcessing
+    }
 
     fn light_end(&mut self, _batch: &mut [Option<impl DerefMut<Target = TagFsm>>]) {
         todo!()
