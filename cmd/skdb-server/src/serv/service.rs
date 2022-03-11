@@ -72,6 +72,7 @@ impl SkyTracingService {
                                 receiver: r,
                                 mailbox: None,
                                 engine: engine,
+                                last_idx: 0,
                             });
                             let state_cnt = Arc::new(AtomicUsize::new(0));
                             let mailbox = BasicMailbox::new(s, fsm, state_cnt);

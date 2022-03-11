@@ -374,7 +374,7 @@ struct TagPollHandler {
 }
 
 impl PollHandler<TagFsm> for TagPollHandler {
-    fn begin(&mut self, batch_size: usize) {
+    fn begin(&mut self, _batch_size: usize) {
         // TODO: currently do nothing
         println!("Begin is called, currently we don't need to do anything");
     }
@@ -387,23 +387,31 @@ impl PollHandler<TagFsm> for TagPollHandler {
                 }
                 Err(TryRecvError::Empty) => {
                     println!("Has consumed all the msgs in ");
+                    break;
                 }
-                Err(TryRecvError::Disconnected) => {}
+                Err(TryRecvError::Disconnected) => {
+                    println!("Channel disconnected");
+                    break;
+                }
             }
         }
-
-        HandleResult::KeepProcessing
+        // batch got msg, batch consume
+        normal.handle_tasks(&mut self.msg_buf);
+        HandleResult::StopAt {
+            progress: 0,
+            skip_end: false,
+        }
     }
 
     fn light_end(&mut self, _batch: &mut [Option<impl DerefMut<Target = TagFsm>>]) {
-        todo!()
+        println!("Light end operation is called");
     }
 
     fn end(&mut self, _batch: &mut [Option<impl DerefMut<Target = TagFsm>>]) {
-        todo!()
+        println!("End operation is called!");
     }
 
     fn pause(&mut self) {
-        todo!()
+        println!("Pause operation is called!");
     }
 }

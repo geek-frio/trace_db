@@ -136,30 +136,3 @@ pub trait Fsm {
 }
 
 // For tag fsm 处理
-pub struct TagFsm {
-    receiver: Receiver<SegmentData>,
-    mailbox: Option<BasicMailbox<TagFsm>>,
-}
-
-impl Fsm for TagFsm {
-    type Message = SegmentData;
-
-    fn is_stopped(&self) -> bool {
-        // TODO: later we will add condition control
-        false
-    }
-
-    fn set_mailbox(&mut self, mailbox: Cow<'_, BasicMailbox<Self>>)
-    where
-        Self: Sized,
-    {
-        self.mailbox = Some(mailbox.into_owned());
-    }
-
-    fn take_mailbox(&mut self) -> Option<BasicMailbox<Self>>
-    where
-        Self: Sized,
-    {
-        self.mailbox.take()
-    }
-}

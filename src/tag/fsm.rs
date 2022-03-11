@@ -14,10 +14,26 @@ pub struct TagFsm {
     pub receiver: Receiver<SegmentData>,
     pub mailbox: Option<BasicMailbox<TagFsm>>,
     pub engine: TagWriteEngine,
+    pub last_idx: u64,
 }
 
 impl TagFsm {
-    fn handle_tasks(msgs: &mut Vec<SegmentData>) {}
+    // TODO: use batch logic, currently directly write to disk
+    pub fn handle_tasks(&mut self, msgs: &mut Vec<SegmentData>) {
+        for msg in msgs {
+            self.engine.add_record(msg);
+        }
+        let result = self.engine.flush();
+        match result {
+            Ok(idx) => {
+                self.last_idx = idx;
+            }
+            Err(e) => {
+                //TODO: error process
+                println!("flush to db error:{:?}", e);
+            }
+        }
+    }
 }
 
 impl Fsm for TagFsm {

@@ -103,7 +103,7 @@ impl TagWriteEngine {
         return Ok(());
     }
 
-    pub fn add_record(&self, data: SegmentData) -> u64 {
+    pub fn add_record(&self, data: &SegmentData) -> u64 {
         let document = self.create_doc(data);
         if let Some(writer) = self.index_writer.as_ref() {
             return writer.add_document(document);
@@ -112,19 +112,19 @@ impl TagWriteEngine {
         0
     }
 
-    fn create_doc(&self, data: SegmentData) -> Document {
+    fn create_doc(&self, data: &SegmentData) -> Document {
         let mut doc = Document::new();
         doc.add(FieldValue::new(
             self.field_map.get(&TagField::TraceId).unwrap().clone(),
-            Value::Str(data.trace_id),
+            Value::Str(data.trace_id.clone()),
         ));
         doc.add(FieldValue::new(
             self.field_map.get(&TagField::Zone).unwrap().clone(),
-            Value::Str(data.zone),
+            Value::Str(data.zone.clone()),
         ));
         doc.add(FieldValue::new(
             self.field_map.get(&TagField::SegId).unwrap().clone(),
-            Value::Str(data.seg_id),
+            Value::Str(data.seg_id.clone()),
         ));
         doc.add(FieldValue::new(
             self.field_map.get(&TagField::ApiId).unwrap().clone(),
@@ -136,11 +136,11 @@ impl TagWriteEngine {
         ));
         doc.add(FieldValue::new(
             self.field_map.get(&TagField::Service).unwrap().clone(),
-            Value::Str(data.ser_key),
+            Value::Str(data.ser_key.clone()),
         ));
         doc.add(FieldValue::new(
             self.field_map.get(&TagField::Payload).unwrap().clone(),
-            Value::Str(data.payload),
+            Value::Str(data.payload.clone()),
         ));
         doc
     }
@@ -214,7 +214,7 @@ mod tests {
                 record.set_trace_id(uuid.to_string());
                 record.set_ser_key(_gen_tag(20, 3, 'e'));
                 record.set_payload(_gen_data_binary());
-                engine.add_record(record);
+                engine.add_record(&record);
             }
             println!("flushed result is:{:?}", engine.flush());
             let query = query_parser.parse_query("1").unwrap();
