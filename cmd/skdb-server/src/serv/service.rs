@@ -39,12 +39,14 @@ impl SkyTracingService {
                     // We don't need segment data before 30 days ago
                     let biz_timestamp = seg_data.biz_timestamp;
                     let now = Utc::now();
-                    let d = Utc.timestamp_nanos(biz_timestamp as i64);
+                    let d = Utc.timestamp_millis(biz_timestamp as i64);
 
                     // We only need biz data 30 days ago
                     if now - Duration::days(30) > d {
+                        println!("Continued!");
                         continue;
                     }
+
                     let day = d.day();
                     let hour = d.hour();
                     let minute = d.minute() / 15;
@@ -52,8 +54,8 @@ impl SkyTracingService {
                     // Only reserve last 30 days segment data
                     let s = format!("{}{:0>2}{:0>2}", day, hour, minute);
                     let addr = s.parse::<u64>().unwrap();
-
                     let res = m_router.send(addr, seg_data);
+
                     match res {
                         Either::Left(r) => {
                             if let Err(e) = r {
@@ -71,7 +73,7 @@ impl SkyTracingService {
                             let fsm = Box::new(TagFsm {
                                 receiver: r,
                                 mailbox: None,
-                                engine: engine,
+                                engine,
                                 last_idx: 0,
                             });
                             let state_cnt = Arc::new(AtomicUsize::new(0));
@@ -139,7 +141,8 @@ impl SkyTracing for SkyTracingService {
         };
 
         // TODO: change a better name, process logic currently is not involved
-        let mut ack_ctl = AckCtl::new();
+        let ack_ctl = AckCtl::new();
+        let s = self.sender.clone();
         // Logic for processing segment datas
         let get_data_exec = async move {
             while let Some(data) = stream.try_next().await.unwrap() {
@@ -152,7 +155,10 @@ impl SkyTracing for SkyTracingService {
                         sink = handshake_exec(data, sink).await;
                     }
                     Meta_RequestType::TRANS => {
-                        ack_ctl.process_timely_ack_ctl(data, &mut sink).await;
+                        let res = s.send(data);
+                        println!("send result is {:?}", res);
+                        // TODO: ACK logic will be designed later
+                        // ack_ctl.process_timely_ack_ctl(data, &mut sink).await;
                     }
                     _ => {
                         todo!();

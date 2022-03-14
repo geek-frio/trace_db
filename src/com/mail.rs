@@ -4,6 +4,7 @@ use super::fsm::Fsm;
 use super::fsm::FsmState;
 use super::sched::FsmScheduler;
 use crossbeam_channel::{SendError, Sender};
+use std::borrow::Cow;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
@@ -38,7 +39,7 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
         scheduler: &S,
     ) -> Result<(), SendError<Owner::Message>> {
         self.sender.send(msg)?;
-        self.state.notify(scheduler);
+        self.state.notify(scheduler, Cow::Borrowed(self));
         Ok(())
     }
 

@@ -17,7 +17,7 @@ use std::{
 };
 
 pub struct Batch<N> {
-    normals: Vec<Option<NormalFsm<N>>>,
+    pub normals: Vec<Option<NormalFsm<N>>>,
 }
 
 impl<N: Fsm> Batch<N> {
@@ -44,6 +44,7 @@ impl<N: Fsm> Batch<N> {
     }
 
     fn release(&mut self, mut fsm: NormalFsm<N>, checked_len: usize) -> Option<NormalFsm<N>> {
+        println!("FSM's mailbox is taken away in release() method!");
         let mailbox = fsm.take_mailbox().unwrap();
         // 交换回NormalFsm手中的fsm到mailbox之中
         mailbox.release(fsm.fsm);
@@ -53,6 +54,7 @@ impl<N: Fsm> Batch<N> {
             match mailbox.take_fsm() {
                 None => None,
                 Some(mut s) => {
+                    println!("FSM's mailbox is set back in release() method!");
                     s.set_mailbox(Cow::Owned(mailbox));
                     fsm.fsm = s;
                     Some(fsm)
@@ -61,12 +63,17 @@ impl<N: Fsm> Batch<N> {
         }
     }
 
+    // It will check the sender lenth of this fsm's mailbox
+    // if there are no messsages waiting to be processed, fsm should be reset to mailbox
+    // (It means this fsm is waiting for new schedualed operation)
     fn remove(&mut self, mut fsm: NormalFsm<N>) -> Option<NormalFsm<N>> {
+        println!("FSM's mailbox is taken away in remove() method!");
         let mailbox = fsm.take_mailbox().unwrap();
         if mailbox.is_empty() {
             mailbox.release(fsm.fsm);
             None
         } else {
+            println!("FSM' mailbox is set back in remove() method!");
             fsm.set_mailbox(Cow::Owned(mailbox));
             Some(fsm)
         }
@@ -89,7 +96,10 @@ impl<N: Fsm> Batch<N> {
             }
         };
         let mut res = match to_schedule.policy {
+            //
             Some(ReschedulePolicy::Release(l)) => self.release(to_schedule, l),
+            // The prerequisite for removing the fsm in the batch is that, the sender in the tag fsm's mailbox is empty
+            // If it is not empty, we need to reschedual the batch
             Some(ReschedulePolicy::Remove) => self.remove(to_schedule),
             Some(ReschedulePolicy::Schedule) => {
                 router.normal_scheduler.schedule(to_schedule.fsm);
@@ -193,6 +203,7 @@ where
         let t = thread::Builder::new()
             .name(name)
             .spawn(move || {
+                println!("Poller has started!");
                 poller.poll();
             })
             .unwrap();
@@ -241,6 +252,8 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
 
     fn fetch_fsm(&mut self, batch: &mut Batch<N>) -> bool {
         if let Ok(fsm) = self.fsm_receiver.try_recv() {
+            println!("Has pushed a new fsm");
+            println!("batch length:{}", batch.normals.len());
             return batch.push(fsm);
         }
         if batch.is_empty() {
@@ -259,9 +272,8 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
         let mut to_skip_end = Vec::with_capacity(self.max_batch_size);
         let mut run = true;
 
-        // 尝试取一个fsm,并放入batch之中
-        // 如果没有取到，小等一会儿
         while run && self.fetch_fsm(&mut batch) {
+            println!("Poller: Has fetched a fsm");
             let max_batch_size = std::cmp::max(self.max_batch_size, batch.normals.len());
             self.handler.begin(max_batch_size);
 
@@ -270,6 +282,7 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 let p = p.as_mut().unwrap();
                 let res = self.handler.handle(p);
 
+                println!("Poller: Handle process result is ok!");
                 if p.is_stopped() {
                     p.policy = Some(ReschedulePolicy::Remove);
                     reschedule_fsms.push(i);
@@ -286,10 +299,14 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                     }
                     // 正常的fsm执行完毕以后都会进入这里
                     if let HandleResult::StopAt { progress, skip_end } = res {
-                        // ?? 这里要确定progress第作用 ??
+                        println!(
+                            "Poller: Fsm's schedual logic become Release status, progress:{}, skip_end:{}",
+                            progress, skip_end
+                        );
                         p.policy = Some(ReschedulePolicy::Release(progress));
                         reschedule_fsms.push(i);
                         if skip_end {
+                            println!("Poller: This fsm will be put into skip fsm");
                             to_skip_end.push(i);
                         }
                     }
@@ -306,6 +323,7 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 }
                 // 没有获取到新第fsm,就break掉
                 if !run || fsm_cnt == batch.normals.len() {
+                    println!("Poller: Has not got new batch fsm, break;");
                     break;
                 }
                 let p = batch.normals[fsm_cnt].as_mut().unwrap();
@@ -325,6 +343,7 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
             self.handler.light_end(&mut batch.normals);
             for offset in &to_skip_end {
                 // 这里的操作会将batch中对应的fsm设置为None
+                println!("Poller: Start to process fsm in to_skip_end set");
                 batch.schedule(&self.router, *offset, true);
             }
             to_skip_end.clear();

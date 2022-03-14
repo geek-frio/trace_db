@@ -41,10 +41,13 @@ impl<N: Fsm> FsmState<N> {
         }
     }
 
-    pub fn notify<S: FsmScheduler<F = N>>(&self, s: &S) {
+    pub fn notify<S: FsmScheduler<F = N>>(&self, s: &S, mailbox: Cow<'_, BasicMailbox<N>>) {
         match self.take_fsm() {
             None => {}
-            Some(n) => s.schedule(n),
+            Some(n) => {
+                n.set_mailbox(mailbox);
+                s.schedule(n)
+            }
         }
     }
 

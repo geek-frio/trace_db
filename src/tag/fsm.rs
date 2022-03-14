@@ -24,6 +24,7 @@ impl TagFsm {
             self.engine.add_record(msg);
         }
         let result = self.engine.flush();
+        println!("Engine flushed success!");
         match result {
             Ok(idx) => {
                 self.last_idx = idx;
