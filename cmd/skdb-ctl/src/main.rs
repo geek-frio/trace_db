@@ -108,7 +108,10 @@ fn main() {
                     count += 1;
                     if count % 100 == 0 {
                         count = 0;
-                        println!("Elapsed time is:{}", time_counter.elapsed().as_millis());
+                        println!(
+                            "Elapsed time is:{} millis",
+                            time_counter.elapsed().as_millis()
+                        );
                         time_counter = Instant::now();
                     }
                 }

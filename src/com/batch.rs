@@ -399,13 +399,20 @@ impl PollHandler<TagFsm> for TagPollHandler {
     }
 
     fn handle(&mut self, normal: &mut impl DerefMut<Target = TagFsm>) -> HandleResult {
+        // Add time control logic
+        let mut try_times = 0;
         loop {
             match normal.receiver.try_recv() {
                 Ok(msg) => {
                     self.msg_buf.push(msg);
                 }
                 Err(TryRecvError::Empty) => {
-                    println!("Has consumed all the msgs in ");
+                    if try_times < 3 {
+                        // Pause a whil
+                        self.pause();
+                        try_times += 1;
+                        continue;
+                    }
                     break;
                 }
                 Err(TryRecvError::Disconnected) => {
@@ -436,7 +443,8 @@ impl PollHandler<TagFsm> for TagPollHandler {
         println!("End operation is called!");
     }
 
+    // We just sleep to wait for more data to be processed.
     fn pause(&mut self) {
-        println!("Pause operation is called!");
+        std::thread::sleep(Duration::from_millis(300));
     }
 }
