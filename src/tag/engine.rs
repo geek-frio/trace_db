@@ -94,20 +94,13 @@ impl TagWriteEngine {
         let path = &format!("{}/{}", self.dir, self.addr);
         // Create index directory
         let result = std::fs::create_dir_all(path);
-        println!("std::fs::create_dir_all(path); sleep 10s temporarily");
-        thread::sleep(Duration::from_secs(10));
         if result.is_err() {
             return Err(TagEngineError::IndexDirCreateFailed);
         }
         // TODO: check open operation valid
         let dir = MmapDirectory::open(path).unwrap();
-
-        println!("MmapDirectory::open; sleep 10s temporarily");
-        thread::sleep(Duration::from_secs(10));
         let index = Index::open_or_create(dir, schema).unwrap();
 
-        println!("Index::open_or_create; sleep 10s temporarily");
-        thread::sleep(Duration::from_secs(10));
         self.index_writer = Some(index.writer(100_100_000).unwrap());
         self.index = Some(index);
         return Ok(());

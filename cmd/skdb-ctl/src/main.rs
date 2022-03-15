@@ -2,6 +2,8 @@ pub(crate) mod chan;
 pub(crate) mod conn;
 pub(crate) mod gen;
 
+use std::time::Instant;
+
 use chrono::Local;
 use clap::Parser;
 use grpcio::WriteFlags;
@@ -71,6 +73,8 @@ fn main() {
 
         println!("Current send speed is {:?}", qps_set);
         TOKIO_RUN.spawn(async move {
+            let mut count = 0;
+            let mut time_counter = Instant::now();
             loop {
                 for i in 0..qps_set.record_num_every_10ms() {
                     let mut segment = SegmentData::new();
@@ -101,6 +105,12 @@ fn main() {
                         }
                     }
                     sleep(Duration::from_millis(10)).await;
+                    count += 1;
+                    if count % 100 == 0 {
+                        count = 0;
+                        println!("Elapsed time is:{}", time_counter.elapsed().as_millis());
+                        time_counter = Instant::now();
+                    }
                 }
             }
         });
