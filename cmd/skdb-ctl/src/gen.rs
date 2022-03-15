@@ -43,6 +43,7 @@ pub async fn test_unbounded_gen_sksegments(qp_10ms: usize) {
                 segment.set_biz_timestamp(now.timestamp_millis() as u64);
                 segment.set_seg_id(uuid.to_string());
                 segment.set_ser_key(_gen_tag(4, 3, 's'));
+                println!("sent traceid is:{}", uuid.to_string());
                 let send_rs = seq_mail.try_send_msg(segment, ()).await;
                 match send_rs {
                     Ok(seq_id) => {
@@ -55,7 +56,7 @@ pub async fn test_unbounded_gen_sksegments(qp_10ms: usize) {
                     }
                 }
 
-                sleep(Duration::from_secs(1)).await;
+                sleep(Duration::from_secs(10)).await;
             }
         }
     });

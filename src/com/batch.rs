@@ -414,8 +414,14 @@ impl PollHandler<TagFsm> for TagPollHandler {
                 }
             }
         }
+        println!(
+            "TagPollHandler: self.msg_buf length is:{}",
+            self.msg_buf.len()
+        );
         // batch got msg, batch consume
         normal.handle_tasks(&mut self.msg_buf);
+        // clear msg_buf, wait for next process
+        self.msg_buf.clear();
         HandleResult::StopAt {
             progress: 0,
             skip_end: false,

@@ -27,6 +27,7 @@ impl TagFsm {
         println!("Engine flushed success!");
         match result {
             Ok(idx) => {
+                println!("Flushed return idx is:{}", idx);
                 self.last_idx = idx;
             }
             Err(e) => {

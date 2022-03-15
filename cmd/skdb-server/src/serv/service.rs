@@ -63,6 +63,7 @@ impl SkyTracingService {
                             }
                             continue;
                         }
+                        // Not exist, send failed!
                         Either::Right(msg) => {
                             // Mailbox not exists, so we regists a new one
                             let (s, r) = unbounded();

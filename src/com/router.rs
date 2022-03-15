@@ -124,7 +124,7 @@ where
     }
 
     pub fn register(&self, addr: u64, mailbox: BasicMailbox<N>) {
-        println!("Has inserted a new mailbox");
+        println!("Has inserted a new mailbox, addr is:{}", addr);
         let mut normals = self.normals.lock().unwrap();
         if let Some(mailbox) = normals.map.insert(addr, mailbox) {
             mailbox.close();

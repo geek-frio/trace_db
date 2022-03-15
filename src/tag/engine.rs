@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::thread;
+use std::time::Duration;
 
 use skproto::tracing::SegmentData;
 use tantivy::collector::Count;
@@ -92,12 +94,20 @@ impl TagWriteEngine {
         let path = &format!("{}/{}", self.dir, self.addr);
         // Create index directory
         let result = std::fs::create_dir_all(path);
+        println!("std::fs::create_dir_all(path); sleep 10s temporarily");
+        thread::sleep(Duration::from_secs(10));
         if result.is_err() {
             return Err(TagEngineError::IndexDirCreateFailed);
         }
         // TODO: check open operation valid
         let dir = MmapDirectory::open(path).unwrap();
+
+        println!("MmapDirectory::open; sleep 10s temporarily");
+        thread::sleep(Duration::from_secs(10));
         let index = Index::open_or_create(dir, schema).unwrap();
+
+        println!("Index::open_or_create; sleep 10s temporarily");
+        thread::sleep(Duration::from_secs(10));
         self.index_writer = Some(index.writer(100_100_000).unwrap());
         self.index = Some(index);
         return Ok(());
@@ -172,6 +182,8 @@ impl TagWriteEngine {
 
 mod tests {
 
+    use std::sync::Once;
+
     use tantivy::{chrono::Local, collector::TopDocs, query::QueryParser, DocAddress, Score};
 
     use super::*;
@@ -198,11 +210,13 @@ mod tests {
 
         println!("{:?}", engine.init());
 
-        let (reader, index) = engine.reader().unwrap();
-        let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::ApiId)]);
-        let searcher = reader.searcher();
+        // let (reader, index) = engine.reader().unwrap();
+        // let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::ApiId)]);
+        // let searcher = reader.searcher();
 
-        for _ in 0..10 {
+        let INIT: Once = Once::new();
+        let mut captured_val = String::new();
+        for i in 0..10 {
             for j in 0..100 {
                 let now = Local::now();
                 let mut record = SegmentData::new();
@@ -212,16 +226,43 @@ mod tests {
                 record.set_zone(_gen_tag(3, 3, 'a'));
                 record.set_seg_id(uuid.to_string());
                 record.set_trace_id(uuid.to_string());
+                INIT.call_once(|| {
+                    captured_val.push_str(&uuid.to_string());
+                    println!("i:{}; j:{}; uuid:{}", i, j, uuid.to_string());
+                });
                 record.set_ser_key(_gen_tag(20, 3, 'e'));
                 record.set_payload(_gen_data_binary());
                 engine.add_record(&record);
             }
-            println!("flushed result is:{:?}", engine.flush());
-            let query = query_parser.parse_query("1").unwrap();
-            let top_docs: Vec<(Score, DocAddress)> =
-                searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
-            println!("Top docs length is:{}", top_docs.len());
-            println!("Top docs result is:{:?}", top_docs);
+            let e = &mut engine;
+            println!("flushed result is:{:?}", e.flush());
+        }
+
+        let (reader, index) = engine.reader().unwrap();
+        let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::TraceId)]);
+        let searcher = reader.searcher();
+        let query = query_parser.parse_query(&captured_val).unwrap();
+        let search_res = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
+        println!("Search result is:{:?}", search_res);
+        println!("captured value:{}", captured_val);
+    }
+
+    #[test]
+    fn test_read_traceid() {
+        let mut engine = TagWriteEngine::new(150202, "/tmp");
+        println!("Init result is:{:?}", engine.init());
+        let (reader, index) = engine.reader().unwrap();
+        let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::TraceId)]);
+        let searcher = reader.searcher();
+        let query = query_parser
+            .parse_query("d9d3c657-41c9-494a-8269-8422f2d107e5")
+            .unwrap();
+        let search_res = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
+        println!("search res is:{:?}", search_res);
+
+        for (_score, doc_address) in search_res {
+            let retrieved_doc = searcher.doc(doc_address).unwrap();
+            println!("search result is: {:?}", retrieved_doc);
         }
     }
 }
