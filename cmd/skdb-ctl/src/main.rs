@@ -67,7 +67,7 @@ fn main() {
 
     let exec_func = async {
         let (seq_mail, mut recv) = SeqMail::new(100000);
-        let (mut sink, _, conn_id) = Connector::sk_connect_handshake().await.unwrap();
+        let (mut sink, mut r, conn_id) = Connector::sk_connect_handshake().await.unwrap();
         let qps_set = QpsSetValue::val_of(&args.qps);
         println!("Handshake and connect success ,conn_id is:{}", conn_id);
 
@@ -92,28 +92,23 @@ fn main() {
                     segment.set_biz_timestamp(now.timestamp_millis() as u64);
                     segment.set_seg_id(uuid.to_string());
                     segment.set_ser_key(_gen_tag(4, 3, 's'));
-                    println!("sent traceid is:{}", uuid.to_string());
                     let send_rs = seq_mail.try_send_msg(segment, ()).await;
                     match send_rs {
-                        Ok(seq_id) => {
-                            if seq_id % 11 == 1 {
-                                println!("current seqid:{}", seq_id);
-                            }
-                        }
+                        Ok(seq_id) => {}
                         Err(e) => {
                             println!("Send failed!, error is:{:?}", e);
                         }
                     }
-                    sleep(Duration::from_millis(10)).await;
-                    count += 1;
-                    if count % 100 == 0 {
-                        count = 0;
-                        println!(
-                            "Elapsed time is:{} millis",
-                            time_counter.elapsed().as_millis()
-                        );
-                        time_counter = Instant::now();
-                    }
+                }
+                sleep(Duration::from_millis(10)).await;
+                count += 1;
+                if count % 100 == 0 {
+                    count = 0;
+                    println!(
+                        "Elapsed time is:{} millis",
+                        time_counter.elapsed().as_millis()
+                    );
+                    time_counter = Instant::now();
                 }
             }
         });

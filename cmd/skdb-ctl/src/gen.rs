@@ -62,25 +62,25 @@ pub async fn test_unbounded_gen_sksegments(qp_10ms: usize) {
     });
 
     println!("Handshake and connect success ,conn_id is:{}", conn_id);
-    TOKIO_RUN.spawn(async move {
-        loop {
-            let segment = r.try_next().await;
-            match segment {
-                Ok(s) => match s {
-                    Some(s) => match s.get_meta().get_field_type() {
-                        Meta_RequestType::TRANS_ACK => {
-                            println!("ack message seq id:{:?} ", s.get_meta().get_seqId());
-                        }
-                        _ => {}
-                    },
-                    None => {}
-                },
-                Err(e) => {
-                    println!("Error is :{:?}", e);
-                }
-            }
-        }
-    });
+    // TOKIO_RUN.spawn(async move {
+    //     loop {
+    //         let segment = r.try_next().await;
+    //         match segment {
+    //             Ok(s) => match s {
+    //                 Some(s) => match s.get_meta().get_field_type() {
+    //                     Meta_RequestType::TRANS_ACK => {
+    //                         println!("ack message seq id:{:?} ", s.get_meta().get_seqId());
+    //                     }
+    //                     _ => {}
+    //                 },
+    //                 None => {}
+    //             },
+    //             Err(e) => {
+    //                 println!("Error is :{:?}", e);
+    //             }
+    //         }
+    //     }
+    // });
 
     loop {
         let seg = recv.recv().await;

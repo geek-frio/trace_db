@@ -155,7 +155,6 @@ where
         let mut msg = Some(msg);
         let res = self.check_do(addr, |mailbox| {
             let m = msg.take().unwrap();
-            println!("Check do is called");
             match mailbox.send(m, &self.normal_scheduler) {
                 Ok(()) => Some(()),
                 Err(send_err) => {

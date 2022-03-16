@@ -43,7 +43,6 @@ impl SkyTracingService {
 
                     // We only need biz data 30 days ago
                     if now - Duration::days(30) > d {
-                        println!("Continued!");
                         continue;
                     }
 
@@ -76,6 +75,7 @@ impl SkyTracingService {
                                 mailbox: None,
                                 engine,
                                 last_idx: 0,
+                                counter: 0,
                             });
                             let state_cnt = Arc::new(AtomicUsize::new(0));
                             let mailbox = BasicMailbox::new(s, fsm, state_cnt);
@@ -108,7 +108,6 @@ impl SkyTracing for SkyTracingService {
             let mut res_data = StreamResData::default();
             res_data.set_data("here comes response data".to_string());
             while let Some(data) = stream.try_next().await? {
-                println!("Now we have the data:{:?}", data);
                 sink.send((res_data.clone(), WriteFlags::default())).await?;
             }
             sink.close().await?;
@@ -157,7 +156,6 @@ impl SkyTracing for SkyTracingService {
                     }
                     Meta_RequestType::TRANS => {
                         let res = s.send(data);
-                        println!("send result is {:?}", res);
                         // TODO: ACK logic will be designed later
                         // ack_ctl.process_timely_ack_ctl(data, &mut sink).await;
                     }

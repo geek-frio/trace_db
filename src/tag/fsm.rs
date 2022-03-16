@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::atomic::AtomicUsize};
 
 use crate::com::{fsm::Fsm, mail::BasicMailbox};
 use crossbeam_channel::Receiver;
@@ -15,6 +15,7 @@ pub struct TagFsm {
     pub mailbox: Option<BasicMailbox<TagFsm>>,
     pub engine: TagWriteEngine,
     pub last_idx: u64,
+    pub counter: u64,
 }
 
 impl TagFsm {
@@ -22,18 +23,24 @@ impl TagFsm {
     pub fn handle_tasks(&mut self, msgs: &mut Vec<SegmentData>) {
         for msg in msgs {
             self.engine.add_record(msg);
+            self.counter += 1;
         }
-        let result = self.engine.flush();
-        println!("Engine flushed success!");
-        match result {
-            Ok(idx) => {
-                println!("Flushed return idx is:{}", idx);
-                self.last_idx = idx;
+        if self.counter > 5000 {
+            let result = self.engine.flush();
+            println!(
+                "#############Engine flushed success!, flused count is:{}",
+                self.counter
+            );
+            match result {
+                Ok(idx) => {
+                    self.last_idx = idx;
+                }
+                Err(e) => {
+                    //TODO: error process
+                    println!("flush to db error:{:?}", e);
+                }
             }
-            Err(e) => {
-                //TODO: error process
-                println!("flush to db error:{:?}", e);
-            }
+            self.counter = 0;
         }
     }
 }
