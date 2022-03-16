@@ -6,6 +6,7 @@ use crossbeam_channel::{Receiver, TryRecvError};
 use skproto::tracing::SegmentData;
 use std::borrow::Cow;
 use std::ops::Deref;
+use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{
@@ -191,6 +192,8 @@ where
     pub fn start_poller(&mut self, name: String, max_batch_size: usize) {
         let handler = TagPollHandler {
             msg_buf: Vec::new(),
+            counter: AtomicI32::new(0),
+            last_time: None,
         };
         let mut poller = Poller::new(
             &self.receiver,
@@ -390,29 +393,37 @@ pub trait PollHandler<N: Fsm>: Send + 'static {
 
 struct TagPollHandler {
     msg_buf: Vec<SegmentData>,
+    counter: AtomicI32,
+    last_time: Option<Instant>,
+}
+
+impl TagPollHandler {
+    fn new_spawn() -> TagPollHandler {
+        TagPollHandler {
+            msg_buf: Vec::new(),
+            counter: AtomicI32::new(0),
+            last_time: None,
+        }
+    }
 }
 
 impl PollHandler<TagFsm> for TagPollHandler {
     fn begin(&mut self, _batch_size: usize) {
+        if self.last_time.is_none() {
+            self.last_time = Some(Instant::now());
+            return;
+        }
         // TODO: currently do nothing
         println!("Begin is called, currently we don't need to do anything");
     }
 
     fn handle(&mut self, normal: &mut impl DerefMut<Target = TagFsm>) -> HandleResult {
-        // Add time control logic
-        let mut try_times = 0;
         loop {
             match normal.receiver.try_recv() {
                 Ok(msg) => {
                     self.msg_buf.push(msg);
                 }
                 Err(TryRecvError::Empty) => {
-                    if try_times < 3 {
-                        // Pause a whil
-                        self.pause();
-                        try_times += 1;
-                        continue;
-                    }
                     break;
                 }
                 Err(TryRecvError::Disconnected) => {
@@ -427,6 +438,8 @@ impl PollHandler<TagFsm> for TagPollHandler {
         );
         // batch got msg, batch consume
         normal.handle_tasks(&mut self.msg_buf);
+        self.counter
+            .fetch_add(self.msg_buf.len() as i32, Ordering::Relaxed);
         // clear msg_buf, wait for next process
         self.msg_buf.clear();
         HandleResult::StopAt {
@@ -441,10 +454,19 @@ impl PollHandler<TagFsm> for TagPollHandler {
 
     fn end(&mut self, _batch: &mut [Option<impl DerefMut<Target = TagFsm>>]) {
         println!("End operation is called!");
+        if let Some(t) = &self.last_time {
+            if t.elapsed().as_secs() > 5 {
+                println!(
+                    "TagPollHandler consuming rate is:{}, time window current is:{}",
+                    self.counter.load(Ordering::Relaxed) / t.elapsed().as_secs() as i32,
+                    t.elapsed().as_secs(),
+                );
+                self.counter.store(0, Ordering::Relaxed);
+                self.last_time = Some(Instant::now());
+            }
+        }
     }
 
     // We just sleep to wait for more data to be processed.
-    fn pause(&mut self) {
-        std::thread::sleep(Duration::from_millis(300));
-    }
+    fn pause(&mut self) {}
 }
