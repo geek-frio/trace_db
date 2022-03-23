@@ -313,7 +313,6 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 }
                 // 没有获取到新第fsm,就break掉
                 if !run || fsm_cnt == batch.normals.len() {
-                    println!("Poller: Has not got new batch fsm, break;");
                     break;
                 }
                 let p = batch.normals[fsm_cnt].as_mut().unwrap();

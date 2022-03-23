@@ -18,11 +18,11 @@ use futures::SinkExt;
 
 #[derive(Debug)]
 enum QpsSetValue {
-    // 10,000
+    // 7,500
     Normal,
-    // 20,000 (Our target)
+    // 10,000 (Our target)
     Ok,
-    // 50,000
+    // 15,000
     FeelHigh,
 }
 
@@ -38,9 +38,9 @@ impl QpsSetValue {
 
     fn record_num_every_10ms(&self) -> usize {
         match self {
-            QpsSetValue::Normal => 100,
-            QpsSetValue::Ok => 200,
-            QpsSetValue::FeelHigh => 500,
+            QpsSetValue::Normal => 75,
+            QpsSetValue::Ok => 100,
+            QpsSetValue::FeelHigh => 150,
         }
     }
 }

@@ -67,7 +67,7 @@ impl SkyTracingService {
                             // Mailbox not exists, so we regists a new one
                             let (s, r) = unbounded();
                             // TODO: use config struct
-                            let mut engine = TagWriteEngine::new(addr, "/tmp");
+                            let mut engine = TagWriteEngine::new(addr, "/home/frio/skdb-data");
                             // TODO: error process logic is emitted currently
                             let _ = engine.init();
                             let fsm = Box::new(TagFsm {

@@ -38,6 +38,12 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
         msg: Owner::Message,
         scheduler: &S,
     ) -> Result<(), SendError<Owner::Message>> {
+        if self.sender.len() > 5000 {
+            println!(
+                "Channel has the risk of being full, sender's length:{}",
+                self.sender.len()
+            );
+        }
         self.sender.send(msg)?;
         self.state.notify(scheduler, Cow::Borrowed(self));
         Ok(())
