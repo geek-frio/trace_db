@@ -12,6 +12,7 @@ message SkyQueryParam {
     string query = 1;
     int32 offset = 2;
     int32 limit = 3;
+    repeated int32 seg_range = 4;
 }
 
 message SkySegmentRes {

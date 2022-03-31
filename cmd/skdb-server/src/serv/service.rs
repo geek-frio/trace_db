@@ -167,4 +167,12 @@ impl SkyTracing for SkyTracingService {
         };
         TOKIO_RUN.spawn(get_data_exec);
     }
+
+    fn query_sky_segments(
+        &mut self,
+        ctx: ::grpcio::RpcContext,
+        req: SkyQueryParam,
+        sink: ::grpcio::UnarySink<SkySegmentRes>,
+    ) {
+    }
 }
