@@ -24,6 +24,7 @@ futures = "0.3"
 tokio = { version = "1.15", features = ["rt", "rt-multi-thread", "time"] }
 lazy_static = "1.4.0"
 skproto = { path = "skproto" }
+grpcio = { version = "0.9.0", default-features = false, features = ["secure"] }
 
 [dev-dependencies]
 pretty_assertions = "1"

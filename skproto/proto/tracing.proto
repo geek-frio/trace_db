@@ -5,6 +5,17 @@ package tracing;
 service SkyTracing {
     rpc PushMsgs(stream StreamReqData) returns (stream StreamResData) {}
     rpc PushSegments(stream SegmentData) returns (stream SegmentRes) {}
+    rpc QuerySkySegments(SkyQueryParam) returns (SkySegmentRes) {}
+}
+
+message SkyQueryParam {
+    string query = 1;
+    int32 offset = 2;
+    int32 limit = 3;
+}
+
+message SkySegmentRes {
+    repeated string docs = 1;
 }
 
 message StreamReqData {

@@ -1220,6 +1220,7 @@ dependencies = [
  "clap",
  "crossbeam-channel",
  "futures",
+ "grpcio",
  "lazy_static",
  "pretty_assertions",
  "rand 0.8.4",
