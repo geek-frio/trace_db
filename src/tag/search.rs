@@ -232,18 +232,18 @@ mod tests {
 
     #[test]
     fn test_xxx() {
-        let addrs_watcher = AddrsConfigWatcher;
-        let builder =
-            SearchBuilder::<SkyTracingClient>::new_init(addrs_watcher, |v: Vec<String>| {
-                let mut clients = Vec::new();
-                for addr in v {
-                    let env = Environment::new(3);
-                    // TODO: config change
-                    let channel = ChannelBuilder::new(Arc::new(env)).connect(addr.as_str());
-                    let client = SkyTracingClient::new(channel);
-                    clients.push(client);
-                }
-                clients
-            });
+        // let addrs_watcher = AddrsConfigWatcher;
+        // let builder =
+        //     SearchBuilder::<SkyTracingClient>::new_init(addrs_watcher, |v: Vec<String>| {
+        //         let mut clients = Vec::new();
+        //         for addr in v {
+        //             let env = Environment::new(3);
+        //             // TODO: config change
+        //             let channel = ChannelBuilder::new(Arc::new(env)).connect(addr.as_str());
+        //             let client = SkyTracingClient::new(channel);
+        //             clients.push(client);
+        //         }
+        //         clients
+        //     });
     }
 }
