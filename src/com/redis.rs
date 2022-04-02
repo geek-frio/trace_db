@@ -28,9 +28,7 @@ impl TimeRecord {
     fn key(&self) -> String {
         format!("{}:{}", self.val, self.data_timestamp)
     }
-}
 
-impl RedisTTLSet {
     pub fn format_value(s: String) -> Result<TimeRecord, AnyError> {
         let v: Vec<&str> = s.split(":").collect();
         if v.len() != 2 {
@@ -41,7 +39,17 @@ impl RedisTTLSet {
             val: v.get(0).unwrap().to_string(),
         })
     }
+}
 
+impl TryFrom<String> for TimeRecord {
+    type Error = AnyError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::format_value(value)
+    }
+}
+
+impl RedisTTLSet {
     fn get_all(&self, mut conn: Connection) -> Result<Vec<TimeRecord>, AnyError> {
         let r = redis::cmd("SMEMBERS").arg(KEY).query::<Value>(&mut conn)?;
         match r {
@@ -60,7 +68,7 @@ impl RedisTTLSet {
                         }
                         _ => unreachable!("Will never come here"),
                     })
-                    .map(|val| Self::format_value(val))
+                    .map(|val| val.try_into())
                     .filter(|r| r.is_ok())
                     .map(|r| r.unwrap())
                     .collect::<Vec<TimeRecord>>();
@@ -73,25 +81,28 @@ impl RedisTTLSet {
     }
 
     fn expire_els(
+        &self,
         mut conn: Connection,
         mut records: Vec<TimeRecord>,
-        ttl: Secs,
     ) -> Result<(), AnyError> {
         records
             .iter()
             .try_for_each(|record| -> Result<(), AnyError> {
-                if record.is_expired(ttl) {
+                if record.is_expired(self.ttl) {
                     redis::cmd("SPOP")
                         .arg(record.key())
                         .query::<Value>(&mut conn)?;
                 }
                 Ok(())
             })?;
-        records.retain(|r| !r.is_expired(ttl));
+        records.retain(|r| !r.is_expired(self.ttl));
         Ok(())
     }
 
-    fn push(val: String) -> Result<(), ()> {
+    fn push<T>(val: T) -> Result<(), AnyError>
+    where
+        T: TryInto<TimeRecord>,
+    {
         todo!()
     }
 }
