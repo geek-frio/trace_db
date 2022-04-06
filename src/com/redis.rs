@@ -1,6 +1,5 @@
 use anyhow::Error as AnyError;
 use chrono::Local;
-use protobuf::well_known_types::Any;
 use redis::{Connection, Value};
 
 type Secs = i64;
@@ -99,11 +98,28 @@ impl RedisTTLSet {
         Ok(())
     }
 
-    fn push<T>(val: T) -> Result<(), AnyError>
+    fn push<T>(&self, mut conn: Connection, val: T) -> Result<(), AnyError>
     where
         T: TryInto<TimeRecord>,
     {
-        todo!()
+        let res = val.try_into();
+        match res {
+            Ok(record) => {
+                if record.is_expired(self.ttl) {
+                    return Err(AnyError::msg("Value has already expired!"));
+                }
+                let exec_res = redis::cmd("SADD")
+                    .arg(record.key())
+                    .query::<Value>(&mut conn)?;
+                match exec_res {
+                    Value::Int(_) => return Ok(()),
+                    _ => return Err(AnyError::msg("Add failed!")),
+                }
+            }
+            Err(_) => Err(AnyError::msg(
+                "Not correct type to convert to TimeRecord!".to_string(),
+            )),
+        }
     }
 }
 
