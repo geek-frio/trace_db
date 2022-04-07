@@ -29,6 +29,7 @@ trait ConfigWatcher<T>: Send {
 #[derive(Clone)]
 struct SearchBuilder<T> {
     searcher: Arc<Mutex<DistSearchManager<T>>>,
+    redis_client: RedisClient,
 }
 
 impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
@@ -36,9 +37,15 @@ impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
         F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy,
         W: ConfigWatcher<T> + 'static,
     >(
-        mut watcher: W,
+        watcher: W,
         cb: F,
+        redis_client: RedisClient,
     ) -> Result<SearchBuilder<T>, AnyError> {
+        // Regist new address
+        let ttl_set = RedisTTLSet { ttl: 5 };
+        let mut conn = redis_client.get_connection()?;
+        // TODO generate
+        ttl_set.push(&mut conn, "127.0.0.1:9000")?;
         let (s, r) = unbounded::<Vec<T>>();
         // Wait for client init connection ready
         watcher.watch(cb, s);
@@ -47,8 +54,8 @@ impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
         let searcher = Arc::new(mutex);
         let builder = SearchBuilder {
             searcher: searcher.clone(),
+            redis_client,
         };
-
         // Task for receiving client change events
         thread::spawn(move || loop {
             let clients = r.recv();
@@ -246,7 +253,6 @@ where
                 }
             }
         });
-        Ok(())
     }
 }
 

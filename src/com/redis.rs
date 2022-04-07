@@ -5,6 +5,7 @@ use redis::{Connection, Value};
 type Secs = i64;
 
 const KEY: &'static str = "SK_DB_SERVER_ADDR";
+const LEASE_TIME_OUT: i64 = 15;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RedisTTLSet {
@@ -125,6 +126,23 @@ impl RedisTTLSet {
             .arg(record.meta.to_string())
             .query::<Value>(conn)?;
         return Ok(());
+    }
+}
+
+impl<T> From<T> for Record
+where
+    T: AsRef<str>,
+{
+    fn from(s: T) -> Self {
+        let local = Local::now().timestamp();
+        let target_timestamp = local + LEASE_TIME_OUT;
+
+        Record {
+            meta: MetaInfo {
+                expire_time: target_timestamp,
+            },
+            sub_key: s.as_ref().to_string(),
+        }
     }
 }
 
