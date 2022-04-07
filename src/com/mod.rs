@@ -1,4 +1,5 @@
 pub mod batch;
+pub mod config;
 pub mod fsm;
 pub mod mail;
 pub mod redis;

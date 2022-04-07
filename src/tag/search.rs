@@ -13,7 +13,6 @@ use std::sync::Mutex;
 use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
-use tantivy::directory::WatchCallback;
 use tantivy::Document;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
@@ -257,26 +256,31 @@ where
 }
 
 mod tests {
-    #[cfg(tests)]
+    use super::*;
+    use anyhow::Error as AnyError;
     use grpcio::{ChannelBuilder, Environment};
 
-    #[cfg(tests)]
-    use super::*;
-
     #[test]
-    fn test_xxx() {
-        // let addrs_watcher = AddrsConfigWatcher;
-        // let builder =
-        //     SearchBuilder::<SkyTracingClient>::new_init(addrs_watcher, |v: Vec<String>| {
-        //         let mut clients = Vec::new();
-        //         for addr in v {
-        //             let env = Environment::new(3);
-        //             // TODO: config change
-        //             let channel = ChannelBuilder::new(Arc::new(env)).connect(addr.as_str());
-        //             let client = SkyTracingClient::new(channel);
-        //             clients.push(client);
-        //         }
-        //         clients
-        //     });
+    fn test_xxx() -> Result<(), AnyError> {
+        let client = redis::Client::open("redis://127.0.0.1:6379")?;
+        let addrs_watcher = AddrsConfigWatcher {
+            redis_client: client.clone(),
+        };
+        let builder = SearchBuilder::<SkyTracingClient>::new_init(
+            addrs_watcher,
+            |v: Vec<String>| {
+                let mut clients = Vec::new();
+                for addr in v {
+                    let env = Environment::new(3);
+                    // TODO: config change
+                    let channel = ChannelBuilder::new(Arc::new(env)).connect(addr.as_str());
+                    let client = SkyTracingClient::new(channel);
+                    clients.push(client);
+                }
+                clients
+            },
+            client,
+        );
+        Ok(())
     }
 }

@@ -8,9 +8,12 @@ pub mod com;
 pub mod kv;
 pub mod tag;
 pub mod test;
+use com::config::GlobalConfig;
 use lazy_static::lazy_static;
 use tokio::runtime::Builder;
 use tokio::runtime::Runtime;
+
+use crate::com::config::ConfigManager;
 
 lazy_static! {
     pub static ref TOKIO_RUN: Runtime = Builder::new_multi_thread()
@@ -19,6 +22,7 @@ lazy_static! {
         .enable_time()
         .build()
         .unwrap();
+    pub static ref GLOBAL_CONFIG: GlobalConfig = ConfigManager::load("./skdb_config.yaml");
 }
 
 #[cfg(test)]
