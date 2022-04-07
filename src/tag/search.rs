@@ -1,26 +1,29 @@
+use anyhow::Error as AnyError;
 use crossbeam_channel::unbounded;
 use crossbeam_channel::Sender;
 use protobuf::RepeatedField;
 use redis::Client as RedisClient;
-use redis::Connection;
-use skproto::tracing::ScoreDoc;
 use skproto::tracing::SegRange;
 use skproto::tracing::SkyQueryParam;
 use skproto::tracing::SkyTracingClient;
 use std::cmp::Ordering;
 use std::io::Cursor;
-use std::sync::atomic::AtomicPtr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+use std::thread::sleep;
+use std::time::Duration;
+use tantivy::directory::WatchCallback;
 use tantivy::Document;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
 
+use crate::com::redis::RedisTTLSet;
+
 trait ConfigWatcher<T>: Send {
     fn watch<F>(&self, cb: F, sender: Sender<Vec<T>>)
     where
-        F: FnOnce(Vec<String>) -> Vec<T>;
+        F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy;
 }
 // Global Single Instance
 #[derive(Clone)]
@@ -30,37 +33,33 @@ struct SearchBuilder<T> {
 
 impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
     fn new_init<
-        F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static,
+        F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy,
         W: ConfigWatcher<T> + 'static,
     >(
-        watcher: W,
+        mut watcher: W,
         cb: F,
-    ) -> Result<SearchBuilder<T>, ()> {
+    ) -> Result<SearchBuilder<T>, AnyError> {
         let (s, r) = unbounded::<Vec<T>>();
         // Wait for client init connection ready
         watcher.watch(cb, s);
-        let clients = r.recv();
-        if let Ok(c) = clients {
-            let mutex = Mutex::new(DistSearchManager::new(Arc::new(c)));
-            let searcher = Arc::new(mutex);
-            let builder = SearchBuilder {
-                searcher: searcher.clone(),
-            };
+        let clients = r.recv()?;
+        let mutex = Mutex::new(DistSearchManager::new(Arc::new(clients)));
+        let searcher = Arc::new(mutex);
+        let builder = SearchBuilder {
+            searcher: searcher.clone(),
+        };
 
-            // Task for receiving client change events
-            thread::spawn(move || loop {
-                let clients = r.recv();
-                if let Ok(clients) = clients {
-                    if let Ok(mut s) = searcher.lock() {
-                        *s = DistSearchManager::new(Arc::new(clients));
-                    }
+        // Task for receiving client change events
+        thread::spawn(move || loop {
+            let clients = r.recv();
+            if let Ok(clients) = clients {
+                if let Ok(mut s) = searcher.lock() {
+                    *s = DistSearchManager::new(Arc::new(clients));
                 }
-            });
-
-            return Ok(builder);
-        }
+            }
+        });
+        return Ok(builder);
         // Spawn receiver to get watcher events
-        Err(())
     }
 
     pub fn get_searcher(&self) -> Result<DistSearchManager<T>, ()> {
@@ -193,7 +192,6 @@ impl<T: RemoteClient> DistSearchManager<T> {
 
 struct AddrsConfigWatcher {
     redis_client: RedisClient,
-    conn: Arc<Mutex<Connection>>,
 }
 
 impl AddrsConfigWatcher {
@@ -202,7 +200,6 @@ impl AddrsConfigWatcher {
             Ok(c) => {
                 return Ok(AddrsConfigWatcher {
                     redis_client: client,
-                    conn: Arc::new(Mutex::new(c)),
                 })
             }
             Err(_) => return Err(()),
@@ -210,24 +207,54 @@ impl AddrsConfigWatcher {
     }
 }
 
-impl<T> ConfigWatcher<T> for AddrsConfigWatcher {
+impl<T> ConfigWatcher<T> for AddrsConfigWatcher
+where
+    T: Sync + Send + 'static + Clone,
+{
     fn watch<F>(&self, cb: F, sender: Sender<Vec<T>>)
     where
-        F: FnOnce(Vec<String>) -> Vec<T>,
+        F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy,
     {
-        // logic to pull addrs
+        // Logic to pull addrs
+        let redis_client = self.redis_client.clone();
+        let redis_ttl = RedisTTLSet { ttl: 5 };
+        thread::spawn(move || {
+            let mut last: Vec<String> = Vec::new();
+            loop {
+                let conn = redis_client.get_connection();
+                if let Ok(mut c) = conn {
+                    let res = redis_ttl.query_all(&mut c);
+                    match res {
+                        Ok(records) => {
+                            let addrs = records
+                                .into_iter()
+                                .map(|r| r.sub_key)
+                                .collect::<Vec<String>>();
 
-        // TODO
-        let addr = "127.0.0.1:9000".to_string();
-        let addrs = vec![addr];
-        let clients = cb(addrs);
-        let _ = sender.send(clients);
+                            if last != addrs {
+                                last = addrs.clone();
+                                let clients = cb(addrs);
+                                let _ = sender.send(clients);
+                            }
+                            sleep(Duration::from_secs(5));
+                        }
+                        Err(_) => continue,
+                    }
+                } else {
+                    println!("Get connection failed!Continue to next loop");
+                    continue;
+                }
+            }
+        });
+        Ok(())
     }
 }
 
 mod tests {
+    #[cfg(tests)]
     use grpcio::{ChannelBuilder, Environment};
 
+    #[cfg(tests)]
     use super::*;
 
     #[test]

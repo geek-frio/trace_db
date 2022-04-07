@@ -7,19 +7,19 @@ type Secs = i64;
 const KEY: &'static str = "SK_DB_SERVER_ADDR";
 
 #[derive(Debug, Clone)]
-struct RedisTTLSet {
-    ttl: Secs,
+pub(crate) struct RedisTTLSet {
+    pub(crate) ttl: Secs,
 }
 
 #[derive(Debug, Clone)]
-struct MetaInfo {
+pub(crate) struct MetaInfo {
     expire_time: i64,
 }
 
 #[derive(Debug)]
-struct Record {
-    meta: MetaInfo,
-    sub_key: String,
+pub(crate) struct Record {
+    pub(crate) meta: MetaInfo,
+    pub(crate) sub_key: String,
 }
 
 impl MetaInfo {
@@ -71,7 +71,7 @@ impl<'a> TryFrom<&'a Value> for WrapStr {
 }
 
 impl RedisTTLSet {
-    fn query_all(&self, conn: &mut Connection) -> Result<Vec<Record>, AnyError> {
+    pub(crate) fn query_all(&self, conn: &mut Connection) -> Result<Vec<Record>, AnyError> {
         let r = redis::cmd("HGETALL").arg(KEY).query::<Value>(conn)?;
         match r {
             Value::Bulk(v) => {
@@ -110,7 +110,7 @@ impl RedisTTLSet {
         }
     }
 
-    pub fn push<T>(&self, conn: &mut Connection, val: T) -> Result<(), AnyError>
+    pub(crate) fn push<T>(&self, conn: &mut Connection, val: T) -> Result<(), AnyError>
     where
         T: TryInto<Record>,
         <T as TryInto<Record>>::Error: std::error::Error + Send + Sync + 'static,
