@@ -17,7 +17,9 @@ use tantivy::Document;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
 
+use crate::com::config::GlobalConfig;
 use crate::com::redis::RedisTTLSet;
+use crate::GLOBAL_CONFIG;
 
 trait ConfigWatcher<T>: Send {
     fn watch<F>(&self, cb: F, sender: Sender<Vec<T>>)
@@ -44,7 +46,7 @@ impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
         let ttl_set = RedisTTLSet { ttl: 5 };
         let mut conn = redis_client.get_connection()?;
         // TODO generate
-        ttl_set.push(&mut conn, "127.0.0.1:9000")?;
+        ttl_set.push(&mut conn, GLOBAL_CONFIG.redis_addr.clone())?;
         let (s, r) = unbounded::<Vec<T>>();
         // Wait for client init connection ready
         watcher.watch(cb, s);
@@ -65,7 +67,6 @@ impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
             }
         });
         return Ok(builder);
-        // Spawn receiver to get watcher events
     }
 
     pub fn get_searcher(&self) -> Result<DistSearchManager<T>, ()> {

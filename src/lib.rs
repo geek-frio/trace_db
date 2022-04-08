@@ -22,7 +22,8 @@ lazy_static! {
         .enable_time()
         .build()
         .unwrap();
-    pub static ref GLOBAL_CONFIG: GlobalConfig = ConfigManager::load("./skdb_config.yaml");
+    pub static ref GLOBAL_CONFIG: GlobalConfig =
+        ConfigManager::load("./skdb_config.yaml".to_string().into());
 }
 
 #[cfg(test)]
