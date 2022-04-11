@@ -83,7 +83,7 @@ pub trait RemoteClient {
         &self,
         query: &'a str,
         // Vec<(MonthDay, BucketIdx(In one day every 15 minutes, there is a bucket for storing data))
-        seg_range: Vec<IndexAddr>,
+        addr: IndexAddr,
         offset: usize,
         limit: usize,
     ) -> Result<Vec<ScoreDocument>, ()>;
@@ -98,22 +98,17 @@ impl RemoteClient for SkyTracingClient {
     fn query_docs<'a>(
         &self,
         query: &'a str,
-        // Vec<(MonthDay, BucketIdx(In one day every 15 minutes, there is a bucket for storing data))
-        seg_range: Vec<IndexAddr>,
+        addr: IndexAddr,
         offset: usize,
         limit: usize,
     ) -> Result<Vec<ScoreDocument>, ()> {
         let mut param = SkyQueryParam::new();
-        let mut ranges = RepeatedField::new();
-        for seg in seg_range {
-            let mut s = SegRange::new();
-            s.set_addr(seg);
-            ranges.push(s);
-        }
+        let mut range = SegRange::new();
+        range.set_addr(addr);
         param.set_limit(limit as i32);
         param.set_offset(offset as i32);
         param.set_query(query.to_string());
-        param.set_seg_range(ranges);
+        param.set_seg_range(range);
 
         let a = self
             .query_sky_segments(&param)
@@ -162,7 +157,7 @@ impl<T: RemoteClient> DistSearchManager<T> {
     pub fn search<'a>(
         &self,
         query: &'a str,
-        seg_range: Vec<IndexAddr>,
+        addr: IndexAddr,
         offset: usize,
         limit: usize,
     ) -> Result<Vec<ScoreDocument>, ()> {
@@ -172,7 +167,7 @@ impl<T: RemoteClient> DistSearchManager<T> {
             .iter()
             .map(|client| {
                 // TODO: handle ERROR and return
-                let res = client.query_docs(query, seg_range.clone(), offset, limit);
+                let res = client.query_docs(query, addr, offset, limit);
                 res
             })
             .collect();

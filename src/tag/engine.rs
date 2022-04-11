@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use skproto::tracing::SegmentData;
 use tantivy::directory::MmapDirectory;
 use tantivy::error::TantivyError;
@@ -56,22 +58,23 @@ impl TracingTagEngine {
         }
     }
 
-    pub fn init(&mut self) -> Result<(), TagEngineError> {
+    pub fn init(&mut self) -> Result<Index, TagEngineError> {
         // TODO: check if it is an outdated directory
         // create directory
-        let path = &format!("{}/{}", self.dir, self.addr);
+        let dir_path: &Path = self.dir.as_ref();
+        let path: PathBuf = dir_path.join(<String as AsRef<Path>>::as_ref(&self.addr.to_string()));
         // Create index directory
-        let result = std::fs::create_dir_all(path);
+        let result = std::fs::create_dir_all(path.as_path());
         if result.is_err() {
             return Err(TagEngineError::IndexDirCreateFailed);
         }
         // TODO: check open operation valid
-        let dir = MmapDirectory::open(path).unwrap();
+        let dir = MmapDirectory::open(path.as_path()).unwrap();
         let index = Index::open_or_create(dir, self.schema.clone()).unwrap();
 
         self.index_writer = Some(index.writer(100_100_000).unwrap());
-        self.index = Some(index);
-        return Ok(());
+        self.index = Some(index.clone());
+        return Ok(index);
     }
 
     pub fn add_record(&self, data: &SegmentData) -> u64 {

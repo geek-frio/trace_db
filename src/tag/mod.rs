@@ -1,7 +1,7 @@
 pub mod engine;
 pub mod fsm;
 pub mod search;
-#[cfg(tests)]
+#[cfg(test)]
 mod tests {
     use std::time::Instant;
 

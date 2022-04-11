@@ -1,8 +1,5 @@
 use super::*;
 use ack::*;
-use chrono::prelude::*;
-use chrono::Duration;
-
 use crossbeam_channel::*;
 use futures::SinkExt;
 use futures::TryStreamExt;
@@ -32,11 +29,10 @@ use tantivy_query_grammar::*;
 #[derive(Clone)]
 pub struct SkyTracingService {
     sender: Sender<SegmentData>,
-    router: Router<TagFsm, NormalScheduler<TagFsm>>,
     config: Arc<GlobalConfig>,
     // All the tag engine share the same index schema
     tracing_schema: Schema,
-    index_map: Arc<Mutex<HashMap<String, Index>>>,
+    index_map: Arc<Mutex<HashMap<IndexAddr, Index>>>,
 }
 
 impl SkyTracingService {
@@ -49,7 +45,13 @@ impl SkyTracingService {
         let m_router = router.clone();
         let index_path = config.index_dir.clone();
         let schema = Self::init_tracing_schema();
-        let mv_schema = schema.clone();
+        let index_map = Arc::new(Mutex::new(HashMap::default()));
+        let service = SkyTracingService {
+            sender: s,
+            config,
+            tracing_schema: schema.clone(),
+            index_map: index_map.clone(),
+        };
         thread::spawn(move || loop {
             let res = r.recv();
             match res {
@@ -66,26 +68,31 @@ impl SkyTracingService {
                                     let mut engine = TracingTagEngine::new(
                                         addr,
                                         index_path.clone(),
-                                        mv_schema.clone(),
+                                        schema.clone(),
                                     );
                                     // TODO: error process logic is emitted currently
-                                    let _ = engine.init();
-                                    let fsm = Box::new(TagFsm {
-                                        receiver: r,
-                                        mailbox: None,
-                                        engine,
-                                        last_idx: 0,
-                                        counter: 0,
-                                    });
-                                    let state_cnt = Arc::new(AtomicUsize::new(0));
-                                    let mailbox = BasicMailbox::new(s, fsm, state_cnt);
-                                    let fsm = mailbox.take_fsm();
-                                    if let Some(mut f) = fsm {
-                                        f.mailbox = Some(mailbox.clone());
-                                        mailbox.release(f);
+                                    let res = engine.init();
+                                    if let Ok(index) = res {
+                                        index_map.lock().unwrap().insert(addr, index);
+                                        let fsm = Box::new(TagFsm {
+                                            receiver: r,
+                                            mailbox: None,
+                                            engine,
+                                            last_idx: 0,
+                                            counter: 0,
+                                        });
+                                        let state_cnt = Arc::new(AtomicUsize::new(0));
+                                        let mailbox = BasicMailbox::new(s, fsm, state_cnt);
+                                        let fsm = mailbox.take_fsm();
+                                        if let Some(mut f) = fsm {
+                                            f.mailbox = Some(mailbox.clone());
+                                            mailbox.release(f);
+                                        }
+                                        m_router.register(addr, mailbox);
+                                        m_router.send(addr, msg);
+                                    } else {
+                                        println!("TagEngine init failed!")
                                     }
-                                    m_router.register(addr, mailbox);
-                                    m_router.send(addr, msg);
                                 }
                                 Either::Left(_) => {
                                     continue;
@@ -98,17 +105,10 @@ impl SkyTracingService {
                         }
                     }
                 }
-                Err(e) => {}
+                Err(_) => {}
             }
         });
-
-        SkyTracingService {
-            sender: s,
-            router,
-            config,
-            tracing_schema: schema.clone(),
-            index_map: Arc::new(Mutex::new(HashMap::default())),
-        }
+        service
     }
 
     pub fn init_tracing_schema() -> Schema {
@@ -149,7 +149,7 @@ impl SkyTracing for SkyTracingService {
 
     fn push_segments(
         &mut self,
-        ctx: ::grpcio::RpcContext,
+        _: ::grpcio::RpcContext,
         mut stream: ::grpcio::RequestStream<SegmentData>,
         mut sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
@@ -183,7 +183,7 @@ impl SkyTracing for SkyTracingService {
                         sink = handshake_exec(data, sink).await;
                     }
                     Meta_RequestType::TRANS => {
-                        let res = s.send(data);
+                        let _ = s.send(data);
                         // TODO: ACK logic will be designed later
                         // ack_ctl.process_timely_ack_ctl(data, &mut sink).await;
                     }
@@ -202,7 +202,7 @@ impl SkyTracing for SkyTracingService {
     //   callback search operation.
     fn query_sky_segments(
         &mut self,
-        ctx: ::grpcio::RpcContext,
+        _: ::grpcio::RpcContext,
         req: SkyQueryParam,
         sink: ::grpcio::UnarySink<SkySegmentRes>,
     ) {
@@ -215,7 +215,35 @@ impl SkyTracing for SkyTracingService {
             return;
         }
 
-        // let index = Index::create_in_dir(index_path, schema.clone())?;
-        todo!()
+        if req.seg_range.is_none() {
+            sink.fail(RpcStatus::with_message(
+                RpcStatusCode::INVALID_ARGUMENT,
+                "Invalid argument, addr is not given!".to_string(),
+            ));
+            return;
+        }
+
+        let addr = req.seg_range.unwrap().addr;
+        let res = self.index_map.lock();
+        let idx = res
+            .map(|a| {
+                let idx = a.get(&addr).map(|a| a.clone());
+                idx
+            })
+            .ok()
+            .unwrap_or_else(|| {
+                let index_path = IndexPath::gen_idx_path(addr, self.config.index_dir.clone());
+                let res = Index::create_in_dir(index_path, self.tracing_schema.clone());
+                res.ok()
+            });
+        match idx {
+            Some(idx) => {}
+            None => {
+                sink.fail(RpcStatus::with_message(
+                    RpcStatusCode::INVALID_ARGUMENT,
+                    "Invalid argument, addr is not given!".to_string(),
+                ));
+            }
+        }
     }
 }

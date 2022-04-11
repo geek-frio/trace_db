@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use anyhow::Error as AnyError;
 use chrono::{prelude::*, Duration};
 use chrono::{TimeZone, Utc};
@@ -23,5 +25,10 @@ impl IndexPath {
         // Only reserve last 30 days segment data
         let s = format!("{}{:0>2}{:0>2}", day, hour, minute);
         Ok(s.parse::<i64>()?)
+    }
+
+    pub fn gen_idx_path(addr: IndexAddr, dir: String) -> PathBuf {
+        let dir_path: &Path = dir.as_ref();
+        dir_path.join(<String as AsRef<Path>>::as_ref(&addr.to_string()))
     }
 }
