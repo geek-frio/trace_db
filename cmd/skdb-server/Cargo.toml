@@ -17,3 +17,5 @@ async-trait = "0.1.52"
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 crossbeam-channel = "0.5.2" 
 chrono = "0.4.19"
+tantivy = "0.16.1"
+tantivy-query-grammar = "0.15.0"

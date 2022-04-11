@@ -1,28 +1,26 @@
-use std::collections::HashMap;
-use std::thread;
-use std::time::Duration;
-
 use skproto::tracing::SegmentData;
-use tantivy::collector::Count;
 use tantivy::directory::MmapDirectory;
 use tantivy::error::TantivyError;
-use tantivy::query::{BooleanQuery, Occur, PhraseQuery, Query, TermQuery};
-use tantivy::schema::{
-    Field, FieldValue, IndexRecordOption, Schema, Value, INDEXED, STORED, STRING, TEXT,
-};
-use tantivy::{doc, Directory, Document, Index, IndexReader, IndexWriter};
+use tantivy::schema::*;
+use tantivy::{Document, Index, IndexReader, IndexWriter};
 
-pub trait TagSearch {
-    fn query_any(&self);
-}
+use crate::com::index::IndexAddr;
 
-pub struct TagWriteEngine {
-    dir: &'static str,
+pub const ZONE: &'static str = "zone";
+pub const API_ID: &'static str = "api_id";
+pub const SERVICE: &'static str = "service";
+pub const BIZTIME: &'static str = "biztime";
+pub const TRACE_ID: &'static str = "trace_id";
+pub const SEGID: &'static str = "seg_id";
+pub const PAYLOAD: &'static str = "payload";
+
+pub struct TracingTagEngine {
+    dir: String,
     // tag data gps (Every 15 minutes of a day, we create a new directory)
-    addr: u64,
+    addr: IndexAddr,
     index_writer: Option<IndexWriter>,
     index: Option<Index>,
-    field_map: HashMap<TagField, Field>,
+    schema: Schema,
 }
 
 #[derive(PartialEq, Eq, Hash)]
@@ -47,48 +45,18 @@ pub enum TagEngineError {
     IndexDirCreateFailed,
 }
 
-impl TagWriteEngine {
-    pub fn new(addr: u64, dir: &'static str) -> TagWriteEngine {
-        TagWriteEngine {
+impl TracingTagEngine {
+    pub fn new(addr: IndexAddr, dir: String, schema: Schema) -> TracingTagEngine {
+        TracingTagEngine {
             dir,
             addr,
             index_writer: None,
-            field_map: HashMap::new(),
             index: None,
+            schema,
         }
     }
 
     pub fn init(&mut self) -> Result<(), TagEngineError> {
-        let mut schema_builder = Schema::builder();
-        self.field_map.insert(
-            TagField::Zone,
-            schema_builder.add_text_field("zone", STRING),
-        );
-        self.field_map.insert(
-            TagField::ApiId,
-            schema_builder.add_i64_field("api_id", INDEXED),
-        );
-        self.field_map.insert(
-            TagField::Service,
-            schema_builder.add_text_field("service", TEXT),
-        );
-        self.field_map.insert(
-            TagField::Biztime,
-            schema_builder.add_u64_field("biztime", STORED),
-        );
-        self.field_map.insert(
-            TagField::TraceId,
-            schema_builder.add_text_field("trace_id", STRING | STORED),
-        );
-        self.field_map.insert(
-            TagField::SegId,
-            schema_builder.add_text_field("seg_id", STRING),
-        );
-        self.field_map.insert(
-            TagField::Payload,
-            schema_builder.add_text_field("payload", STRING),
-        );
-        let schema = schema_builder.build();
         // TODO: check if it is an outdated directory
         // create directory
         let path = &format!("{}/{}", self.dir, self.addr);
@@ -99,7 +67,7 @@ impl TagWriteEngine {
         }
         // TODO: check open operation valid
         let dir = MmapDirectory::open(path).unwrap();
-        let index = Index::open_or_create(dir, schema).unwrap();
+        let index = Index::open_or_create(dir, self.schema.clone()).unwrap();
 
         self.index_writer = Some(index.writer(100_100_000).unwrap());
         self.index = Some(index);
@@ -118,31 +86,31 @@ impl TagWriteEngine {
     fn create_doc(&self, data: &SegmentData) -> Document {
         let mut doc = Document::new();
         doc.add(FieldValue::new(
-            self.field_map.get(&TagField::TraceId).unwrap().clone(),
+            self.schema.get_field(TRACE_ID).unwrap(),
             Value::Str(data.trace_id.clone()),
         ));
         doc.add(FieldValue::new(
-            self.field_map.get(&TagField::Zone).unwrap().clone(),
+            self.schema.get_field(ZONE).unwrap(),
             Value::Str(data.zone.clone()),
         ));
         doc.add(FieldValue::new(
-            self.field_map.get(&TagField::SegId).unwrap().clone(),
+            self.schema.get_field(SEGID).unwrap(),
             Value::Str(data.seg_id.clone()),
         ));
         doc.add(FieldValue::new(
-            self.field_map.get(&TagField::ApiId).unwrap().clone(),
+            self.schema.get_field(API_ID).unwrap(),
             Value::I64(data.api_id as i64),
         ));
         doc.add(FieldValue::new(
-            self.field_map.get(&TagField::Biztime).unwrap().clone(),
+            self.schema.get_field(BIZTIME).unwrap(),
             Value::I64(data.biz_timestamp as i64),
         ));
         doc.add(FieldValue::new(
-            self.field_map.get(&TagField::Service).unwrap().clone(),
+            self.schema.get_field(SERVICE).unwrap(),
             Value::Str(data.ser_key.clone()),
         ));
         doc.add(FieldValue::new(
-            self.field_map.get(&TagField::Payload).unwrap().clone(),
+            self.schema.get_field(PAYLOAD).unwrap(),
             Value::Str(data.payload.clone()),
         ));
         doc
@@ -167,24 +135,29 @@ impl TagWriteEngine {
             None => Err(TagEngineError::IndexNotExist),
         }
     }
-
-    pub fn get_field(&self, key: TagField) -> Field {
-        self.field_map.get(&key).unwrap().clone()
-    }
 }
 
+#[cfg(test)]
 mod tests {
 
     use std::sync::Once;
 
-    use tantivy::{chrono::Local, collector::TopDocs, query::QueryParser, DocAddress, Score};
+    use tantivy::{chrono::Local, collector::TopDocs, query::QueryParser};
 
     use super::*;
-    use crate::{
-        com::util::*,
-        test::gen::{_gen_data_binary, _gen_tag},
-    };
+    use crate::test::gen::{_gen_data_binary, _gen_tag};
 
+    pub fn init_tracing_schema() -> Schema {
+        let mut schema_builder = Schema::builder();
+        schema_builder.add_text_field("zone", STRING);
+        schema_builder.add_i64_field("api_id", INDEXED);
+        schema_builder.add_text_field("service", TEXT);
+        schema_builder.add_u64_field("biztime", STORED);
+        schema_builder.add_text_field("trace_id", STRING | STORED);
+        schema_builder.add_text_field("seg_id", STRING);
+        schema_builder.add_text_field("payload", STRING);
+        schema_builder.build()
+    }
     #[test]
     fn create_multiple_dir_test() {
         println!(
@@ -199,7 +172,11 @@ mod tests {
 
     #[test]
     fn test_normal_write() {
-        let mut engine = TagWriteEngine::new(123, "/tmp/tantivy_records");
+        let mut engine = TracingTagEngine::new(
+            123,
+            "/tmp/tantivy_records".to_string(),
+            init_tracing_schema(),
+        );
 
         println!("{:?}", engine.init());
 
@@ -207,7 +184,7 @@ mod tests {
         // let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::ApiId)]);
         // let searcher = reader.searcher();
 
-        let INIT: Once = Once::new();
+        let init: Once = Once::new();
         let mut captured_val = String::new();
         for i in 0..10 {
             for j in 0..100 {
@@ -219,7 +196,7 @@ mod tests {
                 record.set_zone(_gen_tag(3, 3, 'a'));
                 record.set_seg_id(uuid.to_string());
                 record.set_trace_id(uuid.to_string());
-                INIT.call_once(|| {
+                init.call_once(|| {
                     captured_val.push_str(&uuid.to_string());
                     println!("i:{}; j:{}; uuid:{}", i, j, uuid.to_string());
                 });
@@ -232,7 +209,8 @@ mod tests {
         }
 
         let (reader, index) = engine.reader().unwrap();
-        let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::TraceId)]);
+        let query_parser =
+            QueryParser::for_index(index, vec![engine.schema.get_field(TRACE_ID).unwrap()]);
         let searcher = reader.searcher();
         let query = query_parser.parse_query(&captured_val).unwrap();
         let search_res = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
@@ -242,10 +220,11 @@ mod tests {
 
     #[test]
     fn test_read_traceid() {
-        let mut engine = TagWriteEngine::new(150202, "/tmp");
+        let mut engine = TracingTagEngine::new(150202, "/tmp".to_string(), init_tracing_schema());
         println!("Init result is:{:?}", engine.init());
         let (reader, index) = engine.reader().unwrap();
-        let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::TraceId)]);
+        let query_parser =
+            QueryParser::for_index(index, vec![engine.schema.get_field(TRACE_ID).unwrap()]);
         let searcher = reader.searcher();
         let query = query_parser
             .parse_query("d9d3c657-41c9-494a-8269-8422f2d107e5")

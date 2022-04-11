@@ -1,10 +1,10 @@
-use std::{borrow::Cow, sync::atomic::AtomicUsize};
+use std::borrow::Cow;
 
 use crate::com::{fsm::Fsm, mail::BasicMailbox};
 use crossbeam_channel::Receiver;
 use skproto::tracing::SegmentData;
 
-use super::engine::TagWriteEngine;
+use super::engine::TracingTagEngine;
 
 impl Drop for TagFsm {
     fn drop(&mut self) {}
@@ -13,7 +13,7 @@ impl Drop for TagFsm {
 pub struct TagFsm {
     pub receiver: Receiver<SegmentData>,
     pub mailbox: Option<BasicMailbox<TagFsm>>,
-    pub engine: TagWriteEngine,
+    pub engine: TracingTagEngine,
     pub last_idx: u64,
     pub counter: u64,
 }

@@ -18,6 +18,7 @@ use tantivy::Score;
 use tantivy_common::BinarySerializable;
 
 use crate::com::config::GlobalConfig;
+use crate::com::index::IndexAddr;
 use crate::com::redis::RedisTTLSet;
 use crate::GLOBAL_CONFIG;
 
@@ -78,11 +79,11 @@ impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
 }
 
 pub trait RemoteClient {
-    fn query_docs(
+    fn query_docs<'a>(
         &self,
-        query: &'static str,
+        query: &'a str,
         // Vec<(MonthDay, BucketIdx(In one day every 15 minutes, there is a bucket for storing data))
-        seg_range: Vec<(i32, i32)>,
+        seg_range: Vec<IndexAddr>,
         offset: usize,
         limit: usize,
     ) -> Result<Vec<ScoreDocument>, ()>;
@@ -94,22 +95,21 @@ pub struct ScoreDocument {
 }
 
 impl RemoteClient for SkyTracingClient {
-    fn query_docs(
+    fn query_docs<'a>(
         &self,
-        query: &'static str,
+        query: &'a str,
         // Vec<(MonthDay, BucketIdx(In one day every 15 minutes, there is a bucket for storing data))
-        seg_range: Vec<(i32, i32)>,
+        seg_range: Vec<IndexAddr>,
         offset: usize,
         limit: usize,
     ) -> Result<Vec<ScoreDocument>, ()> {
         let mut param = SkyQueryParam::new();
         let mut ranges = RepeatedField::new();
-
         for seg in seg_range {
-            let wrap: SegRangeWrap = seg.into();
-            ranges.push(wrap.0);
+            let mut s = SegRange::new();
+            s.set_addr(seg);
+            ranges.push(s);
         }
-
         param.set_limit(limit as i32);
         param.set_offset(offset as i32);
         param.set_query(query.to_string());
@@ -138,16 +138,16 @@ impl RemoteClient for SkyTracingClient {
     }
 }
 
-struct SegRangeWrap(SegRange);
+// struct SegRangeWrap(SegRange);
 
-impl From<(i32, i32)> for SegRangeWrap {
-    fn from(t: (i32, i32)) -> Self {
-        let mut s = SegRange::new();
-        s.set_month_day(t.0);
-        s.set_bucket(t.1);
-        SegRangeWrap(s)
-    }
-}
+// impl From<(i32, i32)> for SegRangeWrap {
+//     fn from(t: (i32, i32)) -> Self {
+//         let mut s = SegRange::new();
+//         s.set_month_day(t.0);
+//         s.set_bucket(t.1);
+//         SegRangeWrap(s)
+//     }
+// }
 
 #[derive(Clone)]
 pub struct DistSearchManager<T> {
@@ -159,10 +159,10 @@ impl<T: RemoteClient> DistSearchManager<T> {
         DistSearchManager { remotes }
     }
 
-    pub fn search(
+    pub fn search<'a>(
         &self,
-        query: &'static str,
-        seg_range: Vec<(i32, i32)>,
+        query: &'a str,
+        seg_range: Vec<IndexAddr>,
         offset: usize,
         limit: usize,
     ) -> Result<Vec<ScoreDocument>, ()> {
@@ -199,17 +199,14 @@ impl<T: RemoteClient> DistSearchManager<T> {
 
 struct AddrsConfigWatcher {
     redis_client: RedisClient,
+    config: Arc<GlobalConfig>,
 }
 
 impl AddrsConfigWatcher {
-    fn new(client: RedisClient) -> Result<AddrsConfigWatcher, ()> {
-        match client.get_connection() {
-            Ok(c) => {
-                return Ok(AddrsConfigWatcher {
-                    redis_client: client,
-                })
-            }
-            Err(_) => return Err(()),
+    fn new(client: RedisClient, config: Arc<GlobalConfig>) -> AddrsConfigWatcher {
+        AddrsConfigWatcher {
+            redis_client: client,
+            config,
         }
     }
 }
@@ -225,11 +222,13 @@ where
         // Logic to pull addrs
         let redis_client = self.redis_client.clone();
         let redis_ttl = RedisTTLSet { ttl: 5 };
+        let redis_addr = self.config.redis_addr.clone();
         thread::spawn(move || {
             let mut last: Vec<String> = Vec::new();
+            let mut conn = redis_client.get_connection();
             loop {
-                let conn = redis_client.get_connection();
-                if let Ok(mut c) = conn {
+                if let Ok(mut c) = conn.as_mut() {
+                    let _ = redis_ttl.push(&mut c, &redis_addr);
                     let res = redis_ttl.query_all(&mut c);
                     match res {
                         Ok(records) => {
@@ -256,16 +255,20 @@ where
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::com::config::ConfigManager;
     use anyhow::Error as AnyError;
     use grpcio::{ChannelBuilder, Environment};
 
     #[test]
     fn test_xxx() -> Result<(), AnyError> {
         let client = redis::Client::open("redis://127.0.0.1:6379")?;
+        let config = ConfigManager::load("/tmp/skdb_test.yaml".into());
         let addrs_watcher = AddrsConfigWatcher {
             redis_client: client.clone(),
+            config: Arc::new(config),
         };
         let builder = SearchBuilder::<SkyTracingClient>::new_init(
             addrs_watcher,

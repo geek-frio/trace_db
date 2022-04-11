@@ -6,12 +6,13 @@ use std::{collections::HashMap, sync::atomic::AtomicUsize};
 use crossbeam_channel::TrySendError;
 
 use super::fsm::Fsm;
+use super::index::IndexAddr;
 use super::mail::BasicMailbox;
 use super::sched::FsmScheduler;
 use super::util::{CountTracker, LruCache};
 
 struct NormalMailMap<N: Fsm> {
-    map: HashMap<u64, BasicMailbox<N>>,
+    map: HashMap<IndexAddr, BasicMailbox<N>>,
     alive_cnt: Arc<AtomicUsize>,
 }
 
@@ -23,7 +24,7 @@ enum CheckDoResult<T> {
 
 pub struct Router<N: Fsm, S> {
     normals: Arc<Mutex<NormalMailMap<N>>>,
-    caches: RefCell<LruCache<u64, BasicMailbox<N>, CountTracker>>,
+    caches: RefCell<LruCache<IndexAddr, BasicMailbox<N>, CountTracker>>,
     pub(crate) normal_scheduler: S,
     state_cnt: Arc<AtomicUsize>,
     shutdown: Arc<AtomicBool>,
@@ -85,7 +86,7 @@ where
         self.shutdown.load(Ordering::SeqCst)
     }
 
-    fn check_do<F, R>(&self, addr: u64, mut f: F) -> CheckDoResult<R>
+    fn check_do<F, R>(&self, addr: IndexAddr, mut f: F) -> CheckDoResult<R>
     where
         F: FnMut(&BasicMailbox<N>) -> Option<R>,
     {
@@ -123,7 +124,7 @@ where
         }
     }
 
-    pub fn register(&self, addr: u64, mailbox: BasicMailbox<N>) {
+    pub fn register(&self, addr: IndexAddr, mailbox: BasicMailbox<N>) {
         println!("Has inserted a new mailbox, addr is:{}", addr);
         let mut normals = self.normals.lock().unwrap();
         if let Some(mailbox) = normals.map.insert(addr, mailbox) {
@@ -134,7 +135,7 @@ where
             .store(normals.map.len(), Ordering::Relaxed);
     }
 
-    pub fn register_all(&self, mailboxes: Vec<(u64, BasicMailbox<N>)>) {
+    pub fn register_all(&self, mailboxes: Vec<(IndexAddr, BasicMailbox<N>)>) {
         let mut normals = self.normals.lock().unwrap();
         normals.map.reserve(mailboxes.len());
         for (addr, mailbox) in mailboxes {
@@ -149,7 +150,7 @@ where
 
     pub fn send(
         &self,
-        addr: u64,
+        addr: IndexAddr,
         msg: N::Message,
     ) -> Either<Result<(), TrySendError<N::Message>>, N::Message> {
         let mut msg = Some(msg);
@@ -170,7 +171,7 @@ where
         }
     }
 
-    pub fn close(&self, addr: u64) {
+    pub fn close(&self, addr: IndexAddr) {
         self.caches.borrow_mut().remove(&addr);
         let mut mailboxes = self.normals.lock().unwrap();
         if let Some(mb) = mailboxes.map.remove(&addr) {

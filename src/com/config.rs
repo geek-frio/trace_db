@@ -8,15 +8,16 @@ const SK_DB_CONFIG_PATH: &'static str = "SK_DB_CONFIG_PATH";
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct GlobalConfig {
-    pub(crate) grpc_port: u32,
-    pub(crate) redis_addr: String,
+    pub grpc_port: u32,
+    pub redis_addr: String,
+    pub index_dir: String,
 }
 
-pub(crate) struct ConfigManager;
+pub struct ConfigManager;
 
 impl ConfigManager {
     // Enviroment config has the highest priority
-    pub(crate) fn load(p: PathBuf) -> GlobalConfig {
+    pub fn load(p: PathBuf) -> GlobalConfig {
         let s = env::var(SK_DB_CONFIG_PATH)
             .map(|a| {
                 let a: PathBuf = a.into();

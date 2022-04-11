@@ -8,91 +8,119 @@ use futures::SinkExt;
 use futures::TryStreamExt;
 use futures_util::{FutureExt as _, TryFutureExt as _};
 use grpcio::*;
+use skdb::com::config::GlobalConfig;
+use skdb::com::index::IndexAddr;
+use skdb::com::index::IndexPath;
 use skdb::com::mail::BasicMailbox;
 use skdb::com::router::Either;
 use skdb::com::router::Router;
 use skdb::com::sched::NormalScheduler;
-use skdb::tag::engine::TagWriteEngine;
+use skdb::tag::engine::TracingTagEngine;
+use skdb::tag::engine::*;
 use skdb::tag::fsm::TagFsm;
 use skdb::*;
 use skproto::tracing::*;
+use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
+use tantivy::schema::*;
+use tantivy::Index;
+use tantivy_query_grammar::*;
 
 #[derive(Clone)]
 pub struct SkyTracingService {
     sender: Sender<SegmentData>,
     router: Router<TagFsm, NormalScheduler<TagFsm>>,
+    config: Arc<GlobalConfig>,
+    // All the tag engine share the same index schema
+    tracing_schema: Schema,
+    index_map: Arc<Mutex<HashMap<String, Index>>>,
 }
 
 impl SkyTracingService {
     // do new and spawn two things
-    pub fn new_spawn(router: Router<TagFsm, NormalScheduler<TagFsm>>) -> SkyTracingService {
+    pub fn new_spawn(
+        router: Router<TagFsm, NormalScheduler<TagFsm>>,
+        config: Arc<GlobalConfig>,
+    ) -> SkyTracingService {
         let (s, r) = unbounded::<SegmentData>();
         let m_router = router.clone();
-
+        let index_path = config.index_dir.clone();
+        let schema = Self::init_tracing_schema();
+        let mv_schema = schema.clone();
         thread::spawn(move || loop {
             let res = r.recv();
             match res {
                 Ok(seg_data) => {
-                    // We don't need segment data before 30 days ago
-                    let biz_timestamp = seg_data.biz_timestamp;
-                    let now = Utc::now();
-                    let d = Utc.timestamp_millis(biz_timestamp as i64);
-
-                    // We only need biz data 30 days ago
-                    if now - Duration::days(30) > d {
-                        continue;
-                    }
-
-                    let day = d.day();
-                    let hour = d.hour();
-                    let minute = d.minute() / 15;
-
-                    // Only reserve last 30 days segment data
-                    let s = format!("{}{:0>2}{:0>2}", day, hour, minute);
-                    let addr = s.parse::<u64>().unwrap();
-                    let res = m_router.send(addr, seg_data);
-
-                    match res {
-                        Either::Left(r) => {
-                            if let Err(e) = r {
-                                // TODO: Err process operation
+                    let addr = IndexPath::compute_index_addr(seg_data.biz_timestamp as IndexAddr);
+                    match addr {
+                        Ok(addr) => {
+                            let res = m_router.send(addr, seg_data);
+                            match res {
+                                Either::Right(msg) => {
+                                    // Mailbox not exists, so we regists a new one
+                                    let (s, r) = unbounded();
+                                    // TODO: use config struct
+                                    let mut engine = TracingTagEngine::new(
+                                        addr,
+                                        index_path.clone(),
+                                        mv_schema.clone(),
+                                    );
+                                    // TODO: error process logic is emitted currently
+                                    let _ = engine.init();
+                                    let fsm = Box::new(TagFsm {
+                                        receiver: r,
+                                        mailbox: None,
+                                        engine,
+                                        last_idx: 0,
+                                        counter: 0,
+                                    });
+                                    let state_cnt = Arc::new(AtomicUsize::new(0));
+                                    let mailbox = BasicMailbox::new(s, fsm, state_cnt);
+                                    let fsm = mailbox.take_fsm();
+                                    if let Some(mut f) = fsm {
+                                        f.mailbox = Some(mailbox.clone());
+                                        mailbox.release(f);
+                                    }
+                                    m_router.register(addr, mailbox);
+                                    m_router.send(addr, msg);
+                                }
+                                Either::Left(_) => {
+                                    continue;
+                                }
                             }
-                            continue;
                         }
-                        // Not exist, send failed!
-                        Either::Right(msg) => {
-                            // Mailbox not exists, so we regists a new one
-                            let (s, r) = unbounded();
-                            // TODO: use config struct
-                            let mut engine = TagWriteEngine::new(addr, "/home/frio/skdb-data");
-                            // TODO: error process logic is emitted currently
-                            let _ = engine.init();
-                            let fsm = Box::new(TagFsm {
-                                receiver: r,
-                                mailbox: None,
-                                engine,
-                                last_idx: 0,
-                                counter: 0,
-                            });
-                            let state_cnt = Arc::new(AtomicUsize::new(0));
-                            let mailbox = BasicMailbox::new(s, fsm, state_cnt);
-                            let fsm = mailbox.take_fsm();
-                            if let Some(mut f) = fsm {
-                                f.mailbox = Some(mailbox.clone());
-                                mailbox.release(f);
-                            }
-                            m_router.register(addr, mailbox);
-                            m_router.send(addr, msg);
+                        Err(_) => {
+                            println!("Invalid seg_data, data biztime has exceeded 30 days!");
+                            continue;
                         }
                     }
                 }
                 Err(e) => {}
             }
         });
-        SkyTracingService { sender: s, router }
+
+        SkyTracingService {
+            sender: s,
+            router,
+            config,
+            tracing_schema: schema.clone(),
+            index_map: Arc::new(Mutex::new(HashMap::default())),
+        }
+    }
+
+    pub fn init_tracing_schema() -> Schema {
+        let mut schema_builder = Schema::builder();
+        schema_builder.add_text_field(ZONE, STRING);
+        schema_builder.add_i64_field(API_ID, INDEXED);
+        schema_builder.add_text_field(SERVICE, TEXT);
+        schema_builder.add_u64_field(BIZTIME, STORED);
+        schema_builder.add_text_field(TRACE_ID, STRING | STORED);
+        schema_builder.add_text_field(SEGID, STRING);
+        schema_builder.add_text_field(PAYLOAD, STRING);
+        schema_builder.build()
     }
 }
 
@@ -168,11 +196,26 @@ impl SkyTracing for SkyTracingService {
         TOKIO_RUN.spawn(get_data_exec);
     }
 
+    // Query data in local index.
+    // TODO: Index Searcher search request currently is synchronized block operation, so it may block the grpc thread
+    //   Maybe we should use a seperate pool to process the search request, or we can extend tantivy's Searcher to support
+    //   callback search operation.
     fn query_sky_segments(
         &mut self,
         ctx: ::grpcio::RpcContext,
         req: SkyQueryParam,
         sink: ::grpcio::UnarySink<SkySegmentRes>,
     ) {
+        // Check query param is ok
+        if let Err(_) = parse_query(&req.query) {
+            sink.fail(RpcStatus::with_message(
+                RpcStatusCode::INVALID_ARGUMENT,
+                "Invalid search query param".to_string(),
+            ));
+            return;
+        }
+
+        // let index = Index::create_in_dir(index_path, schema.clone())?;
+        todo!()
     }
 }

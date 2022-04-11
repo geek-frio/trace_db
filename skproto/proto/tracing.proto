@@ -16,8 +16,7 @@ message SkyQueryParam {
 }
 
 message SegRange {
-    int32 month_day = 1;
-    int32 bucket = 2;
+    int64 addr = 1;
 }
 
 message SkySegmentRes {

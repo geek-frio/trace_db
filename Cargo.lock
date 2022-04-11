@@ -1375,6 +1375,8 @@ dependencies = [
  "lazy_static",
  "skdb",
  "skproto",
+ "tantivy",
+ "tantivy-query-grammar",
  "tokio",
 ]
 

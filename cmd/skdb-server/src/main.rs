@@ -7,6 +7,7 @@ use grpcio::*;
 use serv::service::*;
 use skdb::com::batch::BatchSystem;
 use skdb::com::batch::FsmTypes;
+use skdb::com::config::ConfigManager;
 use skdb::com::router::Router;
 use skdb::com::sched::NormalScheduler;
 use skdb::tag::fsm::TagFsm;
@@ -17,16 +18,17 @@ mod serv;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct Args {
-    #[clap(short, long, default_value_t = 9000)]
-    port: u16,
-
     #[clap(short, long, default_value = "127.0.0.1")]
     ip: String,
+
+    #[clap(short, long)]
+    config: String,
 }
 
 fn main() {
     let args = Args::parse();
-    println!("service port:{}, ip:{}", args.port, args.ip);
+    println!("service port:{}, config:{}", args.ip, args.config);
+    let global_config = Arc::new(ConfigManager::load(args.config.into()));
 
     let (s, r) = unbounded::<FsmTypes<TagFsm>>();
     let fsm_sche = NormalScheduler { sender: s };
@@ -35,11 +37,11 @@ fn main() {
 
     let mut batch_system = BatchSystem::new(router.clone(), r, 1, 500);
     batch_system.spawn("Tag Poller".to_string());
-    let skytracing = SkyTracingService::new_spawn(router.clone());
+    let skytracing = SkyTracingService::new_spawn(router.clone(), global_config.clone());
     let env = Environment::new(1);
     let service = create_sky_tracing(skytracing);
     let mut server = ServerBuilder::new(Arc::new(env))
-        .bind(args.ip, args.port)
+        .bind(args.ip, global_config.grpc_port as u16)
         .register_service(service)
         .build()
         .unwrap();
