@@ -41,8 +41,37 @@ impl TinySet {
         old != *self
     }
 
+    pub fn remove(self, el: u32) -> TinySet {
+        self.intersect(TinySet::singleton(el).complement())
+    }
+
+    pub fn remove_mut(&mut self, el: u32) -> bool {
+        let old = *self;
+        *self = old.remove(el);
+        old != *self
+    }
+
     pub fn union(self, other: TinySet) -> TinySet {
         TinySet(self.0 | other.0)
+    }
+
+    pub fn pop_lowest(&mut self) -> Option<u32> {
+        if self.is_empty() {
+            None
+        } else {
+            let lowest = self.0.trailing_zeros() as u32;
+            self.0 ^= TinySet::singleton(lowest).0;
+            Some(lowest)
+        }
+    }
+
+    // 10000000 -> 01111111
+    pub fn range_lower(upper_bound: u32) -> TinySet {
+        TinySet((1u64 << u64::from(upper_bound % 64u32)) - 1u64)
+    }
+
+    pub fn range_greater_or_equal(from_included: u32) -> TinySet {
+        TinySet::range_lower(from_included).complement()
     }
 
     pub fn is_empty(self) -> bool {
