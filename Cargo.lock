@@ -1365,6 +1365,7 @@ dependencies = [
 name = "skdb-server"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
  "clap",
@@ -1376,6 +1377,7 @@ dependencies = [
  "skdb",
  "skproto",
  "tantivy",
+ "tantivy-common",
  "tantivy-query-grammar",
  "tokio",
 ]

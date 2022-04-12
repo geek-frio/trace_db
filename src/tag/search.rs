@@ -133,17 +133,6 @@ impl RemoteClient for SkyTracingClient {
     }
 }
 
-// struct SegRangeWrap(SegRange);
-
-// impl From<(i32, i32)> for SegRangeWrap {
-//     fn from(t: (i32, i32)) -> Self {
-//         let mut s = SegRange::new();
-//         s.set_month_day(t.0);
-//         s.set_bucket(t.1);
-//         SegRangeWrap(s)
-//     }
-// }
-
 #[derive(Clone)]
 pub struct DistSearchManager<T> {
     pub remotes: Arc<Vec<T>>,

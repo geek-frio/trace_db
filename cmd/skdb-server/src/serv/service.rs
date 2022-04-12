@@ -1,10 +1,13 @@
 use super::*;
 use ack::*;
+use anyhow::Error as AnyError;
 use crossbeam_channel::*;
 use futures::SinkExt;
 use futures::TryStreamExt;
 use futures_util::{FutureExt as _, TryFutureExt as _};
-use grpcio::*;
+use grpcio::RpcStatus;
+use grpcio::RpcStatusCode;
+use grpcio::WriteFlags;
 use skdb::com::config::GlobalConfig;
 use skdb::com::index::IndexAddr;
 use skdb::com::index::IndexPath;
@@ -22,8 +25,13 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+use tantivy::collector::TopDocs;
+use tantivy::query::QueryParser;
 use tantivy::schema::*;
+use tantivy::DocAddress;
 use tantivy::Index;
+use tantivy::Score;
+use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
 
 #[derive(Clone)]
@@ -223,7 +231,7 @@ impl SkyTracing for SkyTracingService {
             return;
         }
 
-        let addr = req.seg_range.unwrap().addr;
+        let addr = req.seg_range.as_ref().unwrap().addr;
         let res = self.index_map.lock();
         let idx = res
             .map(|a| {
@@ -232,12 +240,27 @@ impl SkyTracing for SkyTracingService {
             })
             .ok()
             .unwrap_or_else(|| {
-                let index_path = IndexPath::gen_idx_path(addr, self.config.index_dir.clone());
+                let index_path =
+                    IndexPath::gen_idx_path(addr.to_owned(), self.config.index_dir.clone());
                 let res = Index::create_in_dir(index_path, self.tracing_schema.clone());
                 res.ok()
             });
         match idx {
-            Some(idx) => {}
+            Some(index) => {
+                let res = search(index, self.tracing_schema.to_owned(), &req.query, &req);
+                match res {
+                    Err(e) => {
+                        let display = format!("{}", e);
+                        println!("backtrace:{:?}", display);
+                        sink.fail(RpcStatus::with_message(RpcStatusCode::INTERNAL, display));
+                    }
+                    Ok(scores) => {
+                        let mut res = SkySegmentRes::new();
+                        res.set_score_doc(scores.into());
+                        sink.success(res);
+                    }
+                }
+            }
             None => {
                 sink.fail(RpcStatus::with_message(
                     RpcStatusCode::INVALID_ARGUMENT,
@@ -246,4 +269,37 @@ impl SkyTracing for SkyTracingService {
             }
         }
     }
+}
+
+fn search(
+    index: Index,
+    schema: Schema,
+    query: &str,
+    param: &SkyQueryParam,
+) -> Result<Vec<ScoreDoc>, AnyError> {
+    let reader = index.reader()?;
+    let searcher = reader.searcher();
+
+    let default_fields = schema.fields().map(|a| a.0).collect::<Vec<Field>>();
+    let query_parser = QueryParser::for_index(&index, default_fields);
+    let query = query_parser.parse_query(query)?;
+
+    let collector = TopDocs::with_limit((param.limit + param.offset) as usize);
+    let top_docs: Vec<(Score, DocAddress)> = searcher.search(&query, &collector)?;
+
+    let score_docs = top_docs
+        .into_iter()
+        .map(|(score, addr)| {
+            let mut score_doc = ScoreDoc::new();
+            score_doc.set_score(score);
+            let doc = searcher.doc(addr);
+            if let Ok(doc) = doc {
+                let mut v = Vec::new();
+                let _ = <Document as BinarySerializable>::serialize(&doc, &mut v);
+                score_doc.set_doc(v);
+            }
+            score_doc
+        })
+        .collect::<Vec<ScoreDoc>>();
+    Ok(score_docs)
 }

@@ -7,15 +7,15 @@ mod tests {
 
     use crate::test::gen as local_gen;
     use rand::Rng;
-    use tantivy::collector::Count;
-    use tantivy::query::{BooleanQuery, Occur, PhraseQuery, Query, TermQuery};
-    use tantivy::schema::{IndexRecordOption, Schema, INDEXED, STORED, STRING, TEXT};
-    use tantivy::{doc, Document, Index};
+    use tantivy::schema::{Schema, INDEXED, STORED, STRING, TEXT};
+    use tantivy::{Document, Index};
 
     #[test]
     fn test_open_reopen() {}
     #[test]
     fn test_normal_search() {}
+
+    #[test]
     pub fn test_search() {
         let mut schema_builder = Schema::builder();
         let zone_field = schema_builder.add_text_field("zone", STRING);
@@ -35,10 +35,10 @@ mod tests {
         let mut commit_num = 0;
         for i in 0..batch_size {
             let mut doc = Document::new();
-            let zone = local_gen::gen_tag(3, 20, 'a');
+            let zone = local_gen::_gen_tag(3, 20, 'a');
             doc.add_text(zone_field, zone.clone());
 
-            let service = local_gen::gen_tag(30, 25, 'e');
+            let service = local_gen::_gen_tag(30, 25, 'e');
             doc.add_text(service_field, service.clone());
 
             let api_id: i64 = thread_rng.gen_range(0..10000);
