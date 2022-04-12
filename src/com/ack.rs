@@ -65,7 +65,7 @@ impl TinySet {
         }
     }
 
-    // 10000000 -> 01111111
+    // if upper_bound=7 result is: 01111111
     pub fn range_lower(upper_bound: u32) -> TinySet {
         TinySet((1u64 << u64::from(upper_bound % 64u32)) - 1u64)
     }
@@ -76,5 +76,67 @@ impl TinySet {
 
     pub fn is_empty(self) -> bool {
         self.0 == 0u64
+    }
+
+    pub fn empty() -> TinySet {
+        TinySet(0u64)
+    }
+
+    pub fn full() -> TinySet {
+        TinySet::empty().complement()
+    }
+}
+
+pub struct BitSet {
+    tinysets: Box<[TinySet]>,
+    len: u64,
+    max_value: u32,
+}
+
+fn num_buckets(max_val: u32) -> u32 {
+    (max_val + 63u32) / 64u32
+}
+
+impl BitSet {
+    pub fn with_max_value(max_value: u32) -> BitSet {
+        let num_buckets = num_buckets(max_value);
+        let tinybitsets = vec![TinySet::empty(); num_buckets as usize].into_boxed_slice();
+        BitSet {
+            tinysets: tinybitsets,
+            len: 0,
+            max_value,
+        }
+    }
+
+    pub fn with_max_value_and_full(max_value: u32) -> BitSet {
+        let num_buckets = num_buckets(max_value);
+        let mut tinybitsets = vec![TinySet::full(); num_buckets as usize].into_boxed_slice();
+
+        let lower = max_value % 64u32;
+        if lower != 0 {
+            tinybitsets[tinybitsets.len() - 1] = TinySet::range_lower(lower);
+        }
+
+        BitSet {
+            tinysets: tinybitsets,
+            len: max_value as u64,
+            max_value,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        for tinyset in self.tinysets.iter_mut() {
+            *tinyset = TinySet::empty();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_range_lower() {
+        let a = TinySet::range_lower(2);
+        println!("{:b}", a.0);
     }
 }
