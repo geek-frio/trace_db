@@ -6,6 +6,7 @@ service SkyTracing {
     rpc PushMsgs(stream StreamReqData) returns (stream StreamResData) {}
     rpc PushSegments(stream SegmentData) returns (stream SegmentRes) {}
     rpc QuerySkySegments(SkyQueryParam) returns (SkySegmentRes) {}
+    rpc DistQuerySkySegments(SkyQueryParam) returns (SkySegmentRes) {}
 }
 
 message SkyQueryParam {

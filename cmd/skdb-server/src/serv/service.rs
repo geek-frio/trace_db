@@ -1,5 +1,4 @@
 use super::*;
-use ack::*;
 use anyhow::Error as AnyError;
 use crossbeam_channel::*;
 use futures::SinkExt;
@@ -143,7 +142,7 @@ impl SkyTracing for SkyTracingService {
         let f = async move {
             let mut res_data = StreamResData::default();
             res_data.set_data("here comes response data".to_string());
-            while let Some(data) = stream.try_next().await? {
+            while let Some(_) = stream.try_next().await? {
                 sink.send((res_data.clone(), WriteFlags::default())).await?;
             }
             sink.close().await?;
@@ -176,8 +175,6 @@ impl SkyTracing for SkyTracingService {
             return sink;
         };
 
-        // TODO: change a better name, process logic currently is not involved
-        let ack_ctl = AckCtl::new();
         let s = self.sender.clone();
         // Logic for processing segment datas
         let get_data_exec = async move {
