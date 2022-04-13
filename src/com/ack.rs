@@ -3,6 +3,7 @@
 pub struct AckWindow {
     start: i64,
     window_pointer: i64,
+    bit_set: BitSet,
 }
 
 impl AckWindow {}
@@ -85,8 +86,13 @@ impl TinySet {
     pub fn full() -> TinySet {
         TinySet::empty().complement()
     }
+
+    pub fn len(self) -> u32 {
+        self.0.count_ones()
+    }
 }
 
+#[derive(Clone)]
 pub struct BitSet {
     tinysets: Box<[TinySet]>,
     len: u64,
@@ -128,6 +134,58 @@ impl BitSet {
         for tinyset in self.tinysets.iter_mut() {
             *tinyset = TinySet::empty();
         }
+    }
+
+    fn intersect_update_with_iter(&mut self, other: impl Iterator<Item = TinySet>) {
+        self.len = 0;
+        for (left, right) in self.tinysets.iter_mut().zip(other) {
+            *left = left.intersect(right);
+            self.len += left.len() as u64;
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    pub fn insert(&mut self, el: u32) {
+        let higher = el / 64u32;
+        let lower = el % 64u32;
+        self.len += if self.tinysets[higher as usize].insert_mut(lower) {
+            1
+        } else {
+            0
+        }
+    }
+
+    pub fn remove(&mut self, el: u32) {
+        let higher = el / 64u32;
+        let lower = el % 64u32;
+        self.len -= if self.tinysets[higher as usize].remove_mut(lower) {
+            1
+        } else {
+            0
+        }
+    }
+
+    pub fn contains(&self, el: u32) -> bool {
+        self.tinyset(el / 64u32).contains(el % 64)
+    }
+
+    pub fn tinyset(&self, bucket: u32) -> TinySet {
+        self.tinysets[bucket as usize]
+    }
+
+    pub fn first_non_empty_bucket(&self, bucket: u32) -> Option<u32> {
+        self.tinysets[bucket as usize..]
+            .iter()
+            .cloned()
+            .position(|tinyset| !tinyset.is_empty())
+            .map(|delta_bucket| bucket + delta_bucket as u32)
+    }
+
+    pub fn max_value(&self) -> u32 {
+        self.max_value
     }
 }
 
