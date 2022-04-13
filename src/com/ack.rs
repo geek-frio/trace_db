@@ -1,12 +1,61 @@
+use anyhow::Error as AnyError;
+
 // 1. SeqId满足严格自增
 // 2. 窗口限制同时处理的消息数目
 pub struct AckWindow {
     start: i64,
-    window_pointer: i64,
     bit_set: BitSet,
+    size: u32,
+    // current_max + start = current real seqid
+    current_max: u32,
 }
 
-impl AckWindow {}
+impl AckWindow {
+    // size: 窗口最大开的大小
+    fn new(seq_id: i64, size: u32) -> AckWindow {
+        AckWindow {
+            start: seq_id,
+            bit_set: BitSet::with_max_value(size),
+            size,
+            current_max: 0,
+        }
+    }
+
+    fn send(&mut self, seq_id: i64) -> Result<(), AnyError> {
+        if seq_id < self.start || seq_id >= self.start + i64::from(self.size) {
+            return Err(AnyError::msg("Invalid ack seqid, has exceeded the window"));
+        }
+        self.bit_set.insert((seq_id - self.start) as u32);
+        Ok(())
+    }
+
+    fn ack(&mut self, seq_id: i64) -> Result<(), AnyError> {
+        if seq_id < self.start || seq_id >= self.start + i64::from(self.size) {
+            return Err(AnyError::msg("Invalid ack seqid, has exceeded the window"));
+        }
+        self.bit_set.remove((seq_id - self.start) as u32);
+        Ok(())
+    }
+
+    fn is_ready(&self) -> bool {
+        // No one has done send operation
+        if self.current_max == 0 {
+            return true;
+        }
+        let bucket = self.bit_set.first_non_empty_bucket(0);
+        match bucket {
+            None => true,
+            Some(v) => {
+                let offset = self.bit_set.tinyset(v).lowest();
+                match offset {
+                    // Tinyset get from first non empty bucket, so logic will never come here.
+                    None => unreachable!(),
+                    Some(offset) => (offset + v * 64) > self.current_max,
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct TinySet(u64);
@@ -63,6 +112,14 @@ impl TinySet {
             let lowest = self.0.trailing_zeros() as u32;
             self.0 ^= TinySet::singleton(lowest).0;
             Some(lowest)
+        }
+    }
+
+    pub fn lowest(&self) -> Option<u32> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.0.trailing_zeros() as u32)
         }
     }
 

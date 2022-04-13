@@ -26,10 +26,7 @@ pub(crate) struct Record {
 impl MetaInfo {
     fn is_expired(&self, ttl: Secs) -> bool {
         let local = Local::now().timestamp();
-        if local - self.expire_time >= ttl {
-            return true;
-        }
-        false
+        local - self.expire_time >= ttl
     }
 }
 
