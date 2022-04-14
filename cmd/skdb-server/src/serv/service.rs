@@ -48,7 +48,7 @@ impl SkyTracingService {
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
         config: Arc<GlobalConfig>,
     ) -> SkyTracingService {
-        let (s, r) = unbounded::<SegmentData>();
+        let (s, r) = bounded::<SegmentData>(20000);
         let m_router = router.clone();
         let index_path = config.index_dir.clone();
         let schema = Self::init_tracing_schema();
@@ -188,12 +188,10 @@ impl SkyTracing for SkyTracingService {
                         sink = handshake_exec(data, sink).await;
                     }
                     Meta_RequestType::TRANS => {
-                        let _ = s.send(data);
-                        // TODO: ACK logic will be designed later
-                        // ack_ctl.process_timely_ack_ctl(data, &mut sink).await;
+                        let s = s.send(data);
                     }
                     _ => {
-                        todo!();
+                        unreachable!();
                     }
                 }
             }

@@ -5,6 +5,7 @@ pub mod fsm;
 pub mod index;
 pub mod mail;
 pub mod redis;
+pub mod ring;
 pub mod router;
 pub mod sched;
 pub mod util;

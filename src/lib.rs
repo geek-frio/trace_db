@@ -1,3 +1,4 @@
+#![feature(array_into_iter_constructors)]
 extern crate rand;
 extern crate rocksdb;
 extern crate tantivy;

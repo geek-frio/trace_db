@@ -9,7 +9,7 @@ pub type IndexAddr = i64;
 pub struct IndexPath;
 
 impl IndexPath {
-    pub fn compute_index_addr(biz_timestamp: i64) -> Result<i64, AnyError> {
+    pub fn compute_index_addr(biz_timestamp: i64) -> Result<IndexAddr, AnyError> {
         let now = Utc::now();
         let d = Utc.timestamp_millis(biz_timestamp);
 
