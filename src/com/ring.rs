@@ -23,16 +23,17 @@ pub struct RingQueue<E: Debug> {
     size: usize,
     // current seqid
     cur_num: usize,
+    start_num: usize,
 }
 
-enum RingIter<'a, T> {
+pub enum RingIter<'a, T> {
     Chain(Chain<Iter<'a, T>, Iter<'a, T>>),
     Single(Iter<'a, T>),
     Empty,
 }
 
 #[derive(PartialEq, Debug)]
-enum RingQueueError {
+pub enum RingQueueError {
     SendNotOneByOne,
     QueueIsFull,
 }
@@ -62,6 +63,7 @@ where
             send_pos: 0,
             size,
             cur_num: 0usize,
+            start_num: 0usize,
         }
     }
 
@@ -78,6 +80,7 @@ where
         self.send_pos = (self.send_pos + 1) % self.size;
         if self.cur_num == 0 {
             self.cur_num = el.seq_id();
+            self.start_num = el.seq_id();
         } else {
             self.cur_num += 1;
         }
@@ -86,10 +89,14 @@ where
     }
 
     fn ack(&mut self, seq_id: usize) {
-        if seq_id <= self.cur_num || self.data.len() == 0 {
+        if seq_id < self.cur_num || self.data.len() == 0 {
             return;
         }
         let offset = seq_id - self.cur_num;
+        // ack seqid is send seqid
+        if offset == 0 {
+            self.ack_pos = self.send_pos;
+        }
         if offset > self.size && offset / self.size == 1 {
             let p = self.ack_pos + (offset % self.size);
             if p <= self.send_pos {
@@ -99,7 +106,7 @@ where
     }
 
     // send_pos is ack_pos's neighbour
-    fn is_full(&self) -> bool {
+    pub fn is_full(&self) -> bool {
         // Only the first time, ack pos and send pos can be the same postion
         if self.cur_num != 0 && self.send_pos == self.ack_pos && self.send_pos == 0 {
             self.ack_pos == self.send_pos
@@ -112,7 +119,7 @@ where
         }
     }
 
-    fn not_ack_iter(&self) -> RingIter<'_, E> {
+    pub fn not_ack_iter(&self) -> RingIter<'_, E> {
         if self.ack_pos > self.send_pos {
             let left = self.data.as_slice()[self.ack_pos..].iter();
             let right = self.data.as_slice()[0..self.send_pos as usize].iter();
@@ -122,6 +129,10 @@ where
         } else {
             RingIter::Single(self.data.as_slice()[self.ack_pos..self.send_pos as usize].iter())
         }
+    }
+
+    fn is_acked(&self) -> bool {
+        self.send_pos == self.ack_pos
     }
 }
 
@@ -157,15 +168,30 @@ mod tests {
     }
 
     #[test]
-    fn test_send_ack() {
+    fn test_send_first_full_not_move_ack() {
         let start_element = 203234usize;
         let mut ring: RingQueue<Element> = RingQueue::new(100);
         for i in start_element..start_element + 100 {
             let _ = ring.send(i.into());
         }
-        println!("ring:{:?}", ring);
         let r = ring.send((start_element + 100 + 1).into());
         assert!(r.is_err());
         assert!(r.unwrap_err() == RingQueueError::QueueIsFull);
+    }
+
+    #[test]
+    fn test_send_and_then_ack() {
+        let start_element = 20234usize;
+        let mut ring: RingQueue<Element> = RingQueue::new(100);
+        let mut seq_ids = Vec::new();
+        for i in start_element..start_element + 2 {
+            let _ = ring.send(i.into());
+            seq_ids.push(i);
+        }
+        for v in seq_ids {
+            ring.ack(v);
+        }
+        println!("{:?}", ring);
+        assert!(ring.is_acked());
     }
 }
