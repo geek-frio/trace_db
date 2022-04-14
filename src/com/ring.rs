@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 use std::iter::Chain;
+use std::rc::Rc;
 use std::slice::Iter;
 
 pub trait SeqId {
@@ -16,8 +17,9 @@ pub trait BlankElement {
 // RingQueue's length should be bigger than receiver window's length.
 // We only care about data between ack position and send position
 #[derive(Debug)]
-pub struct RingQueue<E: Debug> {
-    data: Vec<E>,
+pub struct RingQueue<E: Debug + Sized> {
+    // data: Vec<E>,
+    data: Box<[E]>,
     ack_pos: usize,
     send_pos: usize,
     size: usize,
@@ -52,13 +54,12 @@ impl<'a, T> Iterator for RingIter<'a, T> {
 
 impl<E> RingQueue<E>
 where
-    E: SeqId + BlankElement<Item = E> + Debug,
+    E: SeqId + BlankElement<Item = E> + Debug + Clone,
 {
     fn new(size: usize) -> RingQueue<E> {
-        let mut internal = Vec::new();
-        internal.push(<E as BlankElement>::blank_val());
+        let internal = vec![E::blank_val(); size];
         RingQueue {
-            data: internal,
+            data: internal.into_boxed_slice(),
             ack_pos: 0,
             send_pos: 0,
             size,
@@ -84,7 +85,7 @@ where
         } else {
             self.cur_num += 1;
         }
-        self.data.insert(self.send_pos, el);
+        let _ = std::mem::replace(&mut self.data[self.send_pos], el);
         Ok(())
     }
 
@@ -121,13 +122,13 @@ where
 
     pub fn not_ack_iter(&self) -> RingIter<'_, E> {
         if self.ack_pos > self.send_pos {
-            let left = self.data.as_slice()[self.ack_pos..].iter();
-            let right = self.data.as_slice()[0..self.send_pos as usize].iter();
+            let left = self.data[self.ack_pos..].iter();
+            let right = self.data[0..self.send_pos as usize].iter();
             RingIter::Chain(left.chain(right))
         } else if self.ack_pos == self.send_pos {
             RingIter::Empty
         } else {
-            RingIter::Single(self.data.as_slice()[self.ack_pos..self.send_pos as usize].iter())
+            RingIter::Single(self.data[self.ack_pos..self.send_pos as usize].iter())
         }
     }
 
@@ -140,7 +141,7 @@ where
 mod tests {
     use super::*;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     struct Element(usize, bool);
 
     impl SeqId for Element {
@@ -193,5 +194,30 @@ mod tests {
         }
         println!("{:?}", ring);
         assert!(ring.is_acked());
+    }
+
+    #[test]
+    fn test_send_ack_iter_test_cross_vec_length() {
+        let start_element = 1usize;
+        let mut ring: RingQueue<Element> = RingQueue::new(100);
+        let bound1 = start_element + 50;
+        for i in start_element..start_element + 50 {
+            let _ = ring.send(i.into());
+            ring.ack(i);
+        }
+
+        println!("Stage1, ring: {:?}", ring);
+        let mut v: Vec<Element> = Vec::new();
+        for i in bound1..bound1 + 60 {
+            let _ = ring.send(i.into());
+            v.push(i.into());
+        }
+        println!("Stage2, ring: {:?}", ring);
+
+        let i = ring.not_ack_iter();
+        let mut iter = i.zip(v.into_iter());
+        while let Some((e1, e2)) = iter.next() {
+            println!("e1:{:?}, e2:{:?}", e1, e2)
+        }
     }
 }
