@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::iter::Chain;
 use std::slice::Iter;
 
@@ -9,18 +10,17 @@ pub trait BlankElement {
     type Item;
     fn is_blank(&self) -> bool;
 
-    fn blank_val() -> Self::Element;
+    fn blank_val() -> Self::Item;
 }
 
 // RingQueue's length should be bigger than receiver window's length.
 // We only care about data between ack position and send position
-pub struct RingQueue<E> {
+#[derive(Debug)]
+pub struct RingQueue<E: Debug> {
     data: Vec<E>,
     ack_pos: usize,
     send_pos: usize,
     size: usize,
-    // start seqid
-    start_num: usize,
     // current seqid
     cur_num: usize,
 }
@@ -31,6 +31,7 @@ enum RingIter<'a, T> {
     Empty,
 }
 
+#[derive(PartialEq, Debug)]
 enum RingQueueError {
     SendNotOneByOne,
     QueueIsFull,
@@ -50,9 +51,9 @@ impl<'a, T> Iterator for RingIter<'a, T> {
 
 impl<E> RingQueue<E>
 where
-    E: SeqId + BlankElement<Item = E>,
+    E: SeqId + BlankElement<Item = E> + Debug,
 {
-    fn new(size: usize, start_num: usize) -> RingQueue<E> {
+    fn new(size: usize) -> RingQueue<E> {
         let mut internal = Vec::new();
         internal.push(<E as BlankElement>::blank_val());
         RingQueue {
@@ -60,21 +61,26 @@ where
             ack_pos: 0,
             send_pos: 0,
             size,
-            start_num,
-            cur_num: start_num,
+            cur_num: 0usize,
         }
     }
 
+    // When you get a QueueIsFull error, you should stop
+    // sending new msg until [ack position] follow up [send position]
     fn send(&mut self, el: E) -> Result<(), RingQueueError> {
         if self.is_full() {
             return Err(RingQueueError::QueueIsFull);
         }
-        if el.seq_id() - self.start_num != 1 {
+        if self.cur_num != 0 && el.seq_id() - self.cur_num != 1 {
             return Err(RingQueueError::SendNotOneByOne);
         }
 
         self.send_pos = (self.send_pos + 1) % self.size;
-        self.cur_num += 1;
+        if self.cur_num == 0 {
+            self.cur_num = el.seq_id();
+        } else {
+            self.cur_num += 1;
+        }
         self.data.insert(self.send_pos, el);
         Ok(())
     }
@@ -84,17 +90,26 @@ where
             return;
         }
         let offset = seq_id - self.cur_num;
-        let l = self.data.len();
-        if offset > l && offset / l == 1 {
-            let p = self.ack_pos + (offset % l);
+        if offset > self.size && offset / self.size == 1 {
+            let p = self.ack_pos + (offset % self.size);
             if p <= self.send_pos {
                 self.ack_pos = p;
             }
         }
     }
 
+    // send_pos is ack_pos's neighbour
     fn is_full(&self) -> bool {
-        self.send_pos < self.ack_pos && (self.send_pos + self.ack_pos) == self.size
+        // Only the first time, ack pos and send pos can be the same postion
+        if self.cur_num != 0 && self.send_pos == self.ack_pos && self.send_pos == 0 {
+            self.ack_pos == self.send_pos
+        } else {
+            if (self.send_pos + 1) / self.size == 1 {
+                (self.send_pos + 1) % self.size == self.ack_pos
+            } else {
+                self.send_pos + 1 == self.ack_pos
+            }
+        }
     }
 
     fn not_ack_iter(&self) -> RingIter<'_, E> {
@@ -112,6 +127,45 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct Element(usize, bool);
+
+    impl SeqId for Element {
+        fn seq_id(&self) -> usize {
+            self.0
+        }
+    }
+
+    impl BlankElement for Element {
+        type Item = Element;
+
+        fn is_blank(&self) -> bool {
+            self.1
+        }
+
+        fn blank_val() -> Self::Item {
+            Element(0, true)
+        }
+    }
+
+    impl From<usize> for Element {
+        fn from(i: usize) -> Self {
+            Element(i, false)
+        }
+    }
+
     #[test]
-    fn test_send_ack() {}
+    fn test_send_ack() {
+        let start_element = 203234usize;
+        let mut ring: RingQueue<Element> = RingQueue::new(100);
+        for i in start_element..start_element + 100 {
+            let _ = ring.send(i.into());
+        }
+        println!("ring:{:?}", ring);
+        let r = ring.send((start_element + 100 + 1).into());
+        assert!(r.is_err());
+        assert!(r.unwrap_err() == RingQueueError::QueueIsFull);
+    }
 }
