@@ -7,7 +7,7 @@ pub trait SeqId {
     fn seq_id(&self) -> usize;
 }
 
-pub trait BlankElement {
+pub trait BlankElement: PartialEq {
     type Item;
     fn is_blank(&self) -> bool;
 
@@ -54,7 +54,7 @@ impl<'a, T> Iterator for RingIter<'a, T> {
 
 impl<E> RingQueue<E>
 where
-    E: SeqId + BlankElement<Item = E> + Debug + Clone,
+    E: SeqId + BlankElement<Item = E> + Debug + Clone + Sized,
 {
     fn new(size: usize) -> RingQueue<E> {
         let internal = vec![E::blank_val(); size];
@@ -122,13 +122,17 @@ where
 
     pub fn not_ack_iter(&self) -> RingIter<'_, E> {
         if self.ack_pos > self.send_pos {
-            let left = self.data[self.ack_pos..].iter();
+            println!("走Chain!");
+            let start = (self.ack_pos + 1) % self.size;
+            println!("Left is:{:?}", &self.data[start..]);
+            let left = self.data[start..].iter();
             let right = self.data[0..self.send_pos as usize].iter();
             RingIter::Chain(left.chain(right))
         } else if self.ack_pos == self.send_pos {
             RingIter::Empty
         } else {
-            RingIter::Single(self.data[self.ack_pos..self.send_pos as usize].iter())
+            let start = (self.ack_pos + 1) % self.size;
+            RingIter::Single(self.data[start..self.send_pos as usize].iter())
         }
     }
 
@@ -141,7 +145,7 @@ where
 mod tests {
     use super::*;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     struct Element(usize, bool);
 
     impl SeqId for Element {
@@ -206,18 +210,16 @@ mod tests {
             ring.ack(i);
         }
 
-        println!("Stage1, ring: {:?}", ring);
         let mut v: Vec<Element> = Vec::new();
         for i in bound1..bound1 + 60 {
             let _ = ring.send(i.into());
             v.push(i.into());
         }
-        println!("Stage2, ring: {:?}", ring);
 
         let i = ring.not_ack_iter();
         let mut iter = i.zip(v.into_iter());
         while let Some((e1, e2)) = iter.next() {
-            println!("e1:{:?}, e2:{:?}", e1, e2)
+            assert!(*e1 == e2);
         }
     }
 }
