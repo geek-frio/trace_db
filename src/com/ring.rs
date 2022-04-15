@@ -126,13 +126,13 @@ where
             let start = (self.ack_pos + 1) % self.size;
             println!("Left is:{:?}", &self.data[start..]);
             let left = self.data[start..].iter();
-            let right = self.data[0..self.send_pos as usize].iter();
+            let right = self.data[0..self.send_pos as usize + 1].iter();
             RingIter::Chain(left.chain(right))
         } else if self.ack_pos == self.send_pos {
             RingIter::Empty
         } else {
             let start = (self.ack_pos + 1) % self.size;
-            RingIter::Single(self.data[start..self.send_pos as usize].iter())
+            RingIter::Single(self.data[start..self.send_pos as usize + 1].iter())
         }
     }
 
@@ -205,7 +205,7 @@ mod tests {
         let start_element = 1usize;
         let mut ring: RingQueue<Element> = RingQueue::new(100);
         let bound1 = start_element + 50;
-        for i in start_element..start_element + 50 {
+        for i in 0..bound1 {
             let _ = ring.send(i.into());
             ring.ack(i);
         }
@@ -220,6 +220,26 @@ mod tests {
         let mut iter = i.zip(v.into_iter());
         while let Some((e1, e2)) = iter.next() {
             assert!(*e1 == e2);
+        }
+    }
+
+    #[test]
+    fn test_send_ack_iter_not_cross_vec_length() {
+        let start_element = 1usize;
+        let mut ring: RingQueue<Element> = RingQueue::new(100);
+
+        let bound1 = start_element + 50;
+        for i in start_element..bound1 {
+            let _ = ring.send(i.into());
+            ring.ack(i);
+        }
+        for i in bound1..bound1 + 20 {
+            let _ = ring.send(i.into());
+        }
+        let check_els = 51usize..71usize;
+        let mut iter = ring.not_ack_iter().zip(check_els);
+        while let Some((e1, e2)) = iter.next() {
+            assert!(*e1 == <usize as Into<Element>>::into(e2));
         }
     }
 }
