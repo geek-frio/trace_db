@@ -1,24 +1,17 @@
-use crate::*;
 use skdb::com::ack::{AckWindow, WindowErr};
-use std::collections::BTreeMap;
+use skdb::TOKIO_RUN;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::{SendError, TryRecvError, TrySendError};
+use tokio::sync::mpsc::{self, unbounded_channel, UnboundedSender};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::Mutex;
-use tokio::time::sleep;
 
 pub trait SeqIdFill {
     fn fill_seqid(&mut self, seq_id: i64);
 }
 
-pub struct SeqMail<T, C> {
-    seq_vals: Arc<Mutex<BTreeMap<i64, C>>>,
+pub struct SeqMail<T> {
     sender: IndexSender<T>,
-    cur_seqid: i64,
-    ack_sender: Sender<MailSignal>,
 }
 
 fn chan<T: SeqIdFill>(buf_size: usize, win_size: usize) -> (IndexSender<T>, IndexReceiver<T>) {
@@ -38,70 +31,30 @@ enum MailSignal {
     Shutdown,
 }
 
-impl<T: SeqIdFill, C: Clone + Send + 'static> SeqMail<T, C> {
-    pub fn new(buf_size: usize) -> (SeqMail<T, C>, IndexReceiver<T>) {
-        let (s_t, mut s_r) = mpsc::channel(256);
+pub enum SeqMailEvent {
+    Tick,
+}
 
-        let map: Arc<Mutex<BTreeMap<i64, C>>> = Arc::new(Mutex::new(BTreeMap::new()));
-        let snap_map = map.clone();
-        TOKIO_RUN.spawn(async move {
-            loop {
-                // TODO: add drain method, we only need the lastest ack number
-                let ack_signal = s_r.recv().await;
-                if let Some(o) = ack_signal {
-                    match o {
-                        MailSignal::Ack(seq_id) => {
-                            let mut current_map_guard = snap_map.lock().await;
-                            current_map_guard.iter().for_each(|(k, _c)| {
-                                if *k <= seq_id {
-                                    // TODO: callback logic
-                                    println!("{} callback is invoked", k);
-                                }
-                            });
-                            // iterate this map, remove lower seq id key value
-                            current_map_guard.retain(|k, _| {
-                                if *k < seq_id {
-                                    return false;
-                                }
-                                true
-                            });
-                        }
-                        MailSignal::Shutdown => {
-                            // TODO: add callback invoke logic
-                            return;
-                        }
-                    }
-                }
-                // Control frequency
-                sleep(Duration::from_secs(1)).await;
-            }
-        });
-
+impl<T: SeqIdFill + Send + 'static> SeqMail<T> {
+    pub fn new(buf_size: usize) -> (SeqMail<T>, IndexReceiver<T>) {
         let (s, r) = chan::<T>(buf_size, 5000);
-        (
-            SeqMail {
-                seq_vals: map,
-                sender: s,
-                cur_seqid: -1,
-                ack_sender: s_t,
-            },
-            r,
-        )
+        (SeqMail { sender: s }, r)
     }
 
-    pub async fn try_send_msg(&self, msg: T, callback: C) -> Result<i64, IndexSendErr<T>> {
-        let seq_id = self.sender.try_send(msg)?;
-        let mut seq_ref = self.seq_vals.lock().await;
-        seq_ref.insert(seq_id, callback);
+    pub async fn send_msg(&mut self, msg: T) -> Result<i64, IndexSendErr<T>> {
+        let seq_id = self.sender.send(msg).await?;
         Ok(seq_id)
     }
 
-    // Ack operation is incremented, never come back
-    pub fn ack_id(&self, seq_id: i64) {
-        if seq_id <= self.cur_seqid {
-            return;
-        }
-        let _ = self.ack_sender.try_send(MailSignal::Ack(seq_id));
+    // Start the task, return event ref
+    pub async fn start(buf_size: usize) -> UnboundedSender<T> {
+        let (e_s, mut e_r) = unbounded_channel::<T>();
+        let (seq_mail, r) = SeqMail::<T>::new(buf_size);
+
+        TOKIO_RUN.spawn(async move {
+            let event = e_r.recv().await;
+        });
+        e_s
     }
 }
 
@@ -151,7 +104,7 @@ impl<T: SeqIdFill> IndexSender<T> {
     pub async fn send(&mut self, mut value: T) -> Result<i64, IndexSendErr<T>> {
         let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed);
         if !self.ack_win.have_vacancy(current_id) {
-            let current_id = self.seq_id.fetch_sub(1, Ordering::Relaxed);
+            self.seq_id.fetch_sub(1, Ordering::Relaxed);
             return Err(IndexSendErr::Win(WindowErr::Full));
         }
         value.fill_seqid(current_id);
@@ -160,7 +113,7 @@ impl<T: SeqIdFill> IndexSender<T> {
             .send(value)
             .await
             .map(|_| {
-                self.ack_win.send(current_id).map_err(|e| match e {
+                let _ = self.ack_win.send(current_id).map_err(|e| match e {
                     WindowErr::Full => {
                         self.seq_id.fetch_sub(1, Ordering::Relaxed);
                     }
@@ -174,19 +127,21 @@ impl<T: SeqIdFill> IndexSender<T> {
             });
     }
 
-    pub fn try_send(&self, mut value: T) -> Result<i64, IndexSendErr<T>> {
+    pub fn try_send(&mut self, mut value: T) -> Result<i64, IndexSendErr<T>> {
         let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed);
         if !self.ack_win.have_vacancy(current_id) {
-            let current_id = self.seq_id.fetch_sub(1, Ordering::Relaxed);
             return Err(IndexSendErr::Win(WindowErr::Full));
         }
         value.fill_seqid(current_id);
         return self
             .sender
             .try_send(value)
-            .map(|_| current_id)
+            .map(|_| {
+                self.ack_win.send(current_id);
+                current_id
+            })
             .map_err(|e| {
-                println!("Try send error");
+                self.seq_id.fetch_sub(1, Ordering::Relaxed);
                 e.into()
             });
     }

@@ -59,6 +59,25 @@ pub struct Args {
     qps: String,
 }
 
+fn mock_seg(conn_id: i32, api_id: i32) -> SegmentData {
+    let mut segment = SegmentData::new();
+    let mut meta = Meta::new();
+    meta.connId = conn_id;
+    meta.field_type = Meta_RequestType::TRANS;
+    let now = Local::now();
+    meta.set_send_timestamp(now.timestamp_nanos() as u64);
+    let uuid = uuid::Uuid::new_v4();
+    segment.set_meta(meta);
+    segment.set_trace_id(uuid.to_string());
+    segment.set_api_id(api_id);
+    segment.set_payload(_gen_data_binary());
+    segment.set_zone(_gen_tag(3, 5, 'a'));
+    segment.set_biz_timestamp(now.timestamp_millis() as u64);
+    segment.set_seg_id(uuid.to_string());
+    segment.set_ser_key(_gen_tag(4, 3, 's'));
+    segment
+}
+
 fn main() {
     let args = Args::parse();
     println!(
@@ -67,33 +86,16 @@ fn main() {
     );
 
     let exec_func = async {
-        let (seq_mail, mut recv) = SeqMail::new(100000);
+        let (mut seq_mail, mut recv) = SeqMail::new(100000);
         let (mut sink, mut r, conn_id) = Connector::sk_connect_handshake().await.unwrap();
         let qps_set = QpsSetValue::val_of(&args.qps);
-        println!("Handshake and connect success ,conn_id is:{}", conn_id);
-
-        println!("Current send speed is {:?}", qps_set);
         TOKIO_RUN.spawn(async move {
             let mut count = 0;
             let mut time_counter = Instant::now();
             loop {
                 for i in 0..qps_set.record_num_every_10ms() {
-                    let mut segment = SegmentData::new();
-                    let mut meta = Meta::new();
-                    meta.connId = conn_id;
-                    meta.field_type = Meta_RequestType::TRANS;
-                    let now = Local::now();
-                    meta.set_send_timestamp(now.timestamp_nanos() as u64);
-                    let uuid = uuid::Uuid::new_v4();
-                    segment.set_meta(meta);
-                    segment.set_trace_id(uuid.to_string());
-                    segment.set_api_id(i as i32);
-                    segment.set_payload(_gen_data_binary());
-                    segment.set_zone(_gen_tag(3, 5, 'a'));
-                    segment.set_biz_timestamp(now.timestamp_millis() as u64);
-                    segment.set_seg_id(uuid.to_string());
-                    segment.set_ser_key(_gen_tag(4, 3, 's'));
-                    let send_rs = seq_mail.try_send_msg(segment, ()).await;
+                    let segment = mock_seg(conn_id, i as i32);
+                    let send_rs = seq_mail.send_msg(segment).await;
                     match send_rs {
                         Ok(seq_id) => {}
                         Err(e) => {}
@@ -111,14 +113,6 @@ fn main() {
                 }
             }
         });
-        // Consume messages and sent to grpc service
-        loop {
-            let seg = recv.recv().await;
-            let r = sink.send((seg.unwrap(), WriteFlags::default())).await;
-            if let Err(e) = r {
-                println!("Send msgs failed!error:{}", e);
-            }
-        }
     };
 
     TOKIO_RUN.block_on(exec_func);

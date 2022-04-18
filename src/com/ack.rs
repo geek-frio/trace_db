@@ -1,5 +1,11 @@
 use anyhow::Error as AnyError;
 
+#[derive(Debug)]
+pub enum WindowErr {
+    Full,
+}
+
+#[derive(Debug, Clone)]
 pub struct AckWindow {
     start: i64,
     bit_set: BitSet,
@@ -10,7 +16,7 @@ pub struct AckWindow {
 
 impl AckWindow {
     // size: 窗口最大开的大小
-    fn new(size: u32) -> AckWindow {
+    pub fn new(size: u32) -> AckWindow {
         AckWindow {
             start: 0,
             bit_set: BitSet::with_max_value(size),
@@ -21,12 +27,12 @@ impl AckWindow {
 
     // When call send method, seq_id should sorted , or it will become
     //  unexpected behavior.
-    fn send(&mut self, seq_id: i64) -> Result<(), AnyError> {
+    pub fn send(&mut self, seq_id: i64) -> Result<(), WindowErr> {
         if self.start == 0 {
             self.start = seq_id;
         }
         if seq_id < self.start || seq_id >= self.start + i64::from(self.size) {
-            return Err(AnyError::msg("Invalid ack seqid, has exceeded the window"));
+            return Err(WindowErr::Full);
         }
         // current_max cursor
         let offset = seq_id - self.start;
@@ -35,6 +41,10 @@ impl AckWindow {
         }
         self.bit_set.insert((seq_id - self.start) as u32);
         Ok(())
+    }
+
+    pub fn have_vacancy(&self, seq_id: i64) -> bool {
+        self.start == 0 || !(seq_id < self.start || seq_id >= self.start + i64::from(self.size))
     }
 
     fn ack(&mut self, seq_id: i64) -> Result<(), AnyError> {
@@ -71,7 +81,7 @@ impl AckWindow {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, Debug, PartialEq)]
 pub struct TinySet(u64);
 
 impl TinySet {
@@ -163,7 +173,7 @@ impl TinySet {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BitSet {
     tinysets: Box<[TinySet]>,
     len: u64,
