@@ -51,9 +51,7 @@ pub async fn test_unbounded_gen_sksegments(qp_10ms: usize) {
                             println!("current seqid:{}", seq_id);
                         }
                     }
-                    Err(e) => {
-                        println!("Send failed!, error is:{:?}", e);
-                    }
+                    Err(e) => {}
                 }
 
                 sleep(Duration::from_secs(10)).await;

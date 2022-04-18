@@ -1,6 +1,7 @@
 pub(crate) mod chan;
 pub(crate) mod conn;
 pub(crate) mod gen;
+pub(crate) mod send_ctl;
 
 use std::time::Instant;
 
@@ -95,9 +96,7 @@ fn main() {
                     let send_rs = seq_mail.try_send_msg(segment, ()).await;
                     match send_rs {
                         Ok(seq_id) => {}
-                        Err(e) => {
-                            println!("Send failed!, error is:{:?}", e);
-                        }
+                        Err(e) => {}
                     }
                 }
                 sleep(Duration::from_millis(10)).await;

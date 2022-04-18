@@ -1,4 +1,5 @@
 use crate::*;
+use skdb::com::ack::{AckWindow, WindowErr};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -20,16 +21,13 @@ pub struct SeqMail<T, C> {
     ack_sender: Sender<MailSignal>,
 }
 
-fn chan<T>(buf_size: usize) -> (IndexSender<T>, IndexReceiver<T>) {
+fn chan<T: SeqIdFill>(buf_size: usize, win_size: usize) -> (IndexSender<T>, IndexReceiver<T>) {
     let (tx, rx) = mpsc::channel(buf_size);
     let seq_id = Arc::new(AtomicI64::new(1));
     (
-        IndexSender {
-            seq_id: seq_id.clone(),
-            sender: tx.clone(),
-        },
+        IndexSender::new(tx, win_size as u32, seq_id.clone()),
         IndexReceiver {
-            seq_id: seq_id.clone(),
+            seq_id: seq_id,
             receiver: rx,
         },
     )
@@ -79,7 +77,7 @@ impl<T: SeqIdFill, C: Clone + Send + 'static> SeqMail<T, C> {
             }
         });
 
-        let (s, r) = chan::<T>(buf_size);
+        let (s, r) = chan::<T>(buf_size, 5000);
         (
             SeqMail {
                 seq_vals: map,
@@ -91,7 +89,7 @@ impl<T: SeqIdFill, C: Clone + Send + 'static> SeqMail<T, C> {
         )
     }
 
-    pub async fn try_send_msg(&self, msg: T, callback: C) -> Result<i64, TrySendError<T>> {
+    pub async fn try_send_msg(&self, msg: T, callback: C) -> Result<i64, IndexSendErr<T>> {
         let seq_id = self.sender.try_send(msg)?;
         let mut seq_ref = self.seq_vals.lock().await;
         seq_ref.insert(seq_id, callback);
@@ -112,29 +110,76 @@ pub struct IndexReceiver<T> {
     receiver: Receiver<T>,
 }
 
+pub enum IndexSendErr<T> {
+    Win(WindowErr),
+    Chan(ChanErr<T>),
+}
+
+pub enum ChanErr<T> {
+    Send(SendError<T>),
+    Try(TrySendError<T>),
+}
+
 #[derive(Clone, Debug)]
 pub struct IndexSender<T> {
     seq_id: Arc<AtomicI64>,
     sender: Sender<T>,
+    ack_win: AckWindow,
+}
+
+impl<T> From<SendError<T>> for IndexSendErr<T> {
+    fn from(e: SendError<T>) -> Self {
+        IndexSendErr::Chan(ChanErr::Send(e))
+    }
+}
+
+impl<T> From<TrySendError<T>> for IndexSendErr<T> {
+    fn from(e: TrySendError<T>) -> Self {
+        IndexSendErr::Chan(ChanErr::Try(e))
+    }
 }
 
 impl<T: SeqIdFill> IndexSender<T> {
-    pub async fn send(&self, mut value: T) -> Result<i64, SendError<T>> {
+    pub fn new(sender: Sender<T>, win_size: u32, seq_id: Arc<AtomicI64>) -> IndexSender<T> {
+        IndexSender {
+            seq_id,
+            ack_win: AckWindow::new(win_size),
+            sender,
+        }
+    }
+
+    pub async fn send(&mut self, mut value: T) -> Result<i64, IndexSendErr<T>> {
         let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed);
+        if !self.ack_win.have_vacancy(current_id) {
+            let current_id = self.seq_id.fetch_sub(1, Ordering::Relaxed);
+            return Err(IndexSendErr::Win(WindowErr::Full));
+        }
         value.fill_seqid(current_id);
         return self
             .sender
             .send(value)
             .await
-            .map(|_| current_id)
+            .map(|_| {
+                self.ack_win.send(current_id).map_err(|e| match e {
+                    WindowErr::Full => {
+                        self.seq_id.fetch_sub(1, Ordering::Relaxed);
+                    }
+                });
+                current_id
+            })
             .map_err(|e| {
-                println!("Send error");
-                e
+                // When fail send, we need to sub 1
+                self.seq_id.fetch_sub(1, Ordering::Relaxed);
+                e.into()
             });
     }
 
-    pub fn try_send(&self, mut value: T) -> Result<i64, TrySendError<T>> {
+    pub fn try_send(&self, mut value: T) -> Result<i64, IndexSendErr<T>> {
         let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed);
+        if !self.ack_win.have_vacancy(current_id) {
+            let current_id = self.seq_id.fetch_sub(1, Ordering::Relaxed);
+            return Err(IndexSendErr::Win(WindowErr::Full));
+        }
         value.fill_seqid(current_id);
         return self
             .sender
@@ -142,7 +187,7 @@ impl<T: SeqIdFill> IndexSender<T> {
             .map(|_| current_id)
             .map_err(|e| {
                 println!("Try send error");
-                e
+                e.into()
             });
     }
 }
