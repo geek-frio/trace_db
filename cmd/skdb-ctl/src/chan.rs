@@ -11,8 +11,6 @@ use skdb::com::ack::{AckWindow, WindowErr};
 use skdb::TOKIO_RUN;
 use skproto::tracing::SegmentData;
 use skproto::tracing::SegmentRes;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
 use tokio::time::sleep;
 pub trait SeqIdFill {
@@ -29,8 +27,13 @@ impl SeqMail<SegmentData, SegmentRes> {
         sink: StreamingCallSink<SegmentData>,
         rpc_recv: ClientDuplexReceiver<SegmentRes>,
         win_size: usize,
+        seq_id: i64,
     ) -> SeqMail<SegmentData, SegmentRes> {
-        SeqMail::new(sink, rpc_recv, win_size)
+        let sender = IndexSender::new(sink, win_size as u32, seq_id);
+        SeqMail {
+            sender,
+            receiver: rpc_recv,
+        }
     }
 
     pub async fn send_msg(
@@ -50,9 +53,10 @@ impl SeqMail<SegmentData, SegmentRes> {
         sink: StreamingCallSink<SegmentData>,
         rpc_recv: ClientDuplexReceiver<SegmentRes>,
         win_size: usize,
+        seq_id: i64,
     ) -> UnboundedSender<SegmentData> {
         let (e_s, mut e_r) = unbounded::<SegmentData>();
-        let mut seq_mail = Self::new(sink, rpc_recv, win_size);
+        let mut seq_mail = Self::new(sink, rpc_recv, win_size, seq_id);
 
         TOKIO_RUN.spawn(async move {
             let mut timer = None;
@@ -138,7 +142,7 @@ pub enum IndexSendErr {
 }
 
 pub struct IndexSender<T> {
-    seq_id: Arc<AtomicI64>,
+    seq_id: i64,
     sender: StreamingCallSink<T>,
     ack_win: AckWindow,
 }
@@ -150,11 +154,7 @@ impl From<GrpcErr> for IndexSendErr {
 }
 
 impl<T: SeqIdFill> IndexSender<T> {
-    pub fn new(
-        sender: StreamingCallSink<T>,
-        win_size: u32,
-        seq_id: Arc<AtomicI64>,
-    ) -> IndexSender<T> {
+    pub fn new(sender: StreamingCallSink<T>, win_size: u32, seq_id: i64) -> IndexSender<T> {
         IndexSender {
             seq_id,
             ack_win: AckWindow::new(win_size),
@@ -163,9 +163,9 @@ impl<T: SeqIdFill> IndexSender<T> {
     }
 
     pub async fn send(&mut self, mut value: T, flags: WriteFlags) -> Result<i64, IndexSendErr> {
-        let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed);
+        let current_id = self.seq_id + 1;
         if !self.ack_win.have_vacancy(current_id) {
-            self.seq_id.fetch_sub(1, Ordering::Relaxed);
+            self.seq_id -= 1;
             return Err(IndexSendErr::Win(WindowErr::Full));
         }
         value.fill_seqid(current_id);
@@ -174,16 +174,17 @@ impl<T: SeqIdFill> IndexSender<T> {
             .send((value, flags))
             .await
             .map(|_| {
+                self.seq_id = current_id;
                 let _ = self.ack_win.send(current_id).map_err(|e| match e {
                     WindowErr::Full => {
-                        self.seq_id.fetch_sub(1, Ordering::Relaxed);
+                        self.seq_id -= 1;
                     }
                 });
                 current_id
             })
             .map_err(|e| {
                 // When fail send, we need to sub 1
-                self.seq_id.fetch_sub(1, Ordering::Relaxed);
+                self.seq_id -= 1;
                 e.into()
             });
     }

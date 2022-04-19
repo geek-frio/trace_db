@@ -58,11 +58,12 @@ pub struct Args {
     qps: String,
 }
 
-fn mock_seg(conn_id: i32, api_id: i32) -> SegmentData {
+fn mock_seg(conn_id: i32, api_id: i32, seq_id: i64) -> SegmentData {
     let mut segment = SegmentData::new();
     let mut meta = Meta::new();
     meta.connId = conn_id;
     meta.field_type = Meta_RequestType::TRANS;
+    meta.seqId = seq_id;
     let now = Local::now();
     meta.set_send_timestamp(now.timestamp_nanos() as u64);
     let uuid = uuid::Uuid::new_v4();
@@ -86,25 +87,16 @@ fn main() {
 
     let exec_func = async {
         let (sink, r, conn_id) = Connector::sk_connect_handshake().await.unwrap();
-        let mut sender = SeqMail::start_task(sink, r, 64 * 20).await;
+        let mut seq_id: i64 = 1;
+        let mut sender = SeqMail::start_task(sink, r, 64 * 20, 1).await;
         let qps_set = QpsSetValue::val_of(&args.qps);
-        let mut count = 0;
-        let mut time_counter = Instant::now();
         loop {
             for i in 0..qps_set.record_num_every_10ms() {
-                let segment = mock_seg(conn_id, i as i32);
+                let segment = mock_seg(conn_id, i as i32, seq_id);
                 let _ = sender.send(segment).await;
+                seq_id += 1;
             }
             sleep(Duration::from_millis(10)).await;
-            count += 1;
-            if count % 100 == 0 {
-                count = 0;
-                println!(
-                    "Elapsed time is:{} millis",
-                    time_counter.elapsed().as_millis()
-                );
-                time_counter = Instant::now();
-            }
         }
     };
 
