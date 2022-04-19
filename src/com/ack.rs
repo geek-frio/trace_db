@@ -47,7 +47,7 @@ impl AckWindow {
         self.start == 0 || !(seq_id < self.start || seq_id >= self.start + i64::from(self.size))
     }
 
-    fn ack(&mut self, seq_id: i64) -> Result<(), AnyError> {
+    pub fn ack(&mut self, seq_id: i64) -> Result<(), AnyError> {
         if seq_id < self.start || seq_id >= self.start + i64::from(self.size) {
             return Err(AnyError::msg("Invalid ack seqid, has exceeded the window"));
         }
@@ -55,7 +55,7 @@ impl AckWindow {
         Ok(())
     }
 
-    fn is_ready(&self) -> bool {
+    pub fn is_ready(&self) -> bool {
         // No one has done send operation
         if self.current_max == 0 {
             return true;
