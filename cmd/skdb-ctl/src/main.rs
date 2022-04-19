@@ -1,7 +1,6 @@
 pub(crate) mod chan;
 pub(crate) mod conn;
 pub(crate) mod gen;
-pub(crate) mod send_ctl;
 
 use std::time::Instant;
 
@@ -86,8 +85,8 @@ fn main() {
     );
 
     let exec_func = async {
-        let (mut seq_mail, mut recv) = SeqMail::new(100000);
         let (mut sink, mut r, conn_id) = Connector::sk_connect_handshake().await.unwrap();
+        let mut seqmail = SeqMail::new(sink, r, 64 * 100);
         let qps_set = QpsSetValue::val_of(&args.qps);
         TOKIO_RUN.spawn(async move {
             let mut count = 0;
@@ -95,7 +94,7 @@ fn main() {
             loop {
                 for i in 0..qps_set.record_num_every_10ms() {
                     let segment = mock_seg(conn_id, i as i32);
-                    let send_rs = seq_mail.send_msg(segment).await;
+                    let send_rs = seqmail.send_msg(segment, WriteFlags::default()).await;
                     match send_rs {
                         Ok(seq_id) => {}
                         Err(e) => {}

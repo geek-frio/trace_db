@@ -15,4 +15,5 @@ grpcio = { version = "0.9.0", default-features = false, features = ["secure"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 lazy_static = "1.4.0"
 chrono = "0.4.19"
+anyhow = "1.0.56"
 uuid = {version = "0.8", features = ["serde", "v4"]}
