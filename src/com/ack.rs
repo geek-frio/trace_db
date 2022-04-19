@@ -5,7 +5,7 @@ pub enum WindowErr {
     Full,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AckWindow {
     start: i64,
     bit_set: BitSet,

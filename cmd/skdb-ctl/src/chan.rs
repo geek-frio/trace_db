@@ -1,11 +1,11 @@
+use futures::SinkExt;
+use grpcio::Error as GrpcErr;
+use grpcio::{ClientDuplexReceiver, StreamingCallSink, WriteFlags};
 use skdb::com::ack::{AckWindow, WindowErr};
-use skdb::TOKIO_RUN;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc::error::{SendError, TryRecvError, TrySendError};
-use tokio::sync::mpsc::{self, unbounded_channel, UnboundedSender};
-use tokio::sync::mpsc::{Receiver, Sender};
-
+use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 pub trait SeqIdFill {
     fn fill_seqid(&mut self, seq_id: i64);
 }
@@ -14,14 +14,17 @@ pub struct SeqMail<T> {
     sender: IndexSender<T>,
 }
 
-fn chan<T: SeqIdFill>(buf_size: usize, win_size: usize) -> (IndexSender<T>, IndexReceiver<T>) {
-    let (tx, rx) = mpsc::channel(buf_size);
+fn chan<T: SeqIdFill, Resp>(
+    sink: StreamingCallSink<(T, WriteFlags)>,
+    rpc_recv: ClientDuplexReceiver<Resp>,
+    win_size: usize,
+) -> (IndexSender<T>, IndexReceiver<T>) {
     let seq_id = Arc::new(AtomicI64::new(1));
     (
-        IndexSender::new(tx, win_size as u32, seq_id.clone()),
+        IndexSender::new(sink, win_size as u32, seq_id.clone()),
         IndexReceiver {
             seq_id: seq_id,
-            receiver: rx,
+            receiver: rpc_recv,
         },
     )
 }
@@ -41,8 +44,8 @@ impl<T: SeqIdFill + Send + 'static> SeqMail<T> {
         (SeqMail { sender: s }, r)
     }
 
-    pub async fn send_msg(&mut self, msg: T) -> Result<i64, IndexSendErr<T>> {
-        let seq_id = self.sender.send(msg).await?;
+    pub async fn send_msg(&mut self, msg: T, flags: WriteFlags) -> Result<i64, IndexSendErr<T>> {
+        let seq_id = self.sender.send(msg, flags).await?;
         Ok(seq_id)
     }
 
@@ -51,49 +54,38 @@ impl<T: SeqIdFill + Send + 'static> SeqMail<T> {
         let (e_s, mut e_r) = unbounded_channel::<T>();
         let (seq_mail, r) = SeqMail::<T>::new(buf_size);
 
-        TOKIO_RUN.spawn(async move {
-            let event = e_r.recv().await;
-        });
+        let event = e_r.recv().await;
         e_s
     }
 }
 
 pub struct IndexReceiver<T> {
     seq_id: Arc<AtomicI64>,
-    receiver: Receiver<T>,
+    receiver: ClientDuplexReceiver<T>,
 }
 
-pub enum IndexSendErr<T> {
-    Win(WindowErr),
-    Chan(ChanErr<T>),
+pub enum IndexSendErr {
+    Grpc(GrpcErr),
 }
 
-pub enum ChanErr<T> {
-    Send(SendError<T>),
-    Try(TrySendError<T>),
-}
-
-#[derive(Clone, Debug)]
 pub struct IndexSender<T> {
     seq_id: Arc<AtomicI64>,
-    sender: Sender<T>,
+    sender: StreamingCallSink<T>,
     ack_win: AckWindow,
 }
 
-impl<T> From<SendError<T>> for IndexSendErr<T> {
-    fn from(e: SendError<T>) -> Self {
-        IndexSendErr::Chan(ChanErr::Send(e))
-    }
-}
-
-impl<T> From<TrySendError<T>> for IndexSendErr<T> {
-    fn from(e: TrySendError<T>) -> Self {
-        IndexSendErr::Chan(ChanErr::Try(e))
+impl From<GrpcErr> for IndexSendErr {
+    fn from(e: GrpcErr) -> Self {
+        IndexSendErr::Grpc(e)
     }
 }
 
 impl<T: SeqIdFill> IndexSender<T> {
-    pub fn new(sender: Sender<T>, win_size: u32, seq_id: Arc<AtomicI64>) -> IndexSender<T> {
+    pub fn new(
+        sender: StreamingCallSink<T>,
+        win_size: u32,
+        seq_id: Arc<AtomicI64>,
+    ) -> IndexSender<T> {
         IndexSender {
             seq_id,
             ack_win: AckWindow::new(win_size),
@@ -101,7 +93,7 @@ impl<T: SeqIdFill> IndexSender<T> {
         }
     }
 
-    pub async fn send(&mut self, mut value: T) -> Result<i64, IndexSendErr<T>> {
+    pub async fn send(&mut self, mut value: T, flags: WriteFlags) -> Result<i64, IndexSendErr<T>> {
         let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed);
         if !self.ack_win.have_vacancy(current_id) {
             self.seq_id.fetch_sub(1, Ordering::Relaxed);
@@ -110,7 +102,7 @@ impl<T: SeqIdFill> IndexSender<T> {
         value.fill_seqid(current_id);
         return self
             .sender
-            .send(value)
+            .send((value, flags))
             .await
             .map(|_| {
                 let _ = self.ack_win.send(current_id).map_err(|e| match e {
@@ -127,7 +119,7 @@ impl<T: SeqIdFill> IndexSender<T> {
             });
     }
 
-    pub fn try_send(&mut self, mut value: T) -> Result<i64, IndexSendErr<T>> {
+    pub fn try_send(&mut self, mut value: T) -> Result<i64, IndexSendErr> {
         let current_id = self.seq_id.fetch_add(1, Ordering::Relaxed);
         if !self.ack_win.have_vacancy(current_id) {
             return Err(IndexSendErr::Win(WindowErr::Full));
