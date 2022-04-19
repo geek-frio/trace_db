@@ -211,9 +211,6 @@ impl From<GrpcErr> for IndexSendErr {
 
 impl<W: Debug + SeqId + Clone + BlankElement<Item = W> + Into<T>, T> IndexSender<T, W> {
     pub fn new(sender: StreamingCallSink<T>, win_size: u32) -> IndexSender<T, W> {
-        if win_size < 0 {
-            panic!("Wrong win_size set for RingQueue!");
-        }
         IndexSender {
             ack_win: RingQueue::new(win_size as usize),
             sender,

@@ -1,7 +1,6 @@
 use anyhow::Error as AnyError;
 use crossbeam_channel::unbounded;
 use crossbeam_channel::Sender;
-use protobuf::RepeatedField;
 use redis::Client as RedisClient;
 use skproto::tracing::SegRange;
 use skproto::tracing::SkyQueryParam;

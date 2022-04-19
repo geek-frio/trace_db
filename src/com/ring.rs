@@ -1,6 +1,5 @@
 use std::fmt::Debug;
 use std::iter::Chain;
-use std::rc::Rc;
 use std::slice::Iter;
 
 pub trait SeqId {

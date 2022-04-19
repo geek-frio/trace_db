@@ -151,7 +151,6 @@ mod tests {
     use super::*;
     #[test]
     fn test_get_all() -> Result<(), AnyError> {
-        let local = Local::now().timestamp();
         let client = redis::Client::open("redis://127.0.0.1:6379")?;
         let mut con = client.get_connection()?;
         let redis = RedisTTLSet { ttl: 5 };

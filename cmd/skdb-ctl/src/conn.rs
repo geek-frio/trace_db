@@ -17,8 +17,6 @@ pub enum ConnectStatus {
     GrpcCallFailed(GrpcError),
     HandShakeSendFailed(GrpcError),
     HandShakeRespFailed(GrpcError),
-    HandShakeSuccess(i32),
-    FAILED,
 }
 
 impl Connector {

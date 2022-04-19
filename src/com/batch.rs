@@ -6,7 +6,7 @@ use crossbeam_channel::{Receiver, TryRecvError};
 use skproto::tracing::SegmentData;
 use std::borrow::Cow;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{
