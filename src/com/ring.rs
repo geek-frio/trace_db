@@ -17,7 +17,7 @@ pub trait BlankElement: PartialEq {
 // RingQueue's length should be bigger than receiver window's length.
 // We only care about data between ack position and send position
 #[derive(Debug)]
-pub struct RingQueue<E: Debug + Sized> {
+pub struct RingQueue<E> {
     // data: Vec<E>,
     data: Box<[E]>,
     ack_pos: usize,
@@ -52,11 +52,11 @@ impl<'a, T> Iterator for RingIter<'a, T> {
     }
 }
 
-impl<E> RingQueue<E>
+impl<E: Debug + Sized> RingQueue<E>
 where
     E: SeqId + BlankElement<Item = E> + Debug + Clone + Sized,
 {
-    fn new(size: usize) -> RingQueue<E> {
+    pub fn new(size: usize) -> RingQueue<E> {
         let internal = vec![E::blank_val(); size];
         RingQueue {
             data: internal.into_boxed_slice(),
@@ -70,7 +70,7 @@ where
 
     // When you get a QueueIsFull error, you should stop
     // sending new msg until [ack position] follow up [send position]
-    fn send(&mut self, el: E) -> Result<(), RingQueueError> {
+    pub fn send(&mut self, el: E) -> Result<(), RingQueueError> {
         if self.is_full() {
             return Err(RingQueueError::QueueIsFull);
         }
@@ -89,7 +89,7 @@ where
         Ok(())
     }
 
-    fn ack(&mut self, seq_id: usize) {
+    pub fn ack(&mut self, seq_id: usize) {
         if seq_id < self.cur_num || self.data.len() == 0 {
             return;
         }

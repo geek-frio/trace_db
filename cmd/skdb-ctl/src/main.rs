@@ -1,18 +1,14 @@
 pub(crate) mod chan;
 pub(crate) mod conn;
-pub(crate) mod gen;
-
-use std::time::Instant;
 
 use chrono::Local;
 use clap::Parser;
-use grpcio::WriteFlags;
 use skdb::test::gen::*;
 use skdb::TOKIO_RUN;
 use skproto::tracing::*;
 use tokio::time::{sleep, Duration};
 
-use crate::chan::SeqMail;
+use crate::chan::{SegmentDataWrap, SeqMail};
 use crate::conn::Connector;
 use futures::SinkExt;
 
@@ -87,13 +83,13 @@ fn main() {
 
     let exec_func = async {
         let (sink, r, conn_id) = Connector::sk_connect_handshake().await.unwrap();
-        let mut seq_id: i64 = 1;
-        let mut sender = SeqMail::start_task(sink, r, 64 * 20, 1).await;
+        let mut sender = SeqMail::start_task(sink, r, 64 * 20).await;
         let qps_set = QpsSetValue::val_of(&args.qps);
+        let mut seq_id = 1;
         loop {
             for i in 0..qps_set.record_num_every_10ms() {
                 let segment = mock_seg(conn_id, i as i32, seq_id);
-                let _ = sender.send(segment).await;
+                let _ = sender.send(SegmentDataWrap(segment)).await;
                 seq_id += 1;
             }
             sleep(Duration::from_millis(10)).await;
@@ -107,7 +103,6 @@ fn main() {
 mod tests {
 
     use super::conn::Connector;
-    use crate::gen::*;
     use skdb::*;
 
     #[test]
@@ -122,13 +117,6 @@ mod tests {
                     println!("handshake failed, connect status is:{:?}", e);
                 }
             }
-        });
-    }
-
-    #[test]
-    fn test_send_msg() {
-        TOKIO_RUN.block_on(async {
-            test_unbounded_gen_sksegments(1).await;
         });
     }
 }

@@ -65,6 +65,7 @@ message Meta {
         TRANS_ACK = 2;
         CLIENT_SHUTDOWN = 3;
         SERVER_SHUTDOWN = 4;
+        NEED_RESEND = 5;
     }
     uint64 send_timestamp= 4;
     RequestType type = 5;
