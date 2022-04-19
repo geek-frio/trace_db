@@ -85,33 +85,27 @@ fn main() {
     );
 
     let exec_func = async {
-        let (mut sink, mut r, conn_id) = Connector::sk_connect_handshake().await.unwrap();
-        let mut seqmail = SeqMail::new(sink, r, 64 * 100);
+        let (sink, r, conn_id) = Connector::sk_connect_handshake().await.unwrap();
+        let mut sender = SeqMail::start_task(sink, r, 64 * 20).await;
         let qps_set = QpsSetValue::val_of(&args.qps);
-        TOKIO_RUN.spawn(async move {
-            let mut count = 0;
-            let mut time_counter = Instant::now();
-            loop {
-                for i in 0..qps_set.record_num_every_10ms() {
-                    let segment = mock_seg(conn_id, i as i32);
-                    let send_rs = seqmail.send_msg(segment, WriteFlags::default()).await;
-                    match send_rs {
-                        Ok(seq_id) => {}
-                        Err(e) => {}
-                    }
-                }
-                sleep(Duration::from_millis(10)).await;
-                count += 1;
-                if count % 100 == 0 {
-                    count = 0;
-                    println!(
-                        "Elapsed time is:{} millis",
-                        time_counter.elapsed().as_millis()
-                    );
-                    time_counter = Instant::now();
-                }
+        let mut count = 0;
+        let mut time_counter = Instant::now();
+        loop {
+            for i in 0..qps_set.record_num_every_10ms() {
+                let segment = mock_seg(conn_id, i as i32);
+                let _ = sender.send(segment).await;
             }
-        });
+            sleep(Duration::from_millis(10)).await;
+            count += 1;
+            if count % 100 == 0 {
+                count = 0;
+                println!(
+                    "Elapsed time is:{} millis",
+                    time_counter.elapsed().as_millis()
+                );
+                time_counter = Instant::now();
+            }
+        }
     };
 
     TOKIO_RUN.block_on(exec_func);

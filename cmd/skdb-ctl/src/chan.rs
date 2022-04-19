@@ -50,7 +50,7 @@ impl SeqMail<SegmentData, SegmentRes> {
         sink: StreamingCallSink<SegmentData>,
         rpc_recv: ClientDuplexReceiver<SegmentRes>,
         win_size: usize,
-    ) -> Result<UnboundedSender<SegmentData>, AnyError> {
+    ) -> UnboundedSender<SegmentData> {
         let (e_s, mut e_r) = unbounded::<SegmentData>();
         let mut seq_mail = Self::new(sink, rpc_recv, win_size);
 
@@ -128,7 +128,7 @@ impl SeqMail<SegmentData, SegmentRes> {
                 };
             }
         });
-        Ok(e_s)
+        e_s
     }
 }
 
