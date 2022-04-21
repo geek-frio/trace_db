@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::com::{fsm::Fsm, mail::BasicMailbox};
+use crate::com::{ack::AckCallback, fsm::Fsm, mail::BasicMailbox};
 use crossbeam_channel::Receiver;
 use skproto::tracing::SegmentData;
 
@@ -11,7 +11,7 @@ impl Drop for TagFsm {
 }
 
 pub struct TagFsm {
-    pub receiver: Receiver<SegmentData>,
+    pub receiver: Receiver<(SegmentData, AckCallback)>,
     pub mailbox: Option<BasicMailbox<TagFsm>>,
     pub engine: TracingTagEngine,
     pub last_idx: u64,
@@ -19,10 +19,23 @@ pub struct TagFsm {
 }
 
 impl TagFsm {
+    pub fn new(
+        receiver: Receiver<(SegmentData, AckCallback)>,
+        mailbox: Option<BasicMailbox<TagFsm>>,
+        engine: TracingTagEngine,
+    ) -> TagFsm {
+        TagFsm {
+            receiver,
+            mailbox,
+            engine,
+            last_idx: 0,
+            counter: 0,
+        }
+    }
     // TODO: use batch logic, currently directly write to disk
-    pub fn handle_tasks(&mut self, msgs: &mut Vec<SegmentData>) {
+    pub fn handle_tasks(&mut self, msgs: &mut Vec<(SegmentData, AckCallback)>) {
         for msg in msgs {
-            self.engine.add_record(msg);
+            self.engine.add_record(&msg.0);
             self.counter += 1;
         }
         if self.counter > 5000 {
@@ -46,7 +59,7 @@ impl TagFsm {
 }
 
 impl Fsm for TagFsm {
-    type Message = SegmentData;
+    type Message = (SegmentData, AckCallback);
 
     fn is_stopped(&self) -> bool {
         // TODO: later we will add condition control

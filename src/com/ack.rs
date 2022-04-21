@@ -1,5 +1,5 @@
 use anyhow::Error as AnyError;
-use tokio::sync::mpsc::UnboundedSender;
+use futures::channel::mpsc::UnboundedSender;
 
 #[derive(Debug)]
 pub enum WindowErr {
@@ -94,13 +94,17 @@ impl AckWindow {
 }
 
 // Used to ack the segment
-struct AckCallback {
+pub struct AckCallback {
     sender: UnboundedSender<i64>,
 }
 
 impl AckCallback {
-    fn callback(&self, seq_id: i64) {
-        let _ = self.sender.send(seq_id);
+    pub fn new(sender: UnboundedSender<i64>) -> AckCallback {
+        AckCallback { sender }
+    }
+
+    pub fn callback(&self, seq_id: i64) {
+        let _ = self.sender.unbounded_send(seq_id);
     }
 }
 

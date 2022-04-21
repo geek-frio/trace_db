@@ -1,6 +1,8 @@
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
 use skproto::tracing::SegmentData;
+use std::error::Error;
 use tantivy::directory::MmapDirectory;
 use tantivy::error::TantivyError;
 use tantivy::schema::*;
@@ -46,6 +48,14 @@ pub enum TagEngineError {
     Other(TantivyError),
     IndexDirCreateFailed,
 }
+
+impl Display for TagEngineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("EngineError:{:?}", self))
+    }
+}
+
+impl Error for TagEngineError {}
 
 impl TracingTagEngine {
     pub fn new(addr: IndexAddr, dir: String, schema: Schema) -> TracingTagEngine {

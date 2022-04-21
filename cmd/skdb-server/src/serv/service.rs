@@ -2,6 +2,7 @@ use super::*;
 use anyhow::Error as AnyError;
 use crossbeam_channel::*;
 use futures::channel::mpsc::unbounded as funbounded;
+use futures::channel::mpsc::UnboundedSender;
 use futures::future::select;
 use futures::future::Either as FutureEither;
 use futures::SinkExt;
@@ -13,6 +14,7 @@ use grpcio::Error as GrpcError;
 use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
 use grpcio::WriteFlags;
+use skdb::com::ack::AckCallback;
 use skdb::com::ack::AckWindow;
 use skdb::com::ack::WindowErr;
 use skdb::com::config::GlobalConfig;
@@ -42,16 +44,11 @@ use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
 #[derive(Clone)]
 pub struct SkyTracingService {
-    sender: Sender<SegmentData>,
+    sender: Sender<(SegmentData, AckCallback)>,
     config: Arc<GlobalConfig>,
     // All the tag engine share the same index schema
     tracing_schema: Schema,
     index_map: Arc<Mutex<HashMap<IndexAddr, Index>>>,
-}
-
-enum SegmentEvent {
-    DataEvent(SegmentData),
-    Shutdown,
 }
 
 impl SkyTracingService {
@@ -60,7 +57,7 @@ impl SkyTracingService {
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
         config: Arc<GlobalConfig>,
     ) -> SkyTracingService {
-        let (s, r) = crossbeam_channel::unbounded::<SegmentData>();
+        let (s, r) = crossbeam_channel::unbounded::<(SegmentData, AckCallback)>();
         let router = router.clone();
         let index_path = config.index_dir.clone();
         let schema = Self::init_sk_schema();
@@ -78,18 +75,18 @@ impl SkyTracingService {
     }
 
     fn recv_and_process(
-        recv: Receiver<SegmentData>,
+        recv: Receiver<(SegmentData, AckCallback)>,
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
         index_path: String,
         schema: Schema,
         index_map: Arc<Mutex<HashMap<i64, Index>>>,
     ) -> Result<(), AnyError> {
         loop {
-            let seg = recv.recv()?;
+            let (seg, callback) = recv.recv()?;
             let res = IndexPath::compute_index_addr(seg.biz_timestamp as IndexAddr);
             match res {
                 Ok(addr) => {
-                    let sent_stat = router.send(addr, seg);
+                    let sent_stat = router.send(addr, (seg, callback));
                     match sent_stat {
                         // Can't find the mailbox which is dependent by this segment
                         Either::Right(msg) => {
@@ -100,26 +97,26 @@ impl SkyTracingService {
                                 TracingTagEngine::new(addr, index_path.clone(), schema.clone());
                             // TODO: error process logic is emitted currently
                             let res = engine.init();
-                            if let Ok(index) = res {
-                                index_map.lock().unwrap().insert(addr, index);
-                                let fsm = Box::new(TagFsm {
-                                    receiver: r,
-                                    mailbox: None,
-                                    engine,
-                                    last_idx: 0,
-                                    counter: 0,
-                                });
-                                let state_cnt = Arc::new(AtomicUsize::new(0));
-                                let mailbox = BasicMailbox::new(s, fsm, state_cnt);
-                                let fsm = mailbox.take_fsm();
-                                if let Some(mut f) = fsm {
-                                    f.mailbox = Some(mailbox.clone());
-                                    mailbox.release(f);
+                            match res {
+                                Ok(index) => {
+                                    index_map.lock().unwrap().insert(addr, index);
+                                    let fsm = Box::new(TagFsm::new(r, None, engine));
+                                    let state_cnt = Arc::new(AtomicUsize::new(0));
+                                    let mailbox = BasicMailbox::new(s, fsm, state_cnt);
+                                    let fsm = mailbox.take_fsm();
+                                    if let Some(mut f) = fsm {
+                                        f.mailbox = Some(mailbox.clone());
+                                        mailbox.release(f);
+                                    }
+                                    router.register(addr, mailbox);
+                                    router.send(addr, msg);
                                 }
-                                router.register(addr, mailbox);
-                                router.send(addr, msg);
-                            } else {
-                                println!("TagEngine init failed!")
+                                // TODO: This error can not fix by retry, so we just ack this msg
+                                // Maybe we should store this msg anywhere
+                                Err(e) => {
+                                    println!("TagEngine init failed! We just ack this msg:{:?}", e);
+                                    msg.1.callback(msg.0.get_meta().get_seqId());
+                                }
                             }
                         }
                         Either::Left(v) => {
@@ -192,7 +189,14 @@ impl SkyTracing for SkyTracingService {
             loop {
                 let _ = match select(stream.try_next(), ack_r.next()).await {
                     FutureEither::Left((seg_data, _)) => {
-                        let r = process_segment(seg_data, &mut ack_win, &mut sink, s.clone()).await;
+                        let r = process_segment(
+                            seg_data,
+                            &mut ack_win,
+                            &mut sink,
+                            s.clone(),
+                            ack_s.clone(),
+                        )
+                        .await;
                         if let Err(e) = r {
                             println!("Has met seriously problem, e:{:?}", e);
                             return;
@@ -289,7 +293,8 @@ async fn process_segment(
     seg: Result<Option<SegmentData>, GrpcError>,
     ack_win: &mut AckWindow,
     sink: &mut DuplexSink<SegmentRes>,
-    sender: Sender<SegmentData>,
+    sender: Sender<(SegmentData, AckCallback)>,
+    ack_sender: UnboundedSender<i64>,
 ) -> Result<(), AnyError> {
     let seg = seg?;
     if let Some(data) = seg {
@@ -304,7 +309,7 @@ async fn process_segment(
                 let r = ack_win.send(data.get_meta().get_seqId());
                 match r {
                     Ok(_) => {
-                        let _ = sender.try_send(data)?;
+                        let _ = sender.try_send((data, AckCallback::new(ack_sender)));
                     }
                     Err(w) => match w {
                         // Hang on, send current ack back

@@ -1,3 +1,4 @@
+use super::ack::AckCallback;
 use super::fsm::Fsm;
 use super::router::Router;
 use super::sched::FsmScheduler;
@@ -377,7 +378,7 @@ pub trait PollHandler<N: Fsm>: Send + 'static {
 }
 
 struct TagPollHandler {
-    msg_buf: Vec<SegmentData>,
+    msg_buf: Vec<(SegmentData, AckCallback)>,
     counter: AtomicI32,
     last_time: Option<Instant>,
 }
