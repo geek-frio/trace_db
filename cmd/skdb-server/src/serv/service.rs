@@ -1,9 +1,15 @@
 use super::*;
 use anyhow::Error as AnyError;
 use crossbeam_channel::*;
+use futures::channel::mpsc::unbounded as funbounded;
+use futures::future::select;
+use futures::future::Either as FutureEither;
 use futures::SinkExt;
+use futures::StreamExt;
 use futures::TryStreamExt;
 use futures_util::{FutureExt as _, TryFutureExt as _};
+use grpcio::DuplexSink;
+use grpcio::Error as GrpcError;
 use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
 use grpcio::WriteFlags;
@@ -34,7 +40,6 @@ use tantivy::Index;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
-
 #[derive(Clone)]
 pub struct SkyTracingService {
     sender: Sender<SegmentData>,
@@ -55,7 +60,7 @@ impl SkyTracingService {
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
         config: Arc<GlobalConfig>,
     ) -> SkyTracingService {
-        let (s, r) = unbounded::<SegmentData>();
+        let (s, r) = crossbeam_channel::unbounded::<SegmentData>();
         let router = router.clone();
         let index_path = config.index_dir.clone();
         let schema = Self::init_sk_schema();
@@ -89,7 +94,7 @@ impl SkyTracingService {
                         // Can't find the mailbox which is dependent by this segment
                         Either::Right(msg) => {
                             // Mailbox not exists, so we regists a new one
-                            let (s, r) = unbounded();
+                            let (s, r) = crossbeam_channel::unbounded();
                             // TODO: use config struct
                             let mut engine =
                                 TracingTagEngine::new(addr, index_path.clone(), schema.clone());
@@ -172,74 +177,29 @@ impl SkyTracing for SkyTracingService {
     fn push_segments(
         &mut self,
         _: ::grpcio::RpcContext,
-        mut stream: ::grpcio::RequestStream<SegmentData>,
+        stream: ::grpcio::RequestStream<SegmentData>,
         mut sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
         // Logic for handshake
-        let handshake_exec = |_: SegmentData, mut sink: grpcio::DuplexSink<SegmentRes>| async {
-            let conn_id = CONN_MANAGER.gen_new_conn_id();
-            let mut resp = SegmentRes::new();
-            let mut meta = Meta::new();
-            meta.connId = conn_id;
-            meta.field_type = Meta_RequestType::HANDSHAKE;
-            resp.set_meta(meta);
-            // We don't care handshake is success or not, client should retry for this
-            let _ = sink.send((resp, WriteFlags::default())).await;
-            println!("Has sent handshake response!");
-            let _ = sink.flush().await;
-            return sink;
-        };
 
         let s = self.sender.clone();
         // Logic for processing segment datas
         let get_data_exec = async move {
-            while let Some(data) = stream.try_next().await.unwrap() {
-                if !data.has_meta() {
-                    println!("Has no meta,quit");
-                    continue;
-                }
-                match data.get_meta().get_field_type() {
-                    Meta_RequestType::HANDSHAKE => {
-                        sink = handshake_exec(data, sink).await;
-                    }
-                    Meta_RequestType::TRANS => {
-                        let mut ack_win = AckWindow::new(64 * 100);
-                        let r = ack_win.send(data.get_meta().get_seqId());
-                        match r {
-                            Ok(_) => {
-                                let r = s.try_send(data);
-                                if let Err(e) = r {
-                                    // channel is closed ,notify the other end peer
-                                    if e.is_disconnected() {
-                                        println!("Current channel is dropped, grpc receiver exit!");
-                                        return;
-                                    }
-                                }
-                            }
-                            Err(w) => match w {
-                                // Hang on, send current ack back
-                                WindowErr::Full => {
-                                    let segment_resp = SegmentRes::new();
-                                    let mut meta = Meta::new();
-                                    meta.set_field_type(Meta_RequestType::TRANS_ACK);
-                                    meta.set_seqId(ack_win.curr_ack_id());
-                                    let r = sink.send((segment_resp, WriteFlags::default())).await;
-                                    if let Err(e) = r {
-                                        println!(
-                                            "Grpc have serious problem, break current read loop, e:{:?}", e
-                                        );
-                                        return;
-                                    }
-                                    // Loop check current
-                                }
-                            },
+            let mut ack_win = AckWindow::new(64 * 100);
+
+            let (ack_s, mut ack_r) = funbounded::<i64>();
+            let mut stream = stream.fuse();
+            loop {
+                let _ = match select(stream.try_next(), ack_r.next()).await {
+                    FutureEither::Left((seg_data, _)) => {
+                        let r = process_segment(seg_data, &mut ack_win, &mut sink, s.clone()).await;
+                        if let Err(e) = r {
+                            println!("Has met seriously problem, e:{:?}", e);
+                            return;
                         }
                     }
-                    Meta_RequestType::NEED_RESEND => {}
-                    _ => {
-                        unreachable!();
-                    }
-                }
+                    FutureEither::Right((_, _)) => {}
+                };
             }
         };
         TOKIO_RUN.spawn(get_data_exec);
@@ -310,6 +270,61 @@ impl SkyTracing for SkyTracingService {
             }
         }
     }
+}
+
+async fn handshake_exec(sink: &mut DuplexSink<SegmentRes>) {
+    let conn_id = CONN_MANAGER.gen_new_conn_id();
+    let mut resp = SegmentRes::new();
+    let mut meta = Meta::new();
+    meta.connId = conn_id;
+    meta.field_type = Meta_RequestType::HANDSHAKE;
+    resp.set_meta(meta);
+    // We don't care handshake is success or not, client should retry for this
+    let _ = sink.send((resp, WriteFlags::default())).await;
+    println!("Has sent handshake response!");
+    let _ = sink.flush().await;
+}
+
+async fn process_segment(
+    seg: Result<Option<SegmentData>, GrpcError>,
+    ack_win: &mut AckWindow,
+    sink: &mut DuplexSink<SegmentRes>,
+    sender: Sender<SegmentData>,
+) -> Result<(), AnyError> {
+    let seg = seg?;
+    if let Some(data) = seg {
+        if !data.has_meta() {
+            return Ok(());
+        }
+        match data.get_meta().get_field_type() {
+            Meta_RequestType::HANDSHAKE => {
+                handshake_exec(sink).await;
+            }
+            Meta_RequestType::TRANS => {
+                let r = ack_win.send(data.get_meta().get_seqId());
+                match r {
+                    Ok(_) => {
+                        let _ = sender.try_send(data)?;
+                    }
+                    Err(w) => match w {
+                        // Hang on, send current ack back
+                        WindowErr::Full => {
+                            let segment_resp = SegmentRes::new();
+                            let mut meta = Meta::new();
+                            meta.set_field_type(Meta_RequestType::TRANS_ACK);
+                            meta.set_seqId(ack_win.curr_ack_id());
+                            let _ = sink.send((segment_resp, WriteFlags::default())).await?;
+                        }
+                    },
+                }
+            }
+            Meta_RequestType::NEED_RESEND => {}
+            _ => {
+                unreachable!();
+            }
+        }
+    }
+    Ok(())
 }
 
 fn search(
