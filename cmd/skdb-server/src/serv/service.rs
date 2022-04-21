@@ -7,6 +7,8 @@ use futures_util::{FutureExt as _, TryFutureExt as _};
 use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
 use grpcio::WriteFlags;
+use skdb::com::ack::AckWindow;
+use skdb::com::ack::WindowErr;
 use skdb::com::config::GlobalConfig;
 use skdb::com::index::IndexAddr;
 use skdb::com::index::IndexPath;
@@ -42,16 +44,21 @@ pub struct SkyTracingService {
     index_map: Arc<Mutex<HashMap<IndexAddr, Index>>>,
 }
 
+enum SegmentEvent {
+    DataEvent(SegmentData),
+    Shutdown,
+}
+
 impl SkyTracingService {
     // do new and spawn two things
     pub fn new_spawn(
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
         config: Arc<GlobalConfig>,
     ) -> SkyTracingService {
-        let (s, r) = bounded::<SegmentData>(20000);
-        let m_router = router.clone();
+        let (s, r) = unbounded::<SegmentData>();
+        let router = router.clone();
         let index_path = config.index_dir.clone();
-        let schema = Self::init_tracing_schema();
+        let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
         let service = SkyTracingService {
             sender: s,
@@ -59,66 +66,74 @@ impl SkyTracingService {
             tracing_schema: schema.clone(),
             index_map: index_map.clone(),
         };
-        thread::spawn(move || loop {
-            let res = r.recv();
-            match res {
-                Ok(seg_data) => {
-                    let addr = IndexPath::compute_index_addr(seg_data.biz_timestamp as IndexAddr);
-                    match addr {
-                        Ok(addr) => {
-                            let res = m_router.send(addr, seg_data);
-                            match res {
-                                Either::Right(msg) => {
-                                    // Mailbox not exists, so we regists a new one
-                                    let (s, r) = unbounded();
-                                    // TODO: use config struct
-                                    let mut engine = TracingTagEngine::new(
-                                        addr,
-                                        index_path.clone(),
-                                        schema.clone(),
-                                    );
-                                    // TODO: error process logic is emitted currently
-                                    let res = engine.init();
-                                    if let Ok(index) = res {
-                                        index_map.lock().unwrap().insert(addr, index);
-                                        let fsm = Box::new(TagFsm {
-                                            receiver: r,
-                                            mailbox: None,
-                                            engine,
-                                            last_idx: 0,
-                                            counter: 0,
-                                        });
-                                        let state_cnt = Arc::new(AtomicUsize::new(0));
-                                        let mailbox = BasicMailbox::new(s, fsm, state_cnt);
-                                        let fsm = mailbox.take_fsm();
-                                        if let Some(mut f) = fsm {
-                                            f.mailbox = Some(mailbox.clone());
-                                            mailbox.release(f);
-                                        }
-                                        m_router.register(addr, mailbox);
-                                        m_router.send(addr, msg);
-                                    } else {
-                                        println!("TagEngine init failed!")
-                                    }
-                                }
-                                Either::Left(_) => {
-                                    continue;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            println!("Invalid seg_data, data biztime has exceeded 30 days!");
-                            continue;
-                        }
-                    }
-                }
-                Err(_) => {}
-            }
+        thread::spawn(move || {
+            Self::recv_and_process(r, router, index_path, schema, index_map);
         });
         service
     }
 
-    pub fn init_tracing_schema() -> Schema {
+    fn recv_and_process(
+        recv: Receiver<SegmentData>,
+        router: Router<TagFsm, NormalScheduler<TagFsm>>,
+        index_path: String,
+        schema: Schema,
+        index_map: Arc<Mutex<HashMap<i64, Index>>>,
+    ) -> Result<(), AnyError> {
+        loop {
+            let seg = recv.recv()?;
+            let res = IndexPath::compute_index_addr(seg.biz_timestamp as IndexAddr);
+            match res {
+                Ok(addr) => {
+                    let sent_stat = router.send(addr, seg);
+                    match sent_stat {
+                        // Can't find the mailbox which is dependent by this segment
+                        Either::Right(msg) => {
+                            // Mailbox not exists, so we regists a new one
+                            let (s, r) = unbounded();
+                            // TODO: use config struct
+                            let mut engine =
+                                TracingTagEngine::new(addr, index_path.clone(), schema.clone());
+                            // TODO: error process logic is emitted currently
+                            let res = engine.init();
+                            if let Ok(index) = res {
+                                index_map.lock().unwrap().insert(addr, index);
+                                let fsm = Box::new(TagFsm {
+                                    receiver: r,
+                                    mailbox: None,
+                                    engine,
+                                    last_idx: 0,
+                                    counter: 0,
+                                });
+                                let state_cnt = Arc::new(AtomicUsize::new(0));
+                                let mailbox = BasicMailbox::new(s, fsm, state_cnt);
+                                let fsm = mailbox.take_fsm();
+                                if let Some(mut f) = fsm {
+                                    f.mailbox = Some(mailbox.clone());
+                                    mailbox.release(f);
+                                }
+                                router.register(addr, mailbox);
+                                router.send(addr, msg);
+                            } else {
+                                println!("TagEngine init failed!")
+                            }
+                        }
+                        Either::Left(v) => {
+                            if let Err(e) = v {
+                                println!("Mailbox's receiver has dropped, {:?}", e);
+                            }
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Incorrect segment data format, skip this data. e:{:?}", e);
+                    continue;
+                }
+            }
+        }
+    }
+
+    pub fn init_sk_schema() -> Schema {
         let mut schema_builder = Schema::builder();
         schema_builder.add_text_field(ZONE, STRING);
         schema_builder.add_i64_field(API_ID, INDEXED);
@@ -188,8 +203,39 @@ impl SkyTracing for SkyTracingService {
                         sink = handshake_exec(data, sink).await;
                     }
                     Meta_RequestType::TRANS => {
-                        let s = s.send(data);
+                        let mut ack_win = AckWindow::new(64 * 100);
+                        let r = ack_win.send(data.get_meta().get_seqId());
+                        match r {
+                            Ok(_) => {
+                                let r = s.try_send(data);
+                                if let Err(e) = r {
+                                    // channel is closed ,notify the other end peer
+                                    if e.is_disconnected() {
+                                        println!("Current channel is dropped, grpc receiver exit!");
+                                        return;
+                                    }
+                                }
+                            }
+                            Err(w) => match w {
+                                // Hang on, send current ack back
+                                WindowErr::Full => {
+                                    let segment_resp = SegmentRes::new();
+                                    let mut meta = Meta::new();
+                                    meta.set_field_type(Meta_RequestType::TRANS_ACK);
+                                    meta.set_seqId(ack_win.curr_ack_id());
+                                    let r = sink.send((segment_resp, WriteFlags::default())).await;
+                                    if let Err(e) = r {
+                                        println!(
+                                            "Grpc have serious problem, break current read loop, e:{:?}", e
+                                        );
+                                        return;
+                                    }
+                                    // Loop check current
+                                }
+                            },
+                        }
                     }
+                    Meta_RequestType::NEED_RESEND => {}
                     _ => {
                         unreachable!();
                     }

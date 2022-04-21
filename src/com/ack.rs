@@ -1,9 +1,17 @@
 use anyhow::Error as AnyError;
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug)]
 pub enum WindowErr {
     Full,
 }
+
+#[derive(Debug)]
+pub struct MsgAckTracingCtl {
+    window: AckWindow,
+}
+
+impl MsgAckTracingCtl {}
 
 #[derive(Debug)]
 pub struct AckWindow {
@@ -23,6 +31,10 @@ impl AckWindow {
             size,
             current_max: 0,
         }
+    }
+
+    pub fn curr_ack_id(&self) -> i64 {
+        self.start + self.current_max as i64
     }
 
     // When call send method, seq_id should sorted , or it will become
@@ -78,6 +90,17 @@ impl AckWindow {
         self.start = 0;
         self.current_max = 0;
         self.bit_set.clear();
+    }
+}
+
+// Used to ack the segment
+struct AckCallback {
+    sender: UnboundedSender<i64>,
+}
+
+impl AckCallback {
+    fn callback(&self, seq_id: i64) {
+        let _ = self.sender.send(seq_id);
     }
 }
 
