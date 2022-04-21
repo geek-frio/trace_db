@@ -69,7 +69,13 @@ impl SkyTracingService {
             index_map: index_map.clone(),
         };
         thread::spawn(move || {
-            Self::recv_and_process(r, router, index_path, schema, index_map);
+            let r = Self::recv_and_process(r, router, index_path, schema, index_map);
+            if let Err(e) = r {
+                println!(
+                    "Channel of getting sky segment is empty and disconnected!e:{:?}",
+                    e
+                );
+            }
         });
         service
     }
@@ -202,7 +208,27 @@ impl SkyTracing for SkyTracingService {
                             return;
                         }
                     }
-                    FutureEither::Right((_, _)) => {}
+                    FutureEither::Right((seq_id, _)) => {
+                        if let Some(seq_id) = seq_id {
+                            if seq_id <= 0 {
+                                continue;
+                            }
+                            let r = ack_win.ack(seq_id);
+                            if let Err(e) = r {
+                                println!("Have got an unexpeced seqid to ack; e:{:?}", e);
+                            }
+                            let mut seg_res = SegmentRes::default();
+                            let mut meta = Meta::new();
+                            meta.set_field_type(Meta_RequestType::TRANS_ACK);
+                            meta.set_seqId(ack_win.curr_ack_id());
+                            seg_res.set_meta(meta);
+                            let d = (seg_res, WriteFlags::default());
+                            let r = sink.send(d).await;
+                            if let Err(e) = r {
+                                println!("Send trans ack failed!e:{:?}", e);
+                            }
+                        }
+                    }
                 };
             }
         };
