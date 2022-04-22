@@ -2,6 +2,8 @@ use std::fmt::Debug;
 use std::iter::Chain;
 use std::slice::Iter;
 
+use tracing::instrument;
+
 pub trait SeqId {
     fn seq_id(&self) -> usize;
 }
@@ -33,10 +35,13 @@ pub enum RingIter<'a, T> {
     Empty,
 }
 
+pub type QueueLength = usize;
+pub type CurId = usize;
+
 #[derive(PartialEq, Debug)]
 pub enum RingQueueError {
-    SendNotOneByOne,
-    QueueIsFull,
+    SendNotOneByOne(CurId),
+    QueueIsFull(CurId, QueueLength),
 }
 
 impl<'a, T> Iterator for RingIter<'a, T> {
@@ -71,10 +76,10 @@ where
     // sending new msg until [ack position] follow up [send position]
     pub fn send(&mut self, el: E) -> Result<(), RingQueueError> {
         if self.is_full() {
-            return Err(RingQueueError::QueueIsFull);
+            return Err(RingQueueError::QueueIsFull(self.cur_num, self.size));
         }
         if self.cur_num != 0 && el.seq_id() - self.cur_num != 1 {
-            return Err(RingQueueError::SendNotOneByOne);
+            return Err(RingQueueError::SendNotOneByOne(self.cur_num));
         }
 
         self.send_pos = (self.send_pos + 1) % self.size;
@@ -86,6 +91,18 @@ where
         }
         let _ = std::mem::replace(&mut self.data[self.send_pos], el);
         Ok(())
+    }
+
+    #[instrument]
+    pub fn check(&self, el: &E) -> Result<(), RingQueueError> {
+        if self.is_full() {
+            return Err(RingQueueError::QueueIsFull(self.cur_num, self.size));
+        }
+        if self.cur_num != 0 && el.seq_id() - self.cur_num != 1 {
+            return Err(RingQueueError::SendNotOneByOne(self.cur_num));
+        }
+
+        return Ok(());
     }
 
     pub fn ack(&mut self, seq_id: usize) {
@@ -180,7 +197,7 @@ mod tests {
         }
         let r = ring.send((start_element + 100 + 1).into());
         assert!(r.is_err());
-        assert!(r.unwrap_err() == RingQueueError::QueueIsFull);
+        // assert!(r.unwrap_err() == RingQueueError::QueueIsFull);
     }
 
     #[test]

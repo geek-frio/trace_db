@@ -15,16 +15,22 @@ use skdb::TOKIO_RUN;
 use skproto::tracing::Meta_RequestType;
 use skproto::tracing::SegmentData;
 use skproto::tracing::SegmentRes;
-use skproto::tracing::SkyTracingClient;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::time::Instant;
 use tokio::time::sleep;
+use tracing::error;
+use tracing::info;
 use tracing::info_span;
+use tracing::trace;
+use tracing::trace_span;
+use tracing::warn;
 use tracing::Instrument;
 
+const MAX_SLEEP_SECS: u64 = 120;
+
 pub struct SeqMail<T, W, Resp> {
-    sender: IndexSender<T, W>,
+    pub(crate) sender: IndexSender<T, W>,
     pub receiver: ClientDuplexReceiver<Resp>,
 }
 
@@ -73,7 +79,10 @@ impl SeqMail<SegmentData, SegmentDataWrap, SegmentRes> {
         msg: SegmentDataWrap,
         flags: WriteFlags,
     ) -> Result<(), IndexSendErr> {
-        self.sender.send(msg, flags).await?;
+        self.sender
+            .send(msg, flags)
+            .instrument(trace_span!("send"))
+            .await?;
         Ok(())
     }
 
@@ -96,17 +105,18 @@ impl SeqMail<SegmentData, SegmentDataWrap, SegmentRes> {
                 match select(e_r.next(), seq_mail.receiver.next()).await {
                     Either::Left((value1, _)) => {
                         if let Some(s) = value1 {
-                            let r = seq_mail.send_msg(s, WriteFlags::default()).await;
-                            match r {
-                                Ok(_) => {}
-                                Err(e) => match e {
+                            let r = seq_mail.send_msg(s, WriteFlags::default()).instrument(trace_span!("send_msg")).await;
+                            if let Err(e) = r {
+                                warn!(?e, "Send msg failed!");
+                                match e {
                                     IndexSendErr::Win(e) => {
                                         match e {
-                                            RingQueueError::QueueIsFull => {
-                                                println!("Another Grpc segment receiver is full, slow down send speed");
+                                            RingQueueError::QueueIsFull(cur_id, ring_queue_size) => {
+                                                warn!(%cur_id, %ring_queue_size, ?seq_mail.sender.ack_win, "Ring queue is full");
                                                 // 实现指数Full以后指数退避
                                                 match timer {
                                                     None => {
+                                                        warn!("First time sleep 1 second");
                                                         sleep(Duration::from_secs(1)).await;
                                                         timer = Some((Instant::now(), 1));
                                                     }
@@ -114,27 +124,29 @@ impl SeqMail<SegmentData, SegmentDataWrap, SegmentRes> {
                                                         // 不到1s的时间内又发生了Full的情况, 等待时间指数退避
                                                         if t.elapsed().as_millis() < 1000 {
                                                             let hang_time= {
-                                                                if num * 2 > 120 {
+                                                                if num * 2 > MAX_SLEEP_SECS{
+                                                                    warn!(%num, "Has overseed the max sleep time");
                                                                     120
                                                                 } else {
                                                                     num
                                                                 }
                                                             };
+                                                            warn!(%hang_time, %num, "queue full, sleep again");
                                                             timer = Some((Instant::now(), hang_time));
                                                             sleep(Duration::from_secs(hang_time)).await;
                                                         }
                                                     }
                                                 }
                                             }
-                                            RingQueueError::SendNotOneByOne => {
-                                                println!("Try to skip this msg, this should not be happen!");
+                                            RingQueueError::SendNotOneByOne(cur_id) => {
+                                                error!(%cur_id, ?seq_mail.sender.ack_win, "RingQueueError: not sent one by one! Try to skip this msg, this should not be happen!");
                                             }
                                         }
                                     }
                                     IndexSendErr::Grpc(e) => {
-                                        println!("Send segmentdata failed! Has met serious grpc problem:e:{:?}", e);
+                                        error!(?e, "Send segmentdata failed! Has met serious grpc problem");
                                     }
-                                },
+                                }
                             }
                         }
                     }
@@ -144,15 +156,17 @@ impl SeqMail<SegmentData, SegmentDataWrap, SegmentRes> {
                                 // 需要处理SegmentRes的Meta类型
                                 match resp.get_meta().get_field_type(){
                                     Meta_RequestType::HANDSHAKE => {
-                                        println!("Handshake should not come here, do nothing~");
+                                        warn!("Handshake should not comme here, do nothing");
                                     },
                                     Meta_RequestType::TRANS_ACK=> {
+                                        trace!(ack_id = resp.get_meta().get_seqId(), resp_meta = ?resp.get_meta(), "start to do trace seqId operation");
                                         let r = seq_mail.ack(resp.get_meta().seqId);
                                         if let Err(e) = r {
-                                            println!("Serious!!Ack window ack failed! e:{:?}", e);
+                                            error!(%e, "Serious!!Ack window ack failed!");
                                         }
                                     },
                                     Meta_RequestType::NEED_RESEND => {
+                                        info!(resp = ?resp, "Have got need resend signal");
                                         let m = seq_mail.sender.ack_win.not_ack_iter();
                                         let segs = m.map(|w| {
                                             let mut s = w.clone().0;
@@ -161,31 +175,32 @@ impl SeqMail<SegmentData, SegmentDataWrap, SegmentRes> {
                                             m.set_field_type(Meta_RequestType::NEED_RESEND);
                                             s
                                         }).collect::<Vec<SegmentData>>();
-                                        segs.into_iter().for_each(|s| {
-                                            // Retry data, we don't care the send status
-                                            let _ = seq_mail.send_msg(SegmentDataWrap(s), WriteFlags::default());
-                                        });
+                                        trace!(resend_segs = ?segs, "Start to resend these segments");
+                                        for seg in segs {
+                                            let r = seq_mail.send_msg(SegmentDataWrap(seg), WriteFlags::default()).await;
+                                            trace!(send_status = ?r, "resend segment");
+                                        }
                                     }
                                     _ => {
-                                        println!("Unexpected type, do nothing!");
+                                        error!(resp_meta = ?resp.get_meta(), "Unexpected type, do nothing!");
                                     },
                                 }
                            }
                             Err(e) => match e {
                                 GrpcErr::Codec(e) => {
-                                    println!("Receiving AckMsg: Grpc codec problem!e:{:?}", e)
+                                    error!(e = ?e, "Receiving AckMsg: Grpc codec problem! skip this message");
                                 }
                                 GrpcErr::InvalidMetadata(e) => {
-                                    println!("Grpc invalid metadata problem!e:{:?}", e);
+                                    error!(e = ?e, "Grpc invalid metadata problem! skip this message");
                                 }
                                 _ => {
-                                    println!("Grpc send serious problem, quit!");
+                                    error!(e = ?e, "Grpc send serious problem, quit!");
                                     return;
                                 }
                             },
                         },
                         None => {
-                            println!("Has got a none segment resp,continue loop!");
+                            error!("Has got a none segment resp,continue loop!");
                             continue;
                         }
                     },
@@ -196,14 +211,21 @@ impl SeqMail<SegmentData, SegmentDataWrap, SegmentRes> {
     }
 }
 
+#[derive(Debug)]
 pub enum IndexSendErr {
     Win(RingQueueError),
     Grpc(GrpcErr),
 }
 
+impl From<RingQueueError> for IndexSendErr {
+    fn from(e: RingQueueError) -> Self {
+        IndexSendErr::Win(e)
+    }
+}
+
 pub struct IndexSender<T, W> {
     sender: StreamingCallSink<T>,
-    ack_win: RingQueue<W>,
+    pub(crate) ack_win: RingQueue<W>,
     phatom: PhantomData<W>,
 }
 
@@ -223,22 +245,13 @@ impl<W: Debug + SeqId + Clone + BlankElement<Item = W> + Into<T>, T> IndexSender
     }
 
     pub async fn send(&mut self, value: W, flags: WriteFlags) -> Result<(), IndexSendErr> {
-        if self.ack_win.is_full() {
-            return Err(IndexSendErr::Win(RingQueueError::QueueIsFull));
-        }
+        self.ack_win.check(&value)?;
         return self
             .sender
             .send((value.clone().into(), flags))
             .await
             .map(|_| {
-                let _ = self.ack_win.send(value).map_err(|e| match e {
-                    RingQueueError::QueueIsFull => {
-                        unreachable!();
-                    }
-                    RingQueueError::SendNotOneByOne => {
-                        println!("Value seqId should one by one");
-                    }
-                });
+                let _ = self.ack_win.send(value);
             })
             .map_err(|e| {
                 // When fail send, we need to sub 1

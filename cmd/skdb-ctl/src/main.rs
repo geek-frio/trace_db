@@ -89,7 +89,7 @@ fn main() {
     let exec_func = async {
         let (sink, r, conn_id, client) = Connector::sk_connect_handshake().await.unwrap();
         let window_size = 64 * 100;
-        let mut sender = SeqMail::start_task(sink, r, window_size, &client)
+        let mut sender = SeqMail::start_task(sink, r, window_size, conn_id)
             .instrument(info_span!("start_task"))
             .await;
         let qps_set = QpsSetValue::val_of(&args.qps);
