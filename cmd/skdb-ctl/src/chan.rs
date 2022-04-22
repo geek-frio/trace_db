@@ -15,11 +15,13 @@ use skdb::TOKIO_RUN;
 use skproto::tracing::Meta_RequestType;
 use skproto::tracing::SegmentData;
 use skproto::tracing::SegmentRes;
+use skproto::tracing::SkyTracingClient;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::time::Instant;
 use tokio::time::sleep;
-use tracing::instrument;
+use tracing::info_span;
+use tracing::Instrument;
 
 pub struct SeqMail<T, W, Resp> {
     sender: IndexSender<T, W>,
@@ -83,6 +85,7 @@ impl SeqMail<SegmentData, SegmentDataWrap, SegmentRes> {
         sink: StreamingCallSink<SegmentData>,
         rpc_recv: ClientDuplexReceiver<SegmentRes>,
         win_size: usize,
+        conn_id: i32,
     ) -> UnboundedSender<SegmentDataWrap> {
         let (e_s, mut e_r) = unbounded::<SegmentDataWrap>();
         let mut seq_mail = Self::new(sink, rpc_recv, win_size);
@@ -188,7 +191,7 @@ impl SeqMail<SegmentData, SegmentDataWrap, SegmentRes> {
                     },
                 };
             }
-        });
+        }.instrument(info_span!("start_task", %conn_id)));
         e_s
     }
 }

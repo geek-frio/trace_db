@@ -8,6 +8,7 @@ use skdb::TOKIO_RUN;
 use skproto::tracing::*;
 use tokio::time::{sleep, Duration};
 use tracing::{info_span, Instrument};
+use tracing_subscriber::fmt::Subscriber;
 
 use crate::chan::{SegmentDataWrap, SeqMail};
 use crate::conn::Connector;
@@ -76,6 +77,9 @@ fn mock_seg(conn_id: i32, api_id: i32, seq_id: i64) -> SegmentData {
 }
 
 fn main() {
+    // Set global subscriber to console log
+    let fmt_scriber = Subscriber::new();
+    tracing::subscriber::set_global_default(fmt_scriber).expect("Set global subscriber");
     let args = Args::parse();
     println!(
         "Use pressure config is port:{}, ip:{}, qps: {}",
@@ -83,8 +87,11 @@ fn main() {
     );
 
     let exec_func = async {
-        let (sink, r, conn_id, _client) = Connector::sk_connect_handshake().await.unwrap();
-        let mut sender = SeqMail::start_task(sink, r, 64 * 20).await;
+        let (sink, r, conn_id, client) = Connector::sk_connect_handshake().await.unwrap();
+        let window_size = 64 * 100;
+        let mut sender = SeqMail::start_task(sink, r, window_size, &client)
+            .instrument(info_span!("start_task"))
+            .await;
         let qps_set = QpsSetValue::val_of(&args.qps);
         let mut seq_id = 1;
         loop {
