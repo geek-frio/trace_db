@@ -251,7 +251,9 @@ impl<W: Debug + SeqId + Clone + BlankElement<Item = W> + Into<T>, T> IndexSender
             .send((value.clone().into(), flags))
             .await
             .map(|_| {
+                trace!(msg = ?value, "Msg has been sent by IndexSender");
                 let _ = self.ack_win.send(value);
+                trace!("Sent msg has been sent by ring queue");
             })
             .map_err(|e| {
                 // When fail send, we need to sub 1
