@@ -19,6 +19,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::time::Instant;
 use tokio::time::sleep;
+use tracing::instrument;
 
 pub struct SeqMail<T, W, Resp> {
     sender: IndexSender<T, W>,

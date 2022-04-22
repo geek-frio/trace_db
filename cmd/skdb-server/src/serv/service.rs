@@ -183,8 +183,6 @@ impl SkyTracing for SkyTracingService {
         stream: ::grpcio::RequestStream<SegmentData>,
         mut sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
-        // Logic for handshake
-
         let s = self.sender.clone();
         // Logic for processing segment datas
         let get_data_exec = async move {
