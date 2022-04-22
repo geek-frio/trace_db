@@ -115,7 +115,7 @@ mod tests {
         TOKIO_RUN.block_on(async {
             let res = Connector::sk_connect_handshake().await;
             match res {
-                Ok((_sink, _recv, conn_id)) => {
+                Ok((_sink, _recv, conn_id, _client)) => {
                     println!("connect id is:{:?}", conn_id);
                 }
                 Err(e) => {
