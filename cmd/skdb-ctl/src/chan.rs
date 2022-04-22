@@ -125,8 +125,8 @@ impl SeqMail<SegmentData, SegmentDataWrap, SegmentRes> {
                                                         if t.elapsed().as_millis() < 1000 {
                                                             let hang_time= {
                                                                 if num * 2 > MAX_SLEEP_SECS{
-                                                                    warn!(%num, "Has overseed the max sleep time");
-                                                                    120
+                                                                    warn!(%num, "Has overseed the max sleep time in less one second after sleep");
+                                                                   MAX_SLEEP_SECS 
                                                                 } else {
                                                                     num
                                                                 }
