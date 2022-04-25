@@ -3,12 +3,14 @@ use std::path::{Path, PathBuf};
 use anyhow::Error as AnyError;
 use chrono::{prelude::*, Duration};
 use chrono::{TimeZone, Utc};
+use tracing::instrument;
 
 pub type IndexAddr = i64;
 
 pub struct IndexPath;
 
 impl IndexPath {
+    #[instrument]
     pub fn compute_index_addr(biz_timestamp: i64) -> Result<IndexAddr, AnyError> {
         let now = Utc::now();
         let d = Utc.timestamp_millis(biz_timestamp);

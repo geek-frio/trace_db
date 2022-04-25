@@ -3,15 +3,21 @@ use std::borrow::Cow;
 use crate::com::{ack::AckCallback, fsm::Fsm, mail::BasicMailbox};
 use crossbeam_channel::Receiver;
 use skproto::tracing::SegmentData;
+use tracing::Span;
 
 use super::engine::TracingTagEngine;
 
 impl Drop for TagFsm {
     fn drop(&mut self) {}
 }
+pub struct SegmentDataCallback {
+    pub data: SegmentData,
+    pub callback: AckCallback,
+    pub span: Span,
+}
 
 pub struct TagFsm {
-    pub receiver: Receiver<(SegmentData, AckCallback)>,
+    pub receiver: Receiver<SegmentDataCallback>,
     pub mailbox: Option<BasicMailbox<TagFsm>>,
     pub engine: TracingTagEngine,
     pub last_idx: u64,
@@ -20,7 +26,7 @@ pub struct TagFsm {
 
 impl TagFsm {
     pub fn new(
-        receiver: Receiver<(SegmentData, AckCallback)>,
+        receiver: Receiver<SegmentDataCallback>,
         mailbox: Option<BasicMailbox<TagFsm>>,
         engine: TracingTagEngine,
     ) -> TagFsm {
@@ -33,9 +39,9 @@ impl TagFsm {
         }
     }
     // TODO: use batch logic, currently directly write to disk
-    pub fn handle_tasks(&mut self, msgs: &mut Vec<(SegmentData, AckCallback)>) {
+    pub fn handle_tasks(&mut self, msgs: &mut Vec<SegmentDataCallback>) {
         for msg in msgs {
-            self.engine.add_record(&msg.0);
+            self.engine.add_record(&msg.data);
             self.counter += 1;
         }
         if self.counter > 5000 {
@@ -59,7 +65,7 @@ impl TagFsm {
 }
 
 impl Fsm for TagFsm {
-    type Message = (SegmentData, AckCallback);
+    type Message = SegmentDataCallback;
 
     fn is_stopped(&self) -> bool {
         // TODO: later we will add condition control

@@ -1394,6 +1394,8 @@ dependencies = [
  "tantivy-common",
  "tantivy-query-grammar",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

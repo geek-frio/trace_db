@@ -26,6 +26,7 @@ use skdb::com::router::Router;
 use skdb::com::sched::NormalScheduler;
 use skdb::tag::engine::TracingTagEngine;
 use skdb::tag::engine::*;
+use skdb::tag::fsm::SegmentDataCallback;
 use skdb::tag::fsm::TagFsm;
 use skdb::*;
 use skproto::tracing::*;
@@ -42,9 +43,18 @@ use tantivy::Index;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
+use tracing::info;
+use tracing::info_span;
+use tracing::span;
+use tracing::trace;
+use tracing::trace_span;
+use tracing::warn;
+use tracing::Instrument;
+use tracing::Level;
+
 #[derive(Clone)]
 pub struct SkyTracingService {
-    sender: Sender<(SegmentData, AckCallback)>,
+    sender: Sender<SegmentDataCallback>,
     config: Arc<GlobalConfig>,
     // All the tag engine share the same index schema
     tracing_schema: Schema,
@@ -57,7 +67,7 @@ impl SkyTracingService {
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
         config: Arc<GlobalConfig>,
     ) -> SkyTracingService {
-        let (s, r) = crossbeam_channel::unbounded::<(SegmentData, AckCallback)>();
+        let (s, r) = crossbeam_channel::unbounded::<SegmentDataCallback>();
         let router = router.clone();
         let index_path = config.index_dir.clone();
         let schema = Self::init_sk_schema();
@@ -81,18 +91,22 @@ impl SkyTracingService {
     }
 
     fn recv_and_process(
-        recv: Receiver<(SegmentData, AckCallback)>,
+        recv: Receiver<SegmentDataCallback>,
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
         index_path: String,
         schema: Schema,
         index_map: Arc<Mutex<HashMap<i64, Index>>>,
     ) -> Result<(), AnyError> {
         loop {
-            let (seg, callback) = recv.recv()?;
-            let res = IndexPath::compute_index_addr(seg.biz_timestamp as IndexAddr);
+            let segment_callback = recv.recv()?;
+            let _entered = segment_callback.span.enter();
+            trace!(parent: &segment_callback.span, "Has received the segment, try to route to mailbox.");
+            let res =
+                IndexPath::compute_index_addr(segment_callback.data.biz_timestamp as IndexAddr);
             match res {
                 Ok(addr) => {
-                    let sent_stat = router.send(addr, (seg, callback));
+                    drop(_entered);
+                    let sent_stat = router.send(addr, segment_callback);
                     match sent_stat {
                         // Can't find the mailbox which is dependent by this segment
                         Either::Right(msg) => {
@@ -121,7 +135,7 @@ impl SkyTracingService {
                                 // Maybe we should store this msg anywhere
                                 Err(e) => {
                                     println!("TagEngine init failed! We just ack this msg:{:?}", e);
-                                    msg.1.callback(msg.0.get_meta().get_seqId());
+                                    msg.callback.callback(msg.data.get_meta().get_seqId());
                                 }
                             }
                         }
@@ -200,6 +214,7 @@ impl SkyTracing for SkyTracingService {
                             s.clone(),
                             ack_s.clone(),
                         )
+                        .instrument(trace_span!("process_segment"))
                         .await;
                         if let Err(e) = r {
                             println!("Has met seriously problem, e:{:?}", e);
@@ -300,24 +315,27 @@ impl SkyTracing for SkyTracingService {
     }
 }
 
-async fn handshake_exec(sink: &mut DuplexSink<SegmentRes>) {
+async fn handshake_exec(sink: &mut DuplexSink<SegmentRes>) -> Result<(), AnyError> {
     let conn_id = CONN_MANAGER.gen_new_conn_id();
     let mut resp = SegmentRes::new();
     let mut meta = Meta::new();
     meta.connId = conn_id;
     meta.field_type = Meta_RequestType::HANDSHAKE;
+    info!(meta = ?meta, %conn_id, resp = ?resp, "Send handshake resp");
     resp.set_meta(meta);
     // We don't care handshake is success or not, client should retry for this
-    let _ = sink.send((resp, WriteFlags::default())).await;
+    sink.send((resp, WriteFlags::default())).await?;
     println!("Has sent handshake response!");
+    info!("Send handshake resp success");
     let _ = sink.flush().await;
+    Ok(())
 }
 
 async fn process_segment(
     seg: Result<Option<SegmentData>, GrpcError>,
     ack_win: &mut AckWindow,
     sink: &mut DuplexSink<SegmentRes>,
-    sender: Sender<(SegmentData, AckCallback)>,
+    sender: Sender<SegmentDataCallback>,
     ack_sender: UnboundedSender<i64>,
 ) -> Result<(), AnyError> {
     let seg = seg?;
@@ -327,13 +345,26 @@ async fn process_segment(
         }
         match data.get_meta().get_field_type() {
             Meta_RequestType::HANDSHAKE => {
-                handshake_exec(sink).await;
+                handshake_exec(sink)
+                    .instrument(info_span!(
+                        "handshake_exec",
+                        conn_id = data.get_meta().get_connId(),
+                        meta = ?data.get_meta()
+                    ))
+                    .await?;
             }
             Meta_RequestType::TRANS => {
                 let r = ack_win.send(data.get_meta().get_seqId());
                 match r {
                     Ok(_) => {
-                        let _ = sender.try_send((data, AckCallback::new(ack_sender)));
+                        let span = span!(Level::TRACE, "receiver_consume", data = ?data);
+                        let data = SegmentDataCallback {
+                            data: data,
+                            callback: AckCallback::new(ack_sender),
+                            span,
+                        };
+                        let _ = sender.try_send(data);
+                        trace!("Has sent segment to local channel(Waiting for storage operation and callback)");
                     }
                     Err(w) => match w {
                         // Hang on, send current ack back
@@ -342,6 +373,7 @@ async fn process_segment(
                             let mut meta = Meta::new();
                             meta.set_field_type(Meta_RequestType::TRANS_ACK);
                             meta.set_seqId(ack_win.curr_ack_id());
+                            warn!(conn_id = meta.get_connId(), meta = ?meta, "Receiver window is full, send full signal to remote sender");
                             let _ = sink.send((segment_resp, WriteFlags::default())).await?;
                         }
                     },

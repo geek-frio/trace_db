@@ -1,5 +1,6 @@
 use anyhow::Error as AnyError;
 use futures::channel::mpsc::UnboundedSender;
+use tracing::instrument;
 
 #[derive(Debug)]
 pub enum WindowErr {
@@ -39,6 +40,7 @@ impl AckWindow {
 
     // When call send method, seq_id should sorted , or it will become
     //  unexpected behavior.
+    #[instrument]
     pub fn send(&mut self, seq_id: i64) -> Result<(), WindowErr> {
         if self.start == 0 {
             self.start = seq_id;

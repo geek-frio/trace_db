@@ -1,10 +1,8 @@
-use super::ack::AckCallback;
 use super::fsm::Fsm;
 use super::router::Router;
 use super::sched::FsmScheduler;
-use crate::tag::fsm::TagFsm;
+use crate::tag::fsm::{SegmentDataCallback, TagFsm};
 use crossbeam_channel::{Receiver, TryRecvError};
-use skproto::tracing::SegmentData;
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -378,7 +376,7 @@ pub trait PollHandler<N: Fsm>: Send + 'static {
 }
 
 struct TagPollHandler {
-    msg_buf: Vec<(SegmentData, AckCallback)>,
+    msg_buf: Vec<SegmentDataCallback>,
     counter: AtomicI32,
     last_time: Option<Instant>,
 }
