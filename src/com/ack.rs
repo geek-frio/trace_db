@@ -8,13 +8,6 @@ pub enum WindowErr {
 }
 
 #[derive(Debug)]
-pub struct MsgAckTracingCtl {
-    window: AckWindow,
-}
-
-impl MsgAckTracingCtl {}
-
-#[derive(Debug)]
 pub struct AckWindow {
     start: i64,
     bit_set: BitSet,
