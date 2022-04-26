@@ -88,6 +88,33 @@ impl AckWindow {
         }
     }
 
+    pub fn curr_max_ack_id(&self) -> u32 {
+        let bucket = self.bit_set.first_non_empty_bucket(0);
+        if let Some(bucket_num) = bucket {
+            let offset = self.bit_set.tinyset(bucket_num).lowest();
+            if let Some(v) = offset {
+                // Why do "-1" operation
+                // lowest 1 is the next to remove ack id
+                let ack_id = self.start as u32 + v + bucket_num * 64 - 1;
+                if ack_id < self.start as u32 {
+                    return 0;
+                } else {
+                    return ack_id;
+                }
+            }
+        }
+        // Never sent as msg before
+        if self.current_max == 0 {
+            return 0;
+        } else {
+            self.current_max + self.start as u32
+        }
+    }
+
+    pub fn curr_max_send_seq_id(&self) -> u32 {
+        return self.current_max + self.start as u32;
+    }
+
     pub fn clear(&mut self) {
         self.start = 0;
         self.current_max = 0;
@@ -305,11 +332,84 @@ impl BitSet {
 mod tests {
     use super::*;
     #[test]
-    fn test_ack_win_ready() -> Result<(), AnyError> {
+    fn test_ack_win_ready_single() -> Result<(), AnyError> {
         let mut win = AckWindow::new(10);
         win.send(10000).unwrap();
         win.ack(10000).unwrap();
         assert!(win.is_ready());
         return Ok(());
+    }
+
+    #[test]
+    fn test_ack_win_ready_cross() -> Result<(), AnyError> {
+        let mut win = AckWindow::new(10);
+        win.send(10000).unwrap();
+        win.ack(10000).unwrap();
+        win.send(10001).unwrap();
+        win.ack(10001).unwrap();
+        assert!(win.is_ready());
+        return Ok(());
+    }
+
+    #[test]
+    fn test_ack_win_ready_vec() -> Result<(), AnyError> {
+        let vec = vec![1, 2, 3, 4, 5, 6];
+        let mut win = AckWindow::new(10);
+        for v in &vec {
+            win.send(*v).unwrap();
+        }
+        for v in &vec {
+            win.ack(*v).unwrap();
+        }
+        assert!(win.is_ready());
+        Ok(())
+    }
+
+    #[test]
+    fn test_send_clear_send() -> Result<(), AnyError> {
+        let vec = vec![1, 2, 3, 4, 5, 6];
+        let mut win = AckWindow::new(10);
+        for v in &vec {
+            win.send(*v).unwrap();
+        }
+        for v in &vec {
+            win.ack(*v).unwrap();
+        }
+        if win.is_ready() {
+            win.clear();
+        }
+        win.clear();
+        win.send(7).unwrap();
+        win.ack(7).unwrap();
+        assert!(win.is_ready());
+        Ok(())
+    }
+
+    #[test]
+    fn test_current_max_seqid() -> Result<(), AnyError> {
+        let vec = vec![10001, 10002, 10003, 10004];
+        let mut ack_win = AckWindow::new(10);
+        for v in &vec {
+            ack_win.send(*v).unwrap();
+        }
+        assert!(10002 == ack_win.curr_max_send_seq_id());
+        Ok(())
+    }
+
+    #[test]
+    fn test_current_max_ackid() -> Result<(), AnyError> {
+        let mut ack_win = AckWindow::new(10);
+        ack_win.send(10001).unwrap();
+        assert!(0 == ack_win.curr_max_ack_id());
+        ack_win.send(10002).unwrap();
+        ack_win.send(10003).unwrap();
+        ack_win.send(10004).unwrap();
+        ack_win.ack(10001).unwrap();
+        ack_win.ack(10003).unwrap();
+        ack_win.ack(10004).unwrap();
+        println!("{}", ack_win.curr_max_ack_id());
+        assert!(ack_win.curr_max_ack_id() == 10001);
+
+        Ok(())
     }
 }
