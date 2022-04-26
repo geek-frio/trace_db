@@ -262,6 +262,12 @@ impl SkyTracing for SkyTracingService {
                             if let Err(e) = r {
                                 error!(%seq_id, "Have got an unexpeced seqid to ack; e:{:?}", e);
                                 continue;
+                            } else {
+                                // Make ack window enter into ready status
+                                if ack_win.is_ready() {
+                                    info!("Ack window is ready");
+                                    ack_win.clear();
+                                }
                             }
                             let mut seg_res = SegmentRes::default();
                             let mut meta = Meta::new();

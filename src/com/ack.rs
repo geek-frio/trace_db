@@ -88,7 +88,7 @@ impl AckWindow {
         }
     }
 
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.start = 0;
         self.current_max = 0;
         self.bit_set.clear();
