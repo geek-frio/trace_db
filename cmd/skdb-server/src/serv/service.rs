@@ -398,7 +398,7 @@ async fn process_segment(
                         let span = span!(Level::TRACE, "trans_receiver_consume", data = ?data);
                         let data = SegmentDataCallback {
                             data,
-                            callback: AckCallback::new(ack_sender),
+                            callback: AckCallback::new(Some(ack_sender)),
                             span,
                         };
                         let _ = sender.try_send(data);
@@ -418,7 +418,20 @@ async fn process_segment(
                 }
             }
             // 处理重发的数据
-            Meta_RequestType::NEED_RESEND => {}
+            Meta_RequestType::NEED_RESEND => {
+                // Need Resend data should not go ack_win control
+                trace!(meta = ?data.get_meta(), conn_id = data.get_meta().get_connId(), "Has received need send data!");
+                let span = span!(Level::TRACE, "trans_receiver_consume_need_resend");
+                let data = SegmentDataCallback {
+                    data,
+                    callback: AckCallback::new(Some(ack_sender)),
+                    span,
+                };
+                let _ = sender.try_send(data);
+                trace!(
+                    "NEED_RESEND: Has sent segment to local channel(Waiting for storage operation and callback)"
+                );
+            }
             _ => {
                 unreachable!();
             }

@@ -97,16 +97,18 @@ impl AckWindow {
 
 // Used to ack the segment
 pub struct AckCallback {
-    sender: UnboundedSender<i64>,
+    sender: Option<UnboundedSender<i64>>,
 }
 
 impl AckCallback {
-    pub fn new(sender: UnboundedSender<i64>) -> AckCallback {
+    pub fn new(sender: Option<UnboundedSender<i64>>) -> AckCallback {
         AckCallback { sender }
     }
 
     pub fn callback(&self, seq_id: i64) {
-        let _ = self.sender.unbounded_send(seq_id);
+        if let Some(sender) = &self.sender {
+            let _ = sender.unbounded_send(seq_id);
+        }
     }
 }
 
