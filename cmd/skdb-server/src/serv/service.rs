@@ -48,7 +48,6 @@ use tokio::time::sleep;
 use tracing::error;
 use tracing::info;
 use tracing::info_span;
-use tracing::instrument;
 use tracing::span;
 use tracing::trace;
 use tracing::trace_span;
@@ -235,6 +234,7 @@ impl SkyTracing for SkyTracingService {
             let (ack_s, mut ack_r) = funbounded::<i64>();
             let mut stream = stream.fuse();
             loop {
+                let _one_msg = trace_span!("recv_msg_one_loop");
                 let _ = match select(stream.try_next(), ack_r.next()).await {
                     FutureEither::Left((seg_data, _)) => {
                         let r = process_segment(
@@ -252,13 +252,16 @@ impl SkyTracing for SkyTracingService {
                         }
                     }
                     FutureEither::Right((seq_id, _)) => {
+                        trace!(seq_id = seq_id, "Has received ack callback");
                         if let Some(seq_id) = seq_id {
                             if seq_id <= 0 {
+                                error!(%seq_id, "Invalid seq_id");
                                 continue;
                             }
                             let r = ack_win.ack(seq_id);
                             if let Err(e) = r {
-                                println!("Have got an unexpeced seqid to ack; e:{:?}", e);
+                                error!(%seq_id, "Have got an unexpeced seqid to ack; e:{:?}", e);
+                                continue;
                             }
                             let mut seg_res = SegmentRes::default();
                             let mut meta = Meta::new();
@@ -268,13 +271,16 @@ impl SkyTracing for SkyTracingService {
                             let d = (seg_res, WriteFlags::default());
                             let r = sink.send(d).await;
                             if let Err(e) = r {
-                                println!("Send trans ack failed!e:{:?}", e);
+                                error!("Send trans ack failed!e:{:?}", e);
+                            } else {
+                                trace!(seq_id = ack_win.curr_ack_id(), "Sending ack to client");
                             }
                         }
                     }
                 };
             }
-        };
+        }
+        .instrument(info_span!("segments_receiver"));
         TOKIO_RUN.spawn(get_data_exec);
     }
 
@@ -375,6 +381,7 @@ async fn process_segment(
         }
         match data.get_meta().get_field_type() {
             Meta_RequestType::HANDSHAKE => {
+                info!(meta = ?data.get_meta(), "Has received handshake packet meta");
                 handshake_exec(sink)
                     .instrument(info_span!(
                         "handshake_exec",
@@ -385,9 +392,10 @@ async fn process_segment(
             }
             Meta_RequestType::TRANS => {
                 let r = ack_win.send(data.get_meta().get_seqId());
+                trace!(seq_id = data.get_meta().get_seqId(), meta = ?data.get_meta(), "Has received handshake packet meta");
                 match r {
                     Ok(_) => {
-                        let span = span!(Level::TRACE, "receiver_consume", data = ?data);
+                        let span = span!(Level::TRACE, "trans_receiver_consume", data = ?data);
                         let data = SegmentDataCallback {
                             data,
                             callback: AckCallback::new(ack_sender),
