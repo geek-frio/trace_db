@@ -35,6 +35,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
@@ -43,6 +44,7 @@ use tantivy::Index;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
+use tokio::time::sleep;
 use tracing::error;
 use tracing::info;
 use tracing::info_span;
@@ -89,8 +91,10 @@ impl SkyTracingService {
             }
         });
         // Periodicily send Tick event to notify Fsm
+        // Every 5 secs we force active fsm to notify
         TOKIO_RUN.spawn(async move {
-            let l = router.normals.lock();
+            let _ = router.notify_all_idle_mailbox();
+            sleep(Duration::from_secs(5))
         });
         service
     }

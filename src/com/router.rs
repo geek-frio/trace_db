@@ -173,16 +173,13 @@ where
         }
     }
 
-    pub fn notify_all_idle_mailbox<Sche: FsmScheduler<F = N>>(
-        &self,
-        s: &Sche,
-    ) -> Result<(), AnyError> {
+    pub fn notify_all_idle_mailbox(&self) -> Result<(), AnyError> {
         let res = self.normals.lock();
         match res {
             Ok(r) => {
                 let iter = r.iter();
                 for (_, mail) in iter {
-                    mail.notify(s);
+                    mail.notify(&self.normal_scheduler);
                 }
                 Ok(())
             }
