@@ -14,7 +14,7 @@ use std::{
     thread::ThreadId,
     time::Instant,
 };
-use tracing::{info, info_span, trace, warn};
+use tracing::{info, info_span, trace, trace_span, warn};
 
 const TAG_POLLER_BATCH_SIZE: usize = 5000;
 
@@ -401,6 +401,7 @@ struct TagPollHandler {
     msg_buf: Vec<SegmentDataCallback>,
     counter: usize,
     last_time: Option<Instant>,
+    msg_cnt: usize,
 }
 
 impl PollHandler<TagFsm> for TagPollHandler {
@@ -413,31 +414,52 @@ impl PollHandler<TagFsm> for TagPollHandler {
     }
 
     fn handle(&mut self, normal: &mut impl DerefMut<Target = TagFsm>) -> HandleResult {
+        let _poll_handler_span = trace_span!("handle");
+        let mut keep_process = false;
         loop {
             match normal.receiver.try_recv() {
                 Ok(msg) => {
+                    self.counter += 1;
+                    trace!("Received a new msg");
                     self.msg_buf.push(msg);
                     if self.msg_buf.len() >= TAG_POLLER_BATCH_SIZE {
+                        trace!("Batch max has overceeded");
+                        keep_process = normal.receiver.len() > 0;
                         break;
                     }
                 }
                 Err(TryRecvError::Empty) => {
+                    trace!("Mailbox's msgs has consumed");
                     break;
                 }
                 Err(TryRecvError::Disconnected) => {
-                    println!("Channel disconnected");
-                    break;
+                    return HandleResult::StopAt {
+                        progress: normal.receiver.len(),
+                        skip_end: false,
+                    };
                 }
             }
         }
         // batch got msg, batch consume
-        normal.handle_tasks(&mut self.msg_buf);
-        self.counter += self.msg_buf.len();
-        // clear msg_buf, wait for next process
-        self.msg_buf.clear();
-        HandleResult::StopAt {
-            progress: normal.receiver.len(),
-            skip_end: false,
+        self.msg_cnt = normal.handle_tasks(&mut self.msg_buf, self.msg_cnt);
+        if normal.tick {
+            trace!(
+                counter = self.counter,
+                msg_cnt = self.msg_cnt,
+                "We have got a Tick Event"
+            );
+            normal.commit(&self.msg_buf);
+            self.msg_cnt = 0;
+            self.msg_buf.clear();
+        }
+        if keep_process {
+            trace!("Fsm has unconsumed msgs so return KeepProcessing!");
+            HandleResult::KeepProcessing
+        } else {
+            HandleResult::StopAt {
+                progress: normal.receiver.len(),
+                skip_end: false,
+            }
         }
     }
 

@@ -43,6 +43,7 @@ impl<N: Fsm> FsmState<N> {
             None => {}
             Some(mut n) => {
                 n.set_mailbox(mailbox);
+                n.tag_tick();
                 s.schedule(n)
             }
         }
@@ -133,6 +134,8 @@ pub trait Fsm {
     fn take_mailbox(&mut self) -> Option<BasicMailbox<Self>>
     where
         Self: Sized;
+
+    fn tag_tick(&mut self);
 }
 
 // For tag fsm 处理

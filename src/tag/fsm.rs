@@ -20,6 +20,7 @@ pub struct TagFsm {
     pub receiver: Receiver<SegmentDataCallback>,
     pub mailbox: Option<BasicMailbox<TagFsm>>,
     pub engine: TracingTagEngine,
+    pub tick: bool,
 }
 
 impl TagFsm {
@@ -32,11 +33,15 @@ impl TagFsm {
             receiver,
             mailbox,
             engine,
+            tick: false,
         }
     }
     // TODO: use batch logic, currently directly write to disk
-    pub fn handle_tasks(&mut self, msgs: &mut Vec<SegmentDataCallback>) {
-        for msg in msgs {
+    pub fn handle_tasks(&mut self, msgs: &mut Vec<SegmentDataCallback>, msg_cnt: usize) -> usize {
+        for (i, msg) in msgs.into_iter().enumerate() {
+            if i < msg_cnt {
+                continue;
+            }
             let span = &msg.span;
             let _entered = span.enter();
             self.engine.add_record(&msg.data);
@@ -46,6 +51,7 @@ impl TagFsm {
                 "Segment has added to Tag Engine, but not be flushed!"
             );
         }
+        msgs.len()
     }
 
     pub fn commit(&mut self, msgs: &Vec<SegmentDataCallback>) {
@@ -92,5 +98,9 @@ impl Fsm for TagFsm {
         Self: Sized,
     {
         self.mailbox.take()
+    }
+
+    fn tag_tick(&mut self) {
+        self.tick = true;
     }
 }
