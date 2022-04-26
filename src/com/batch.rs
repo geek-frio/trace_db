@@ -190,6 +190,7 @@ where
             msg_buf: Vec::new(),
             counter: 0,
             last_time: None,
+            msg_cnt: 0,
         };
         let mut poller = Poller::new(
             &self.receiver,
