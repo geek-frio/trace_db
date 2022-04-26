@@ -43,7 +43,7 @@ impl TagFsm {
             trace!(
                 trace_id = msg.data.get_trace_id(),
                 seq_id = msg.data.get_meta().get_seqId(),
-                "Segment has adeed to Tag Engine, but not be flushed!"
+                "Segment has added to Tag Engine, but not be flushed!"
             );
         }
     }

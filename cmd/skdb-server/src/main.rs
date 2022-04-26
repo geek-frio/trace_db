@@ -12,6 +12,8 @@ use skdb::com::router::Router;
 use skdb::com::sched::NormalScheduler;
 use skdb::tag::fsm::TagFsm;
 use skproto::tracing::*;
+use tracing::info;
+use tracing::info_span;
 
 mod serv;
 /// Simple program to greet a person
@@ -26,10 +28,12 @@ pub struct Args {
 }
 
 fn main() {
+    let _span = info_span!("main");
     let args = Args::parse();
-    println!("service port:{}, config:{}", args.ip, args.config);
+    info!(args = ?args, "Server started begin to start...");
     let global_config = Arc::new(ConfigManager::load(args.config.into()));
 
+    info!(global_config = ?global_config, "Server load global config");
     let (s, r) = unbounded::<FsmTypes<TagFsm>>();
     let fsm_sche = NormalScheduler { sender: s };
     let atomic = AtomicUsize::new(1);

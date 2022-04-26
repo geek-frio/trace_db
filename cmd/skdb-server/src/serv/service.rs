@@ -48,6 +48,7 @@ use tokio::time::sleep;
 use tracing::error;
 use tracing::info;
 use tracing::info_span;
+use tracing::instrument;
 use tracing::span;
 use tracing::trace;
 use tracing::trace_span;
@@ -92,10 +93,14 @@ impl SkyTracingService {
         });
         // Periodicily send Tick event to notify Fsm
         // Every 5 secs we force active fsm to notify
-        TOKIO_RUN.spawn(async move {
-            let _ = router.notify_all_idle_mailbox();
-            sleep(Duration::from_secs(10))
-        });
+        TOKIO_RUN.spawn(
+            async move {
+                trace!("Sent tick event to TagPollHandler");
+                let _ = router.notify_all_idle_mailbox();
+                sleep(Duration::from_secs(10))
+            }
+            .instrument(info_span!("tick_event")),
+        );
         service
     }
 

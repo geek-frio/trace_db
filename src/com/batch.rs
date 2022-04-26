@@ -5,7 +5,6 @@ use crate::tag::fsm::{SegmentDataCallback, TagFsm};
 use crossbeam_channel::{Receiver, TryRecvError};
 use std::borrow::Cow;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{
@@ -15,6 +14,7 @@ use std::{
     thread::ThreadId,
     time::Instant,
 };
+use tracing::{info, info_span, trace, warn};
 
 const TAG_POLLER_BATCH_SIZE: usize = 5000;
 
@@ -116,6 +116,7 @@ impl<N: Fsm> Batch<N> {
 }
 
 // 控制Fsm重新调度状态
+#[derive(Debug)]
 enum ReschedulePolicy {
     Release(usize),
     Remove,
@@ -184,6 +185,7 @@ where
     }
 
     pub fn start_poller(&mut self, name: String, max_batch_size: usize) {
+        let _span = info_span!("Start_poller", %name).entered();
         let handler = TagPollHandler {
             msg_buf: Vec::new(),
             counter: 0,
@@ -196,7 +198,7 @@ where
             self.router.clone(),
             self.joinable_workers.clone(),
         );
-
+        info!(%max_batch_size, %name, "Create poller");
         let t = thread::Builder::new()
             .name(name)
             .spawn(move || {
@@ -204,9 +206,11 @@ where
             })
             .unwrap();
         self.workers.lock().unwrap().push(t);
+        info!("Poller is started");
     }
 
     pub fn spawn(&mut self, name_prefix: String) {
+        let _span = info_span!("spawn", %name_prefix, pool_size = self.pool_size);
         self.name_prefix = name_prefix.clone();
         for i in 0..self.pool_size {
             self.start_poller(format!("{}-{}", name_prefix, i), self.max_batch_size);
@@ -261,6 +265,7 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
     }
 
     pub fn poll(&mut self) {
+        let _poll_span = info_span!("poll").entered();
         let mut batch: Batch<N> = Batch::with_capacity(self.max_batch_size);
         let mut reschedule_fsms: Vec<usize> = Vec::with_capacity(self.max_batch_size);
         // 控制是否要在handler进行end之前release对应的fsm
@@ -270,15 +275,19 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
 
         while run && self.fetch_fsm(&mut batch) {
             let max_batch_size = std::cmp::max(self.max_batch_size, batch.normals.len());
+            trace!(batch_size = batch.normals.len(), "Has fetched a new fsm");
             self.handler.begin(max_batch_size);
 
             let mut hot_fsm_count = 0;
+            trace!("Start to enumerate fsm and do handle logic");
             for (i, p) in batch.normals.iter_mut().enumerate() {
                 let p = p.as_mut().unwrap();
                 let res = self.handler.handle(p);
 
+                trace!(handle_result = ?res, "Fsm handle logic execute complete");
                 if p.is_stopped() {
                     p.policy = Some(ReschedulePolicy::Remove);
+                    warn!(policy = ?p.policy, "Fsm is stopped!Set fsm policy");
                     reschedule_fsms.push(i);
                 } else {
                     // 判断这个fsm的处理时间，如果过长，需要重点关注
@@ -286,6 +295,7 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                     if p.timer.elapsed() >= self.reschedule_duration {
                         hot_fsm_count += 1;
                         if hot_fsm_count % 2 == 0 {
+                            info!(policy = ?p.policy, "Fsm execute too long");
                             p.policy = Some(ReschedulePolicy::Schedule);
                             // 记录需要重新调度第fsm第下标
                             reschedule_fsms.push(i);
@@ -307,6 +317,7 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
 
             // 记录batch中的fsm已经处理到哪一个
             let mut fsm_cnt = batch.normals.len();
+            trace!("Start to fill new received fsm into batch");
             while batch.normals.len() < max_batch_size {
                 if let Ok(fsm) = self.fsm_receiver.try_recv() {
                     // 如果收到了终止信号, 终止
@@ -314,12 +325,15 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 }
                 // 没有获取到新第fsm,就break掉
                 if !run || fsm_cnt == batch.normals.len() {
+                    info!(%run, batch_size = batch.normals.len(), "break fill operation");
                     break;
                 }
                 let p = batch.normals[fsm_cnt].as_mut().unwrap();
+                info!("Get new fsm and start to handle it");
                 let res = self.handler.handle(p);
                 if p.is_stopped() {
                     p.policy = Some(ReschedulePolicy::Remove);
+                    warn!(policy = ?p.policy, "Fsm is stopped!Set fsm policy");
                     reschedule_fsms.push(fsm_cnt);
                 } else if let HandleResult::StopAt { progress, skip_end } = res {
                     p.policy = Some(ReschedulePolicy::Release(progress));
@@ -330,29 +344,38 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 }
                 fsm_cnt += 1;
             }
+
             self.handler.light_end(&mut batch.normals);
+            trace!(to_skip_end = ?to_skip_end, "Start to do skip end operation");
             for offset in &to_skip_end {
                 // 这里的操作会将batch中对应的fsm设置为None
                 batch.schedule(&self.router, *offset, true);
             }
             to_skip_end.clear();
             self.handler.end(&mut batch.normals);
+            trace!(reschedule_fsms = ?reschedule_fsms, "Start to do reschedule fsms operation");
             while let Some(r) = reschedule_fsms.pop() {
                 batch.schedule(&self.router, r, false);
             }
 
             let left_fsm_cnt = batch.normals.len();
+            trace!(
+                batch_size = batch.normals.len(),
+                "One loop finally, start to do left fsm operation"
+            );
             if left_fsm_cnt > 0 {
                 for i in 0..left_fsm_cnt {
                     let to_schedule = match batch.normals[i].take() {
                         Some(f) => f,
                         None => continue,
                     };
+                    trace!(idx = i, "normal_scheduler start to reschedule this fsm");
                     self.router.normal_scheduler.schedule(to_schedule.fsm);
                 }
             }
             batch.clear();
         }
+        info!("Batch system poll exit");
     }
 }
 
@@ -360,6 +383,7 @@ impl<N: Fsm, H, S> Drop for Poller<N, H, S> {
     fn drop(&mut self) {}
 }
 
+#[derive(Debug)]
 pub enum HandleResult {
     KeepProcessing,
     StopAt { progress: usize, skip_end: bool },
