@@ -305,8 +305,11 @@ impl BitSet {
 mod tests {
     use super::*;
     #[test]
-    fn test_range_lower() {
-        let a = TinySet::range_lower(2);
-        println!("{:b}", a.0);
+    fn test_ack_win_ready() -> Result<(), AnyError> {
+        let mut win = AckWindow::new(10);
+        win.send(10000).unwrap();
+        win.ack(10000).unwrap();
+        assert!(win.is_ready());
+        return Ok(());
     }
 }
