@@ -49,6 +49,10 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
         Ok(())
     }
 
+    pub fn notify<S: FsmScheduler<F = Owner>>(&self, scheduler: &S) {
+        self.state.notify(scheduler, Cow::Borrowed(self));
+    }
+
     pub(crate) fn close(&self) {
         self.state.clear();
     }

@@ -1,4 +1,6 @@
+use anyhow::Error as AnyError;
 use std::cell::RefCell;
+use std::collections::hash_map::Iter;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, sync::atomic::AtomicUsize};
@@ -171,6 +173,23 @@ where
         }
     }
 
+    pub fn notify_all_idle_mailbox<Sche: FsmScheduler<F = N>>(
+        &self,
+        s: &Sche,
+    ) -> Result<(), AnyError> {
+        let res = self.normals.lock();
+        match res {
+            Ok(r) => {
+                let iter = r.iter();
+                for (_, mail) in iter {
+                    mail.notify(s);
+                }
+                Ok(())
+            }
+            Err(e) => Err(AnyError::msg(format!("lock has been poisoned, e:{:?}", e))),
+        }
+    }
+
     pub fn close(&self, addr: IndexAddr) {
         self.caches.borrow_mut().remove(&addr);
         let mut mailboxes = self.normals.lock().unwrap();
@@ -204,5 +223,11 @@ impl<N: Fsm, S: Clone> Clone for Router<N, S> {
             shutdown: self.shutdown.clone(),
             state_cnt: self.state_cnt.clone(),
         }
+    }
+}
+
+impl<N: Fsm> NormalMailMap<N> {
+    fn iter(&self) -> Iter<IndexAddr, BasicMailbox<N>> {
+        self.map.iter()
     }
 }
