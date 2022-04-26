@@ -67,8 +67,8 @@ impl TagFsm {
 impl Fsm for TagFsm {
     type Message = SegmentDataCallback;
 
+    // Currently we never quit
     fn is_stopped(&self) -> bool {
-        // TODO: later we will add condition control
         false
     }
 

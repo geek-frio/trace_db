@@ -11,7 +11,7 @@ use super::mail::BasicMailbox;
 use super::sched::FsmScheduler;
 use super::util::{CountTracker, LruCache};
 
-struct NormalMailMap<N: Fsm> {
+pub struct NormalMailMap<N: Fsm> {
     map: HashMap<IndexAddr, BasicMailbox<N>>,
     alive_cnt: Arc<AtomicUsize>,
 }
@@ -23,7 +23,7 @@ enum CheckDoResult<T> {
 }
 
 pub struct Router<N: Fsm, S> {
-    normals: Arc<Mutex<NormalMailMap<N>>>,
+    pub normals: Arc<Mutex<NormalMailMap<N>>>,
     caches: RefCell<LruCache<IndexAddr, BasicMailbox<N>, CountTracker>>,
     pub(crate) normal_scheduler: S,
     state_cnt: Arc<AtomicUsize>,

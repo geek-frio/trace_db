@@ -43,6 +43,7 @@ use tantivy::Index;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
+use tracing::error;
 use tracing::info;
 use tracing::info_span;
 use tracing::span;
@@ -68,7 +69,7 @@ impl SkyTracingService {
         config: Arc<GlobalConfig>,
     ) -> SkyTracingService {
         let (s, r) = crossbeam_channel::unbounded::<SegmentDataCallback>();
-        let router = router.clone();
+        let router1 = router.clone();
         let index_path = config.index_dir.clone();
         let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
@@ -79,13 +80,17 @@ impl SkyTracingService {
             index_map: index_map.clone(),
         };
         thread::spawn(move || {
-            let r = Self::recv_and_process(r, router, index_path, schema, index_map);
+            let r = Self::recv_and_process(r, router1, index_path, schema, index_map);
             if let Err(e) = r {
                 println!(
                     "Channel of getting sky segment is empty and disconnected!e:{:?}",
                     e
                 );
             }
+        });
+        // Periodicily send Tick event to notify Fsm
+        TOKIO_RUN.spawn(async move {
+            let l = router.normals.lock();
         });
         service
     }
@@ -99,18 +104,28 @@ impl SkyTracingService {
     ) -> Result<(), AnyError> {
         loop {
             let segment_callback = recv.recv()?;
-            let _entered = segment_callback.span.enter();
+            let _consume_span = trace_span!(
+                "recv_and_process",
+                trace_id = ?segment_callback.data.trace_id
+            )
+            .entered();
             trace!(parent: &segment_callback.span, "Has received the segment, try to route to mailbox.");
+
             let res =
                 IndexPath::compute_index_addr(segment_callback.data.biz_timestamp as IndexAddr);
+            trace!(index_addr = ?res, seq_id = segment_callback.data.get_meta().get_seqId(), trace_id = ?segment_callback.data.trace_id, "Has computed segment's address");
             match res {
                 Ok(addr) => {
-                    drop(_entered);
                     let sent_stat = router.send(addr, segment_callback);
+                    trace!(index_addr = ?res, "Has computed segment's address");
                     match sent_stat {
                         // Can't find the mailbox which is dependent by this segment
                         Either::Right(msg) => {
                             // Mailbox not exists, so we regists a new one
+                            trace!(
+                                index_addr = addr,
+                                "Can't find addr's mailbox, create a new one"
+                            );
                             let (s, r) = crossbeam_channel::unbounded();
                             // TODO: use config struct
                             let mut engine =
@@ -134,21 +149,27 @@ impl SkyTracingService {
                                 // TODO: This error can not fix by retry, so we just ack this msg
                                 // Maybe we should store this msg anywhere
                                 Err(e) => {
-                                    println!("TagEngine init failed! We just ack this msg:{:?}", e);
+                                    error!(index_addr = addr, seq_id = msg.data.get_meta().get_seqId(), trace_id = ?msg.data.trace_id, "Init addr's TagEngine failed!Just callback this data.e:{:?}", e);
                                     msg.callback.callback(msg.data.get_meta().get_seqId());
                                 }
                             }
                         }
                         Either::Left(v) => {
                             if let Err(e) = v {
-                                println!("Mailbox's receiver has dropped, {:?}", e);
+                                error!(
+                                    index_addr = addr,
+                                    "Mailbox's receiver has dropped, {:?}", e
+                                );
                             }
-                            continue;
+                            panic!("Should never come here!");
                         }
                     }
                 }
                 Err(e) => {
-                    println!("Incorrect segment data format, skip this data. e:{:?}", e);
+                    error!(
+                        biz_timestamp = segment_callback.data.biz_timestamp,
+                        "Incorrect segment data format, skip this data. e:{:?}", e
+                    );
                     continue;
                 }
             }
@@ -359,7 +380,7 @@ async fn process_segment(
                     Ok(_) => {
                         let span = span!(Level::TRACE, "receiver_consume", data = ?data);
                         let data = SegmentDataCallback {
-                            data: data,
+                            data,
                             callback: AckCallback::new(ack_sender),
                             span,
                         };
@@ -379,6 +400,7 @@ async fn process_segment(
                     },
                 }
             }
+            // 处理重发的数据
             Meta_RequestType::NEED_RESEND => {}
             _ => {
                 unreachable!();

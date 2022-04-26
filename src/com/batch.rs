@@ -92,7 +92,6 @@ impl<N: Fsm> Batch<N> {
             }
         };
         let mut res = match to_schedule.policy {
-            //
             Some(ReschedulePolicy::Release(l)) => self.release(to_schedule, l),
             // The prerequisite for removing the fsm in the batch is that, the sender in the tag fsm's mailbox is empty
             // If it is not empty, we need to reschedual the batch
@@ -112,8 +111,6 @@ impl<N: Fsm> Batch<N> {
             self.normals.swap_remove(index);
         }
     }
-
-    // pub fn schedule(&mut self, router: )
 }
 
 // 控制Fsm重新调度状态
@@ -201,7 +198,6 @@ where
         let t = thread::Builder::new()
             .name(name)
             .spawn(move || {
-                println!("Poller has started!");
                 poller.poll();
             })
             .unwrap();
@@ -265,6 +261,8 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
     pub fn poll(&mut self) {
         let mut batch: Batch<N> = Batch::with_capacity(self.max_batch_size);
         let mut reschedule_fsms: Vec<usize> = Vec::with_capacity(self.max_batch_size);
+        // 控制是否要在handler进行end之前release对应的fsm
+        // 在调用end之前进行了schedual操作
         let mut to_skip_end = Vec::with_capacity(self.max_batch_size);
         let mut run = true;
 
@@ -301,10 +299,12 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                     }
                 }
             }
-            // 起始下标从这里开始的原因是现在batch中的fsm已经处理过了
-            // 只需要处理新增第fsm
+            // 后续while循环的逻辑是尝试不断fetch新的fsm并进行执行，并一直到把batch的长度
+            //  打满（小于等于batch max_batch_size), 所以后面的处理逻辑是从fsm cnt开始,
+            //  fsm cnt之前的fsm都是已经执行过handle的
+
+            // 记录batch中的fsm已经处理到哪一个
             let mut fsm_cnt = batch.normals.len();
-            // 这里会把batch进行多次填充
             while batch.normals.len() < max_batch_size {
                 if let Ok(fsm) = self.fsm_receiver.try_recv() {
                     // 如果收到了终止信号, 终止
@@ -355,11 +355,7 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
 }
 
 impl<N: Fsm, H, S> Drop for Poller<N, H, S> {
-    fn drop(&mut self) {
-        // if let Some(joinable_workers) = &self.joinable_workers {
-        //     joinable_workers.lock().unwrap().push(current().id());
-        // }
-    }
+    fn drop(&mut self) {}
 }
 
 pub enum HandleResult {
@@ -379,16 +375,6 @@ struct TagPollHandler {
     msg_buf: Vec<SegmentDataCallback>,
     counter: AtomicI32,
     last_time: Option<Instant>,
-}
-
-impl TagPollHandler {
-    fn new_spawn() -> TagPollHandler {
-        TagPollHandler {
-            msg_buf: Vec::new(),
-            counter: AtomicI32::new(0),
-            last_time: None,
-        }
-    }
 }
 
 impl PollHandler<TagFsm> for TagPollHandler {
