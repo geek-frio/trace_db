@@ -94,7 +94,7 @@ impl SkyTracingService {
         // Every 5 secs we force active fsm to notify
         TOKIO_RUN.spawn(async move {
             let _ = router.notify_all_idle_mailbox();
-            sleep(Duration::from_secs(5))
+            sleep(Duration::from_secs(10))
         });
         service
     }

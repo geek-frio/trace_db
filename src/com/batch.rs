@@ -16,6 +16,8 @@ use std::{
     time::Instant,
 };
 
+const TAG_POLLER_BATCH_SIZE: usize = 5000;
+
 pub struct Batch<N> {
     pub normals: Vec<Option<NormalFsm<N>>>,
 }
@@ -184,7 +186,7 @@ where
     pub fn start_poller(&mut self, name: String, max_batch_size: usize) {
         let handler = TagPollHandler {
             msg_buf: Vec::new(),
-            counter: AtomicI32::new(0),
+            counter: 0,
             last_time: None,
         };
         let mut poller = Poller::new(
@@ -373,7 +375,7 @@ pub trait PollHandler<N: Fsm>: Send + 'static {
 
 struct TagPollHandler {
     msg_buf: Vec<SegmentDataCallback>,
-    counter: AtomicI32,
+    counter: usize,
     last_time: Option<Instant>,
 }
 
@@ -391,6 +393,9 @@ impl PollHandler<TagFsm> for TagPollHandler {
             match normal.receiver.try_recv() {
                 Ok(msg) => {
                     self.msg_buf.push(msg);
+                    if self.msg_buf.len() >= TAG_POLLER_BATCH_SIZE {
+                        break;
+                    }
                 }
                 Err(TryRecvError::Empty) => {
                     break;
@@ -403,31 +408,18 @@ impl PollHandler<TagFsm> for TagPollHandler {
         }
         // batch got msg, batch consume
         normal.handle_tasks(&mut self.msg_buf);
-        self.counter
-            .fetch_add(self.msg_buf.len() as i32, Ordering::Relaxed);
+        self.counter += self.msg_buf.len();
         // clear msg_buf, wait for next process
         self.msg_buf.clear();
         HandleResult::StopAt {
-            progress: 0,
+            progress: normal.receiver.len(),
             skip_end: false,
         }
     }
 
     fn light_end(&mut self, _batch: &mut [Option<impl DerefMut<Target = TagFsm>>]) {}
 
-    fn end(&mut self, _batch: &mut [Option<impl DerefMut<Target = TagFsm>>]) {
-        if let Some(t) = &self.last_time {
-            if t.elapsed().as_secs() > 5 {
-                println!(
-                    "#################TagPollHandler consuming rate is:{}, time window current is:{}",
-                    self.counter.load(Ordering::Relaxed) / t.elapsed().as_secs() as i32,
-                    t.elapsed().as_secs(),
-                );
-                self.counter.store(0, Ordering::Relaxed);
-                self.last_time = Some(Instant::now());
-            }
-        }
-    }
+    fn end(&mut self, _batch: &mut [Option<impl DerefMut<Target = TagFsm>>]) {}
 
     // We just sleep to wait for more data to be processed.
     fn pause(&mut self) {}

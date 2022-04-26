@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use crate::com::{ack::AckCallback, fsm::Fsm, mail::BasicMailbox};
 use crossbeam_channel::Receiver;
 use skproto::tracing::SegmentData;
-use tracing::Span;
+use tracing::{error, trace, Span};
 
 use super::engine::TracingTagEngine;
 
@@ -20,8 +20,6 @@ pub struct TagFsm {
     pub receiver: Receiver<SegmentDataCallback>,
     pub mailbox: Option<BasicMailbox<TagFsm>>,
     pub engine: TracingTagEngine,
-    pub last_idx: u64,
-    pub counter: u64,
 }
 
 impl TagFsm {
@@ -34,32 +32,42 @@ impl TagFsm {
             receiver,
             mailbox,
             engine,
-            last_idx: 0,
-            counter: 0,
         }
     }
     // TODO: use batch logic, currently directly write to disk
     pub fn handle_tasks(&mut self, msgs: &mut Vec<SegmentDataCallback>) {
         for msg in msgs {
+            let span = &msg.span;
+            let _entered = span.enter();
             self.engine.add_record(&msg.data);
-            self.counter += 1;
-        }
-        if self.counter > 5000 {
-            let result = self.engine.flush();
-            println!(
-                "#############Engine flushed success!, flused count is:{}",
-                self.counter
+            trace!(
+                trace_id = msg.data.get_trace_id(),
+                seq_id = msg.data.get_meta().get_seqId(),
+                "Segment has adeed to Tag Engine, but not be flushed!"
             );
-            match result {
-                Ok(idx) => {
-                    self.last_idx = idx;
-                }
-                Err(e) => {
-                    //TODO: error process
-                    println!("flush to db error:{:?}", e);
-                }
+        }
+    }
+
+    pub fn commit(&mut self, msgs: &Vec<SegmentDataCallback>) {
+        let res = self.engine.flush();
+        for msg in msgs {
+            let span = &msg.span;
+            let _entered = span.enter();
+            msg.callback.callback(msg.data.get_meta().get_seqId());
+            trace!(
+                trace_id = msg.data.get_trace_id(),
+                seq_id = msg.data.get_meta().get_seqId(),
+                "segment has been callback"
+            );
+        }
+        match res {
+            Ok(_) => {}
+            Err(e) => {
+                error!("We should do something to backup these data, it's a CAN'T RETRY ERROR so currently we do nothing;");
+                error!("Serious problem, backup data!:{:?}", e);
+                // TODO: We should do something to backup these data, it's a CAN'T RETRY ERROR
+                //  currently we do nothing;
             }
-            self.counter = 0;
         }
     }
 }
