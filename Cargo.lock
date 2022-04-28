@@ -1338,6 +1338,7 @@ dependencies = [
  "crossbeam",
  "crossbeam-channel",
  "futures",
+ "futures-sink",
  "grpcio",
  "lazy_static",
  "pretty_assertions",

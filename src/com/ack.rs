@@ -2,6 +2,8 @@ use anyhow::Error as AnyError;
 use futures::channel::mpsc::UnboundedSender;
 use tracing::instrument;
 
+pub(crate) const DEFAULT_WIN_SIZE: u32 = 64 * 100;
+
 #[derive(Debug)]
 pub enum WindowErr {
     Full,
@@ -14,6 +16,12 @@ pub struct AckWindow {
     size: u32,
     // current_max + start = current real seqid
     current_max: u32,
+}
+
+impl Default for AckWindow {
+    fn default() -> Self {
+        AckWindow::new(DEFAULT_WIN_SIZE)
+    }
 }
 
 impl AckWindow {
