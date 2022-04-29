@@ -18,6 +18,7 @@ use skdb::com::ack::AckCallback;
 use skdb::com::ack::AckWindow;
 use skdb::com::ack::WindowErr;
 use skdb::com::config::GlobalConfig;
+use skdb::com::ctl::MsgTracker;
 use skdb::com::index::IndexAddr;
 use skdb::com::index::IndexPath;
 use skdb::com::mail::BasicMailbox;
@@ -224,70 +225,12 @@ impl SkyTracing for SkyTracingService {
         &mut self,
         _: ::grpcio::RpcContext,
         stream: ::grpcio::RequestStream<SegmentData>,
-        mut sink: ::grpcio::DuplexSink<SegmentRes>,
+        sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
-        let s = self.sender.clone();
-        // Logic for processing segment datas
-        let get_data_exec = async move {
-            let mut ack_win = AckWindow::new(64 * 100);
-
-            let (ack_s, mut ack_r) = funbounded::<i64>();
-            let mut stream = stream.fuse();
-            loop {
-                let _one_msg = trace_span!("recv_msg_one_loop");
-                let _ = match select(stream.try_next(), ack_r.next()).await {
-                    FutureEither::Left((seg_data, _)) => {
-                        let r = process_segment(
-                            seg_data,
-                            &mut ack_win,
-                            &mut sink,
-                            s.clone(),
-                            ack_s.clone(),
-                        )
-                        .instrument(trace_span!("process_segment"))
-                        .await;
-                        if let Err(e) = r {
-                            println!("Has met seriously problem, e:{:?}", e);
-                            return;
-                        }
-                    }
-                    FutureEither::Right((seq_id, _)) => {
-                        trace!(seq_id = seq_id, "Has received ack callback");
-                        if let Some(seq_id) = seq_id {
-                            if seq_id <= 0 {
-                                error!(%seq_id, "Invalid seq_id");
-                                continue;
-                            }
-                            let r = ack_win.ack(seq_id);
-                            if let Err(e) = r {
-                                error!(%seq_id, "Have got an unexpeced seqid to ack; e:{:?}", e);
-                                continue;
-                            } else {
-                                // Make ack window enter into ready status
-                                if ack_win.is_ready() {
-                                    info!("Ack window is ready");
-                                    ack_win.clear();
-                                }
-                            }
-                            let mut seg_res = SegmentRes::default();
-                            let mut meta = Meta::new();
-                            meta.set_field_type(Meta_RequestType::TRANS_ACK);
-                            meta.set_seqId(ack_win.curr_ack_id());
-                            seg_res.set_meta(meta);
-                            let d = (seg_res, WriteFlags::default());
-                            let r = sink.send(d).await;
-                            if let Err(e) = r {
-                                error!("Send trans ack failed!e:{:?}", e);
-                            } else {
-                                trace!(seq_id = ack_win.curr_ack_id(), "Sending ack to client");
-                            }
-                        }
-                    }
-                };
-            }
-        }
-        .instrument(info_span!("segments_receiver"));
-        TOKIO_RUN.spawn(get_data_exec);
+        let mut msg_tracker = MsgTracker::new(stream, sink, self.sender.clone());
+        TOKIO_RUN.spawn(async move {
+            msg_tracker.pull_redirect().await;
+        });
     }
 
     // Query data in local index.
