@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use anyhow::Error as AnyError;
-use crossbeam_channel::Sender;
+use futures::channel::mpsc::Sender;
 use futures::channel::mpsc::UnboundedSender;
 use futures::SinkExt;
 use futures_sink::Sink;
@@ -56,7 +56,7 @@ where
         ack_win: &mut AckWindow,
         sink: &mut T,
         ack_sender: UnboundedSender<i64>,
-        local_sender: &Sender<SegmentDataCallback>,
+        local_sender: &mut Sender<SegmentDataCallback>,
     ) -> Result<(), AnyError> {
         let r = ack_win.send(data.get_meta().get_seqId());
         trace!(seq_id = data.get_meta().get_seqId(), meta = ?data.get_meta(), "Has received handshake packet meta");
@@ -68,7 +68,7 @@ where
                     callback: AckCallback::new(Some(ack_sender)),
                     span,
                 };
-                let _ = local_sender.try_send(data);
+                let _ = local_sender.send(data).await;
                 trace!(
                     "Has sent segment to local channel(Waiting for storage operation and callback)"
                 );
@@ -91,7 +91,7 @@ where
     async fn handle_resend(
         data: SegmentData,
         ack_sender: UnboundedSender<i64>,
-        local_sender: &Sender<SegmentDataCallback>,
+        local_sender: &mut Sender<SegmentDataCallback>,
     ) -> Result<(), AnyError> {
         trace!(meta = ?data.get_meta(), conn_id = data.get_meta().get_connId(), "Has received need send data!");
         let span = span!(Level::TRACE, "trans_receiver_consume_need_resend");
@@ -155,7 +155,7 @@ where
         sink: &mut T,
         ack_win: &mut AckWindow,
         ack_sender: UnboundedSender<i64>,
-        local_sender: &Sender<SegmentDataCallback>,
+        local_sender: &mut Sender<SegmentDataCallback>,
     ) -> Result<(), AnyError> {
         let data = seg?;
         if !data.has_meta() {

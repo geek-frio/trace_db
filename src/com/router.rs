@@ -13,6 +13,13 @@ use super::mail::BasicMailbox;
 use super::sched::FsmScheduler;
 use super::util::{CountTracker, LruCache};
 
+pub trait RouteMsg<L, R> {
+    type Item;
+    type Addr;
+
+    fn route_msg(addr: Self::Addr, msg: Self::Item) -> Either<L, R>;
+}
+
 pub struct NormalMailMap<N: Fsm> {
     map: HashMap<IndexAddr, BasicMailbox<N>>,
     alive_cnt: Arc<AtomicUsize>,

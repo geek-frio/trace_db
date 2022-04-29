@@ -19,7 +19,7 @@ pub const SEGID: &'static str = "seg_id";
 pub const PAYLOAD: &'static str = "payload";
 
 pub struct TracingTagEngine {
-    dir: String,
+    dir: Box<String>,
     // tag data gps (Every 15 minutes of a day, we create a new directory)
     addr: IndexAddr,
     index_writer: Option<IndexWriter>,
@@ -58,9 +58,9 @@ impl Display for TagEngineError {
 impl Error for TagEngineError {}
 
 impl TracingTagEngine {
-    pub fn new(addr: IndexAddr, dir: String, schema: Schema) -> TracingTagEngine {
+    pub fn new(addr: IndexAddr, dir: Box<String>, schema: Schema) -> TracingTagEngine {
         TracingTagEngine {
-            dir,
+            dir: dir,
             addr,
             index_writer: None,
             index: None,
@@ -71,7 +71,7 @@ impl TracingTagEngine {
     pub fn init(&mut self) -> Result<Index, TagEngineError> {
         // TODO: check if it is an outdated directory
         // create directory
-        let dir_path: &Path = self.dir.as_ref();
+        let dir_path: &Path = self.dir.as_ref().as_ref();
         let path: PathBuf = dir_path.join(<String as AsRef<Path>>::as_ref(&self.addr.to_string()));
         // Create index directory
         let result = std::fs::create_dir_all(path.as_path());
@@ -187,7 +187,7 @@ mod tests {
     fn test_normal_write() {
         let mut engine = TracingTagEngine::new(
             123,
-            "/tmp/tantivy_records".to_string(),
+            Box::new("/tmp/tantivy_records".to_string()),
             init_tracing_schema(),
         );
 
@@ -233,7 +233,8 @@ mod tests {
 
     #[test]
     fn test_read_traceid() {
-        let mut engine = TracingTagEngine::new(150202, "/tmp".to_string(), init_tracing_schema());
+        let mut engine =
+            TracingTagEngine::new(150202, Box::new("/tmp".to_string()), init_tracing_schema());
         println!("Init result is:{:?}", engine.init());
         let (reader, index) = engine.reader().unwrap();
         let query_parser =

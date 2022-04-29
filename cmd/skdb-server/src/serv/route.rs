@@ -1,74 +1,143 @@
 use anyhow::Error as AnyError;
-use crossbeam_channel::Sender;
-use futures::channel::mpsc::unbounded as funbounded;
-use futures::{
-    future::{select, Either},
-    stream::Fuse,
-    Stream, StreamExt,
+use futures::channel::mpsc::Receiver;
+use futures::stream::StreamExt;
+use skdb::{
+    com::{
+        config::GlobalConfig,
+        index::{IndexAddr, IndexPath},
+        mail::BasicMailbox,
+        router::{Either, Router},
+        sched::NormalScheduler,
+    },
+    tag::{
+        engine::*,
+        fsm::{SegmentDataCallback, TagFsm},
+    },
 };
-use futures_sink::Sink;
-use grpcio::{Result as GrpcResult, WriteFlags};
-use skdb::com::ack::AckWindow;
-use skdb::tag::fsm::SegmentDataCallback;
-use skproto::tracing::{SegmentData, SegmentRes};
-use std::fmt::Debug;
-use std::pin::Pin;
-use tracing::{error, trace_span};
+use std::{
+    collections::HashMap,
+    sync::{atomic::AtomicUsize, Arc, Mutex},
+};
+use tantivy::{
+    schema::{Schema, INDEXED, STORED, STRING, TEXT},
+    Index,
+};
+use tracing::{error, info, trace, trace_span};
 
-use super::proto::ProtoLogic;
-
-pub struct MsgPoller<L, S> {
-    source_stream: Fuse<L>,
-    sink: S,
-    ack_win: AckWindow,
-    local_sender: Sender<SegmentDataCallback>,
+pub(crate) struct LocalSegmentMsgConsumer {
+    router: Router<TagFsm, NormalScheduler<TagFsm>>,
+    config: Arc<GlobalConfig>,
+    index_map: Arc<Mutex<HashMap<i64, Index>>>,
+    schema: Schema,
+    receiver: Receiver<SegmentDataCallback>,
 }
 
-impl<L, S> MsgPoller<L, S>
-where
-    L: Stream<Item = GrpcResult<SegmentData>> + Unpin,
-    S: Sink<(SegmentRes, WriteFlags)> + Unpin,
-    AnyError: From<S::Error>,
-    S::Error: Debug + Sync + Send,
-{
-    pub fn new(source: L, sink: S, local_sender: Sender<SegmentDataCallback>) -> MsgPoller<L, S> {
-        MsgPoller {
-            source_stream: source.fuse(),
-            ack_win: Default::default(),
-            sink,
-            local_sender,
+impl LocalSegmentMsgConsumer {
+    pub(crate) fn new(
+        router: Router<TagFsm, NormalScheduler<TagFsm>>,
+        config: Arc<GlobalConfig>,
+        receiver: Receiver<SegmentDataCallback>,
+    ) -> LocalSegmentMsgConsumer {
+        let schema = Self::init_sk_schema();
+        let index_map = Arc::new(Mutex::new(HashMap::default()));
+        LocalSegmentMsgConsumer {
+            router,
+            config,
+            index_map,
+            schema,
+            receiver,
         }
     }
 
-    pub async fn loop_poll(&mut self) {
-        let (ack_s, mut ack_r) = funbounded::<i64>();
-        loop {
-            let _one_msg = trace_span!("recv_msg_one_loop");
+    fn route_msg(&self, seg: SegmentDataCallback) -> Result<(), SegmentDataCallback> {
+        let path = IndexPath::compute_index_addr(seg.data.biz_timestamp as IndexAddr);
+        let path = match path {
+            Ok(path) => path,
+            Err(_) => return Err(seg),
+        };
+        let trace_id = seg.data.get_trace_id();
+        trace!(
+            index_addr = path,
+            seq_id = seg.data.get_meta().get_seqId(),
+            trace_id = trace_id,
+            "Has computed segment's address"
+        );
 
-            let mut left = Pin::new(&mut self.source_stream);
-            let mut right = Pin::new(&mut ack_r);
-            match select(left.next(), right.next()).await {
-                Either::Left((seg_data, _)) => {
-                    if let Some(seg) = seg_data {
-                        let r = ProtoLogic::execute(
-                            seg,
-                            &mut self.sink,
-                            &mut self.ack_win,
-                            ack_s.clone(),
-                            &self.local_sender,
-                        )
-                        .await;
-                        if let Err(e) = r {
-                            error!("Has met seriously problem, e:{:?}", e);
-                            return;
+        let index_path = Box::new(self.config.index_dir.clone());
+        let send_stat = self.router.send(path, seg);
+        match send_stat {
+            Either::Right(msg) => {
+                info!(
+                    index_addr = path,
+                    "Can't find addr's mailbox, create a new one"
+                );
+                let (s, r) = crossbeam_channel::unbounded();
+                // TODO: use config struct
+                let mut engine =
+                    TracingTagEngine::new(path, index_path.clone(), self.schema.clone());
+                // TODO: error process logic is emitted currently
+                let res = engine.init();
+                match res {
+                    Ok(index) => {
+                        self.index_map.lock().unwrap().insert(path, index);
+                        let fsm = Box::new(TagFsm::new(r, None, engine));
+                        let state_cnt = Arc::new(AtomicUsize::new(0));
+                        let mailbox = BasicMailbox::new(s, fsm, state_cnt); 
+                        let fsm = mailbox.take_fsm();
+                        if let Some(mut f) = fsm {
+                            f.mailbox = Some(mailbox.clone());
+                            mailbox.release(f);
                         }
+                        self.router.register(path, mailbox);
+                        self.router.send(path, msg);
+                    }
+                    // TODO: This error can not fix by retry, so we just ack this msg
+                    // Maybe we should store this msg anywhere
+                    Err(e) => {
+                        error!("This error can not fix by retry, so we just ack this msg Maybe we should store this msg anywhere!");
+                        error!(index_addr = path, seq_id = msg.data.get_meta().get_seqId(), trace_id = ?msg.data.trace_id, "Init addr's TagEngine failed!Just callback this data.e:{:?}", e);
+                        msg.callback.callback(msg.data.get_meta().get_seqId());
                     }
                 }
-                Either::Right((seq_id, _)) => {
-                    let _ = ProtoLogic::handle_callback(&mut self.sink, &mut self.ack_win, seq_id)
-                        .await;
-                }
+            }
+            Either::Left(Err(_)) => unreachable!("Receiver should never drop! Local unbounded channel mailbox, in logic we never drop receive!"),
+            Either::Left(Ok(_)) => {
+                trace!("Has routed successful");
             }
         }
+        Ok(())
+    }
+
+    async fn loop_poll(&mut self) -> Result<(), AnyError> {
+        loop {
+            let segment_callback = self.receiver.next().await;
+
+            match segment_callback {
+                Some(segment_callback) => {
+                    let _consume_span = trace_span!(
+                        "recv_and_process",
+                        trace_id = ?segment_callback.data.trace_id
+                    )
+                    .entered();
+                    trace!(parent: &segment_callback.span, "Has received the segment, try to route to mailbox.");
+                    if let Err(seg) = self.route_msg(segment_callback) {
+                        seg.callback.callback(seg.data.get_meta().get_seqId());
+                    }
+                }
+                None => return Err(AnyError::msg("LocalSegmentMsgConsumer's sender has closed")),
+            }
+        }
+    }
+
+    pub fn init_sk_schema() -> Schema {
+        let mut schema_builder = Schema::builder();
+        schema_builder.add_text_field(ZONE, STRING);
+        schema_builder.add_i64_field(API_ID, INDEXED);
+        schema_builder.add_text_field(SERVICE, TEXT);
+        schema_builder.add_u64_field(BIZTIME, STORED);
+        schema_builder.add_text_field(TRACE_ID, STRING | STORED);
+        schema_builder.add_text_field(SEGID, STRING);
+        schema_builder.add_text_field(PAYLOAD, STRING);
+        schema_builder.build()
     }
 }
