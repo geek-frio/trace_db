@@ -24,3 +24,4 @@ tantivy-query-grammar = "0.15.0"
 tracing = "0.1.5"
 tracing-subscriber = { version = "0.3.11", features = ["fmt", "std"] }
 futures-sink = "0.3"
+ctrlc = "3.2.2"

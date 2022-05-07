@@ -1,10 +1,11 @@
 use std::sync::atomic::AtomicUsize;
-use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use crossbeam_channel::*;
+use crossbeam_channel::Receiver as ShutdownReceiver;
+use crossbeam_channel::Sender as ShutdownSender;
+use futures::channel::mpsc::{Receiver, Sender};
 use grpcio::*;
 use serv::service::*;
 use skdb::com::batch::BatchSystem;
@@ -13,6 +14,7 @@ use skdb::com::config::ConfigManager;
 use skdb::com::config::GlobalConfig;
 use skdb::com::router::Router;
 use skdb::com::sched::NormalScheduler;
+use skdb::tag::fsm::SegmentDataCallback;
 use skdb::tag::fsm::TagFsm;
 use skdb::TOKIO_RUN;
 use skproto::tracing::*;
@@ -37,37 +39,67 @@ pub struct Args {
     config: String,
 }
 
+enum ShutdownEvent {
+    Err(anyhow::Error),
+    Normal,
+}
+
 pub struct MainServer {
     // shutdown_sender: OneshotSender<()>,
     global_config: Arc<GlobalConfig>,
     ip: String,
+    shutdown_sender: ShutdownSender<ShutdownEvent>,
+    shutdown_receiver: ShutdownReceiver<ShutdownEvent>,
 }
 
 impl MainServer {
     fn new(global_config: Arc<GlobalConfig>, ip: String) -> MainServer {
-        // let (shutdown_sender, receiver) = channel();
+        let (shutdown_sender, shutdown_receiver) = crossbeam_channel::bounded(256);
+        let shutdown_sender_clone = shutdown_sender.clone();
+        ctrlc::set_handler(move || {
+            let _ = shutdown_sender.send(ShutdownEvent::Normal);
+        })
+        .expect("Error setting ctrl+c handler");
         MainServer {
             // shutdown_sender,
             global_config,
             ip,
+            shutdown_sender: shutdown_sender_clone,
+            shutdown_receiver,
         }
     }
     fn start(&mut self) {
-        let (shutdown_sender, shutdown_receiver) = channel::<()>();
         let _span = info_span!("main_server");
 
-        let (s, r) = unbounded::<FsmTypes<TagFsm>>();
+        let (segment_sender, segment_receiver) = futures::channel::mpsc::channel(10000);
+        let router = self.start_batch_system_for_segment();
+        self.start_bridge_channel(segment_receiver, router, self.shutdown_sender.clone());
+        self.start_grpc(segment_sender);
+        let _ = self.shutdown_receiver.recv();
+        info!("");
+    }
+
+    fn start_grpc(&mut self, sender: Sender<SegmentDataCallback>) {
+        let skytracing = SkyTracingService::new(self.global_config.clone(), sender);
+        let service = create_sky_tracing(skytracing);
+        let env = Environment::new(1);
+        let mut server = ServerBuilder::new(Arc::new(env))
+            .bind(self.ip.as_str(), self.global_config.grpc_port as u16)
+            .register_service(service)
+            .build()
+            .unwrap();
+        server.start();
+    }
+
+    fn start_batch_system_for_segment(&self) -> Router<TagFsm, NormalScheduler<TagFsm>> {
+        let (s, r) = crossbeam_channel::unbounded::<FsmTypes<TagFsm>>();
         let fsm_sche = NormalScheduler { sender: s };
         let atomic = AtomicUsize::new(1);
         let router = Router::new(fsm_sche, Arc::new(atomic));
 
         let mut batch_system = BatchSystem::new(router.clone(), r, 1, 500);
         batch_system.spawn("Tag Poller".to_string());
-
-        let (skytracing, local_receiver) =
-            SkyTracingService::new(router.clone(), self.global_config.clone());
         let router_tick = router.clone();
-        // 1.Periodically send tick event to TagPollHandler's all the mailbox
         TOKIO_RUN.spawn(
             async move {
                 trace!("Sent tick event to TagPollHandler");
@@ -76,9 +108,17 @@ impl MainServer {
             }
             .instrument(info_span!("tick_event")),
         );
-        // 2.Start this local consumer to consume the tag segment msg event;
+        return router;
+    }
+
+    fn start_bridge_channel(
+        &self,
+        receiver: Receiver<SegmentDataCallback>,
+        router: Router<TagFsm, NormalScheduler<TagFsm>>,
+        shutdown_sender: ShutdownSender<ShutdownEvent>,
+    ) {
         let mut local_consumer =
-            LocalSegmentMsgConsumer::new(router, self.global_config.clone(), local_receiver);
+            LocalSegmentMsgConsumer::new(router, self.global_config.clone(), receiver);
         TOKIO_RUN.spawn(
             async move {
                 let r = local_consumer.loop_poll().await;
@@ -88,21 +128,12 @@ impl MainServer {
                     }
                     Err(e) => {
                         error!("Serious problem, local segment msg consumer exit:{:?}", e);
-                        let _ = shutdown_sender.send(());
+                        let _ = shutdown_sender.send(ShutdownEvent::Err(e));
                     }
                 }
             }
             .instrument(info_span!("local_consumer")),
         );
-        let env = Environment::new(1);
-        let service = create_sky_tracing(skytracing);
-        let mut server = ServerBuilder::new(Arc::new(env))
-            .bind(self.ip.as_str(), self.global_config.grpc_port as u16)
-            .register_service(service)
-            .build()
-            .unwrap();
-        server.start();
-        let _ = shutdown_receiver.recv();
     }
 }
 

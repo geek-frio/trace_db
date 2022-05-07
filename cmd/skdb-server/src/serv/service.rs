@@ -47,15 +47,15 @@ pub struct SkyTracingService {
 impl SkyTracingService {
     // do new and spawn two things
     pub fn new(
-        router: Router<TagFsm, NormalScheduler<TagFsm>>,
         config: Arc<GlobalConfig>,
-    ) -> (SkyTracingService, Receiver<SegmentDataCallback>) {
+        data_sender: Sender<SegmentDataCallback>,
+    ) -> SkyTracingService {
         // let (s, r) = crossbeam_channel::unbounded::<SegmentDataCallback>();
-        let (s, r) = channel(5000);
+        // let (s, r) = channel(5000);
         let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
         let service = SkyTracingService {
-            sender: s,
+            sender: data_sender,
             config,
             tracing_schema: schema.clone(),
             index_map: index_map.clone(),
@@ -79,7 +79,7 @@ impl SkyTracingService {
         //     }
         //     .instrument(info_span!("tick_event")),
         // );
-        (service, r)
+        service
     }
 
     // fn recv_and_process(
