@@ -109,7 +109,7 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
         Ok(())
     }
 
-    async fn loop_poll(&mut self) -> Result<(), AnyError> {
+    pub(crate) async fn loop_poll(&mut self) -> Result<(), AnyError> {
         loop {
             let segment_callback = self.receiver.next().await;
 
