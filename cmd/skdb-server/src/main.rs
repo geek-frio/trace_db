@@ -1,6 +1,8 @@
+use lazy_static::lazy_static;
 use std::fs::File;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::Once;
 use std::time::Duration;
 use tracing_subscriber::{prelude::*, Registry};
 
@@ -44,6 +46,10 @@ pub struct Args {
 enum ShutdownEvent {
     Err(anyhow::Error),
     Normal,
+}
+
+lazy_static! {
+    pub static ref INIT_LOGGER: Once = Once::new();
 }
 
 pub struct MainServer {
@@ -140,31 +146,35 @@ impl MainServer {
 }
 
 fn init_tracing_logger(cfg: Arc<GlobalConfig>) {
-    let stdout_log = tracing_subscriber::fmt::layer().pretty();
-    let subscriber = Registry::default().with(stdout_log);
-    const SET_GLOBAL_SUBSCRIBER_ERR: &'static str = "";
-    match cfg.env.as_str() {
-        "local" => {
-            tracing::subscriber::set_global_default(subscriber).expect(SET_GLOBAL_SUBSCRIBER_ERR);
+    INIT_LOGGER.call_once(|| {
+        let stdout_log = tracing_subscriber::fmt::layer().pretty();
+        let subscriber = Registry::default().with(stdout_log);
+        const SET_GLOBAL_SUBSCRIBER_ERR: &'static str = "";
+        match cfg.env.as_str() {
+            "local" => {
+                tracing::subscriber::set_global_default(subscriber)
+                    .expect(SET_GLOBAL_SUBSCRIBER_ERR);
+            }
+            "pre" | "dev" | "pro" => {
+                let file = File::create(cfg.log_path.as_str()).expect("Create log failed!");
+                let json_log = tracing_subscriber::fmt::layer().json().with_writer(file);
+                let subscriber = subscriber.with(json_log);
+                tracing::subscriber::set_global_default(subscriber)
+                    .expect(SET_GLOBAL_SUBSCRIBER_ERR)
+            }
+            _ => {
+                panic!("Not expected enviroment config!");
+            }
         }
-        "pre" | "dev" | "pro" => {
-            let file = File::create(cfg.log_path.as_str()).expect("Create log failed!");
-            let json_log = tracing_subscriber::fmt::layer().json().with_writer(file);
-            let subscriber = subscriber.with(json_log);
-            tracing::subscriber::set_global_default(subscriber).expect(SET_GLOBAL_SUBSCRIBER_ERR)
-        }
-        _ => {
-            panic!("Not expected enviroment config!");
-        }
-    }
+    });
 }
 
 fn main() {
     let _span = info_span!("main");
     let args = Args::parse();
-    info!(args = ?args, "Server started begin to start...");
+    println!("Server started begin to start, args:{:?}", args);
     let global_config = Arc::new(ConfigManager::load(args.config.into()));
-
+    init_tracing_logger(global_config.clone());
     info!(global_config = ?global_config, "Server load global config");
     let mut main_server = MainServer::new(global_config, args.ip);
     main_server.start();

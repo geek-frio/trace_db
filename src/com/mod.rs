@@ -9,4 +9,5 @@ pub mod redis;
 pub mod ring;
 pub mod router;
 pub mod sched;
+pub mod tracing;
 pub mod util;
