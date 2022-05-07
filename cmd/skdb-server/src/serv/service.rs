@@ -1,40 +1,30 @@
-use super::bus::MsgPoller;
+use super::bus::RemoteMsgPoller;
 use super::*;
 use anyhow::Error as AnyError;
 use futures::channel::mpsc::channel;
+use futures::channel::mpsc::Receiver;
 use futures::channel::mpsc::Sender;
-use futures::channel::mpsc::UnboundedSender;
 use futures::SinkExt;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures_util::{FutureExt as _, TryFutureExt as _};
 use grpcio::DuplexSink;
-use grpcio::Error as GrpcError;
 use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
 use grpcio::WriteFlags;
-use skdb::com::ack::AckCallback;
-use skdb::com::ack::AckWindow;
-use skdb::com::ack::WindowErr;
 use skdb::com::config::GlobalConfig;
 use skdb::com::index::IndexAddr;
 use skdb::com::index::IndexPath;
-use skdb::com::mail::BasicMailbox;
-use skdb::com::router::Either;
 use skdb::com::router::Router;
 use skdb::com::sched::NormalScheduler;
-use skdb::tag::engine::TracingTagEngine;
 use skdb::tag::engine::*;
 use skdb::tag::fsm::SegmentDataCallback;
 use skdb::tag::fsm::TagFsm;
 use skdb::*;
 use skproto::tracing::*;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread;
-use std::time::Duration;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
@@ -43,16 +33,7 @@ use tantivy::Index;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
-use tokio::time::sleep;
-use tracing::error;
 use tracing::info;
-use tracing::info_span;
-use tracing::span;
-use tracing::trace;
-use tracing::trace_span;
-use tracing::warn;
-use tracing::Instrument;
-use tracing::Level;
 
 #[derive(Clone)]
 pub struct SkyTracingService {
@@ -65,14 +46,12 @@ pub struct SkyTracingService {
 
 impl SkyTracingService {
     // do new and spawn two things
-    pub fn new_spawn(
+    pub fn new(
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
         config: Arc<GlobalConfig>,
-    ) -> SkyTracingService {
+    ) -> (SkyTracingService, Receiver<SegmentDataCallback>) {
         // let (s, r) = crossbeam_channel::unbounded::<SegmentDataCallback>();
         let (s, r) = channel(5000);
-        let router1 = router.clone();
-        let index_path = config.index_dir.clone();
         let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
         let service = SkyTracingService {
@@ -92,15 +71,15 @@ impl SkyTracingService {
         // });
         // Periodicily send Tick event to notify Fsm
         // Every 5 secs we force active fsm to notify
-        TOKIO_RUN.spawn(
-            async move {
-                trace!("Sent tick event to TagPollHandler");
-                let _ = router.notify_all_idle_mailbox();
-                sleep(Duration::from_secs(10))
-            }
-            .instrument(info_span!("tick_event")),
-        );
-        service
+        // TOKIO_RUN.spawn(
+        //     async move {
+        //         trace!("Sent tick event to TagPollHandler");
+        //         let _ = router.notify_all_idle_mailbox();
+        //         sleep(Duration::from_secs(10))
+        //     }
+        //     .instrument(info_span!("tick_event")),
+        // );
+        (service, r)
     }
 
     // fn recv_and_process(
@@ -226,7 +205,7 @@ impl SkyTracing for SkyTracingService {
         stream: ::grpcio::RequestStream<SegmentData>,
         sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
-        let mut msg_poller = MsgPoller::new(stream.fuse(), sink, self.sender.clone());
+        let mut msg_poller = RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone());
         TOKIO_RUN.spawn(async move {
             msg_poller.loop_poll().await;
         });

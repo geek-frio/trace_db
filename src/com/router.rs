@@ -4,6 +4,7 @@ use std::collections::hash_map::Iter;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, sync::atomic::AtomicUsize};
+use tracing::info;
 
 use crossbeam_channel::TrySendError;
 
@@ -13,11 +14,14 @@ use super::mail::BasicMailbox;
 use super::sched::FsmScheduler;
 use super::util::{CountTracker, LruCache};
 
-pub trait RouteMsg<L, R> {
-    type Item;
+pub trait RouteMsg<L, N: Fsm> {
     type Addr;
 
-    fn route_msg(addr: Self::Addr, msg: Self::Item) -> Either<L, R>;
+    fn route_msg(&self, addr: Self::Addr, msg: N::Message) -> Either<L, N::Message>;
+
+    fn register(&self, addr: IndexAddr, mailbox: BasicMailbox<N>);
+
+    fn register_all(&self, mailboxes: Vec<(IndexAddr, BasicMailbox<N>)>);
 }
 
 pub struct NormalMailMap<N: Fsm> {
@@ -71,6 +75,59 @@ impl<L, R> Either<L, R> {
             Either::Right(r) => Some(r),
             _ => None,
         }
+    }
+}
+
+impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<Result<(), TrySendError<N::Message>>, N>
+    for Router<N, S>
+{
+    type Addr = IndexAddr;
+
+    fn route_msg(
+        &self,
+        addr: Self::Addr,
+        msg: N::Message,
+    ) -> Either<Result<(), TrySendError<N::Message>>, N::Message> {
+        let mut msg = Some(msg);
+        let res = self.check_do(addr, |mailbox| {
+            let m = msg.take().unwrap();
+            match mailbox.send(m, &self.normal_scheduler) {
+                Ok(()) => Some(()),
+                Err(send_err) => {
+                    msg = Some(send_err.0);
+                    None
+                }
+            }
+        });
+        match res {
+            CheckDoResult::NotExist => Either::Right(msg.unwrap()),
+            CheckDoResult::Invalid => Either::Left(Err(TrySendError::Disconnected(msg.unwrap()))),
+            CheckDoResult::Valid(_) => Either::Left(Ok(())),
+        }
+    }
+
+    fn register(&self, addr: IndexAddr, mailbox: BasicMailbox<N>) {
+        info!("Has inserted a new mailbox, addr is:{}", addr);
+        let mut normals = self.normals.lock().unwrap();
+        if let Some(mailbox) = normals.map.insert(addr, mailbox) {
+            mailbox.close();
+        }
+        normals
+            .alive_cnt
+            .store(normals.map.len(), Ordering::Relaxed);
+    }
+
+    fn register_all(&self, mailboxes: Vec<(IndexAddr, BasicMailbox<N>)>) {
+        let mut normals = self.normals.lock().unwrap();
+        normals.map.reserve(mailboxes.len());
+        for (addr, mailbox) in mailboxes {
+            if let Some(m) = normals.map.insert(addr, mailbox) {
+                m.close();
+            }
+        }
+        normals
+            .alive_cnt
+            .store(normals.map.len(), Ordering::Relaxed);
     }
 }
 
@@ -130,53 +187,6 @@ where
                 CheckDoResult::Valid(r)
             }
             None => CheckDoResult::Invalid,
-        }
-    }
-
-    pub fn register(&self, addr: IndexAddr, mailbox: BasicMailbox<N>) {
-        println!("Has inserted a new mailbox, addr is:{}", addr);
-        let mut normals = self.normals.lock().unwrap();
-        if let Some(mailbox) = normals.map.insert(addr, mailbox) {
-            mailbox.close();
-        }
-        normals
-            .alive_cnt
-            .store(normals.map.len(), Ordering::Relaxed);
-    }
-
-    pub fn register_all(&self, mailboxes: Vec<(IndexAddr, BasicMailbox<N>)>) {
-        let mut normals = self.normals.lock().unwrap();
-        normals.map.reserve(mailboxes.len());
-        for (addr, mailbox) in mailboxes {
-            if let Some(m) = normals.map.insert(addr, mailbox) {
-                m.close();
-            }
-        }
-        normals
-            .alive_cnt
-            .store(normals.map.len(), Ordering::Relaxed);
-    }
-
-    pub fn send(
-        &self,
-        addr: IndexAddr,
-        msg: N::Message,
-    ) -> Either<Result<(), TrySendError<N::Message>>, N::Message> {
-        let mut msg = Some(msg);
-        let res = self.check_do(addr, |mailbox| {
-            let m = msg.take().unwrap();
-            match mailbox.send(m, &self.normal_scheduler) {
-                Ok(()) => Some(()),
-                Err(send_err) => {
-                    msg = Some(send_err.0);
-                    None
-                }
-            }
-        });
-        match res {
-            CheckDoResult::NotExist => Either::Right(msg.unwrap()),
-            CheckDoResult::Invalid => Either::Left(Err(TrySendError::Disconnected(msg.unwrap()))),
-            CheckDoResult::Valid(r) => Either::Left(Ok(r)),
         }
     }
 

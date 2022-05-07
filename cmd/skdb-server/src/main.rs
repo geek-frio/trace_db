@@ -1,5 +1,6 @@
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use crossbeam_channel::*;
@@ -11,9 +12,15 @@ use skdb::com::config::ConfigManager;
 use skdb::com::router::Router;
 use skdb::com::sched::NormalScheduler;
 use skdb::tag::fsm::TagFsm;
+use skdb::TOKIO_RUN;
 use skproto::tracing::*;
+use tokio::time::sleep;
 use tracing::info;
 use tracing::info_span;
+use tracing::trace;
+use tracing::Instrument;
+
+use crate::serv::route::LocalSegmentMsgConsumer;
 
 mod serv;
 /// Simple program to greet a person
@@ -41,7 +48,23 @@ fn main() {
 
     let mut batch_system = BatchSystem::new(router.clone(), r, 1, 500);
     batch_system.spawn("Tag Poller".to_string());
-    let skytracing = SkyTracingService::new_spawn(router.clone(), global_config.clone());
+
+    let (skytracing, local_receiver) =
+        SkyTracingService::new(router.clone(), global_config.clone());
+    let router_tick = router.clone();
+    // 1.Periodically send tick event to TagPollHandler's all the mailbox
+    TOKIO_RUN.spawn(
+        async move {
+            trace!("Sent tick event to TagPollHandler");
+            let _ = router_tick.notify_all_idle_mailbox();
+            sleep(Duration::from_secs(10))
+        }
+        .instrument(info_span!("tick_event")),
+    );
+    // 2.Start this local consumer to consume the tag segment msg event;
+    let local_consumer =
+        LocalSegmentMsgConsumer::new(router, global_config.clone(), local_receiver);
+    TOKIO_RUN.spawn(async move {}.instrument(info_span!("local_consumer")));
     let env = Environment::new(1);
     let service = create_sky_tracing(skytracing);
     let mut server = ServerBuilder::new(Arc::new(env))

@@ -6,8 +6,7 @@ use skdb::{
         config::GlobalConfig,
         index::{IndexAddr, IndexPath},
         mail::BasicMailbox,
-        router::{Either, Router},
-        sched::NormalScheduler,
+        router::{Either,  RouteMsg},
     },
     tag::{
         engine::*,
@@ -16,7 +15,7 @@ use skdb::{
 };
 use std::{
     collections::HashMap,
-    sync::{atomic::AtomicUsize, Arc, Mutex},
+    sync::{atomic::AtomicUsize, Arc, Mutex}, marker::PhantomData,
 };
 use tantivy::{
     schema::{Schema, INDEXED, STORED, STRING, TEXT},
@@ -24,20 +23,21 @@ use tantivy::{
 };
 use tracing::{error, info, trace, trace_span};
 
-pub(crate) struct LocalSegmentMsgConsumer {
-    router: Router<TagFsm, NormalScheduler<TagFsm>>,
+pub(crate) struct LocalSegmentMsgConsumer<Router, Err> {
+    router: Router,
     config: Arc<GlobalConfig>,
     index_map: Arc<Mutex<HashMap<i64, Index>>>,
     schema: Schema,
     receiver: Receiver<SegmentDataCallback>,
+    _err: PhantomData<Err>,
 }
 
-impl LocalSegmentMsgConsumer {
+impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Result<(), Err>, SegmentDataCallback , TagFsm,  Addr = i64> {
     pub(crate) fn new(
-        router: Router<TagFsm, NormalScheduler<TagFsm>>,
+        router: Router,
         config: Arc<GlobalConfig>,
         receiver: Receiver<SegmentDataCallback>,
-    ) -> LocalSegmentMsgConsumer {
+    ) -> LocalSegmentMsgConsumer<Router, Err> {
         let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
         LocalSegmentMsgConsumer {
@@ -46,6 +46,7 @@ impl LocalSegmentMsgConsumer {
             index_map,
             schema,
             receiver,
+            _err: PhantomData,
         }
     }
 
@@ -64,7 +65,7 @@ impl LocalSegmentMsgConsumer {
         );
 
         let index_path = Box::new(self.config.index_dir.clone());
-        let send_stat = self.router.send(path, seg);
+        let send_stat = self.router.route_msg(path, seg);
         match send_stat {
             Either::Right(msg) => {
                 info!(
@@ -89,7 +90,7 @@ impl LocalSegmentMsgConsumer {
                             mailbox.release(f);
                         }
                         self.router.register(path, mailbox);
-                        self.router.send(path, msg);
+                        self.router.route_msg(path, msg);
                     }
                     // TODO: This error can not fix by retry, so we just ack this msg
                     // Maybe we should store this msg anywhere
