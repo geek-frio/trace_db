@@ -32,7 +32,7 @@ pub(crate) struct LocalSegmentMsgConsumer<Router, Err> {
     _err: PhantomData<Err>,
 }
 
-impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Result<(), Err>, SegmentDataCallback , TagFsm,  Addr = i64> {
+impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Result<(), Err>, TagFsm, Addr = i64> {
     pub(crate) fn new(
         router: Router,
         config: Arc<GlobalConfig>,
