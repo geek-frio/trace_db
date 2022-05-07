@@ -1,6 +1,8 @@
+use std::fs::File;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing_subscriber::{prelude::*, Registry};
 
 use clap::Parser;
 use crossbeam_channel::Receiver as ShutdownReceiver;
@@ -134,6 +136,26 @@ impl MainServer {
             }
             .instrument(info_span!("local_consumer")),
         );
+    }
+}
+
+fn init_tracing_logger(cfg: Arc<GlobalConfig>) {
+    let stdout_log = tracing_subscriber::fmt::layer().pretty();
+    let subscriber = Registry::default().with(stdout_log);
+    const SET_GLOBAL_SUBSCRIBER_ERR: &'static str = "";
+    match cfg.env.as_str() {
+        "local" => {
+            tracing::subscriber::set_global_default(subscriber).expect(SET_GLOBAL_SUBSCRIBER_ERR);
+        }
+        "pre" | "dev" | "pro" => {
+            let file = File::create(cfg.log_path.as_str()).expect("Create log failed!");
+            let json_log = tracing_subscriber::fmt::layer().json().with_writer(file);
+            let subscriber = subscriber.with(json_log);
+            tracing::subscriber::set_global_default(subscriber).expect(SET_GLOBAL_SUBSCRIBER_ERR)
+        }
+        _ => {
+            panic!("Not expected enviroment config!");
+        }
     }
 }
 

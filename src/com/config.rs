@@ -11,6 +11,8 @@ pub struct GlobalConfig {
     pub grpc_port: u32,
     pub redis_addr: String,
     pub index_dir: String,
+    pub env: String,
+    pub log_path: String,
 }
 
 pub struct ConfigManager;
