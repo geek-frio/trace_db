@@ -32,12 +32,14 @@ impl RollingFileMaker {
     pub async fn init(
         name_prefix: String,
         log_path: PathBuf,
+        rolling_size: usize,
     ) -> Result<RollingFileMaker, AnyError> {
         // let (sender, receiver) = crossbeam_channel::bounded(5000);
         let (sender, mut receiver) = channel(5000);
         let writer = RollingFileWriter { sender };
 
-        let mut tracing_log_consumer = TracingLogConsumer::new(name_prefix, log_path).await?;
+        let mut tracing_log_consumer =
+            TracingLogConsumer::new(name_prefix, log_path, rolling_size).await?;
         TOKIO_RUN.spawn(async move {
             loop {
                 let msg_event = receiver.recv().await;
@@ -213,6 +215,7 @@ impl TracingLogConsumer {
     async fn new(
         name_prefix: String,
         mut log_dir: PathBuf,
+        rolling_size: usize,
     ) -> Result<TracingLogConsumer, AnyError> {
         let writer = Self::create_writer(name_prefix.as_str(), &mut log_dir, 1).await?;
         Ok(TracingLogConsumer {
@@ -220,7 +223,7 @@ impl TracingLogConsumer {
             log_dir,
             written_bytes: 0,
             flushed_bytes: 0,
-            rolling_size: 500 * 1024,
+            rolling_size: rolling_size,
             file_num: 1,
             name_prefix,
         })
@@ -251,6 +254,74 @@ impl TracingLogConsumer {
         final_name.push_str(time_str.as_str());
         final_name.push_str("-");
         final_name.push_str(file_num.to_string().as_str());
+        final_name.push_str(".log");
         return final_name;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cmp::Ordering, fs::Metadata, time::Duration};
+
+    use tokio::{fs::DirEntry, time::sleep};
+
+    use super::*;
+
+    async fn create_test_rolling_file_maker(
+        log_dir: &str,
+        name_prefix: &str,
+        rolling_size: usize,
+    ) -> RollingFileMaker {
+        let mut log_dir_buf = PathBuf::new();
+        log_dir_buf.push(log_dir);
+        let maker = RollingFileMaker::init(name_prefix.to_string(), log_dir_buf, 100)
+            .await
+            .expect("RollingFileMaker init failed!");
+        maker
+    }
+
+    async fn list_sorted_log_file(dir: &str) -> Vec<(DirEntry, Metadata)> {
+        let mut r = tokio::fs::read_dir("/tmp").await.expect("read dir failed");
+        let mut files = vec![];
+        while let Ok(item) = r.next_entry().await {
+            match item {
+                None => break,
+                Some(item) => {
+                    if item.file_name().to_str().unwrap().contains("test_app") {
+                        let meta = item.metadata().await?;
+                        files.push((item, meta));
+                    }
+                }
+            }
+        }
+        files.sort_by(|a, b| {
+            let m1 = a.1.modified().unwrap();
+            let m2 = b.1.modified().unwrap();
+            m1.partial_cmp(&m2).unwrap_or(Ordering::Equal)
+        });
+        files
+    }
+
+    #[tokio::test]
+    async fn test_rolling_init_one_line_test() -> Result<(), AnyError> {
+        let buf = "abc";
+        let maker = create_test_rolling_file_maker("/tmp", "test_app", 100).await;
+        let mut w = maker.make_writer();
+        w.write(buf.as_bytes()).unwrap();
+        w.flush().unwrap();
+        sleep(Duration::from_secs(1)).await;
+
+        let mut files = list_sorted_log_file("/tmp").await;
+        let last = files.pop().unwrap().0.path();
+        let file_name = last.as_path();
+
+        let body = tokio::fs::read_to_string(file_name).await.unwrap();
+        assert!(body == buf);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_muliple_lines() -> Result<(), AnyError> {
+        Ok(())
     }
 }

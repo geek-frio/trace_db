@@ -1,6 +1,5 @@
 use lazy_static::lazy_static;
 use skdb::com::tracing::RollingFileMaker;
-use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
