@@ -398,6 +398,12 @@ dependencies = [
 
 [[package]]
 name = "futures"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a471a38ef8ed83cd6e40aa59c1ffe17db6855c18e3604d9c4ed8c08ebc28678"
+
+[[package]]
+name = "futures"
 version = "0.3.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f73fe65f54d1e12b726f517d3e2135ca3125a437b6d998caf1962961f7172d9e"
@@ -514,7 +520,7 @@ version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24d99e00eed7e0a04ee2705112e7cfdbe1a3cc771147f22f016a8cd2d002187b"
 dependencies = [
- "futures",
+ "futures 0.3.21",
  "grpcio-sys",
  "libc",
  "log",
@@ -857,6 +863,26 @@ name = "percent-encoding"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4fd5641d01c8f18a23da7b6fe29298ff4b55afcccdf78973b24cf3175fee32e"
+
+[[package]]
+name = "pin-project"
+version = "1.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58ad3879ad3baf4e44784bc6a718a8698867bb991f8ce24d1bcbe2cfb4c3a75e"
+dependencies = [
+ "pin-project-internal",
+]
+
+[[package]]
+name = "pin-project-internal"
+version = "1.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "744b6f092ba29c3650faf274db506afd39944f48420f6c86b17cfe0ee1cb36bb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "pin-project-lite"
@@ -1221,14 +1247,16 @@ name = "skdb"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
  "crossbeam",
  "crossbeam-channel",
- "futures",
+ "futures 0.3.21",
  "futures-sink",
  "grpcio",
  "lazy_static",
+ "pin-project",
  "pretty_assertions",
  "protobuf",
  "rand 0.8.5",
@@ -1239,6 +1267,7 @@ dependencies = [
  "tantivy",
  "tantivy-common",
  "tokio",
+ "tokio-io",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1251,7 +1280,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "futures",
+ "futures 0.3.21",
  "futures-util",
  "grpcio",
  "lazy_static",
@@ -1273,7 +1302,7 @@ dependencies = [
  "clap",
  "crossbeam-channel",
  "ctrlc",
- "futures",
+ "futures 0.3.21",
  "futures-sink",
  "futures-util",
  "grpcio",
@@ -1296,7 +1325,7 @@ version = "0.1.0"
 name = "skproto"
 version = "0.1.0"
 dependencies = [
- "futures",
+ "futures 0.3.21",
  "grpcio",
  "protobuf",
  "protobuf-build",
@@ -1362,7 +1391,7 @@ dependencies = [
  "fastfield_codecs",
  "fnv",
  "fs2",
- "futures",
+ "futures 0.3.21",
  "htmlescape",
  "itertools",
  "levenshtein_automata",
@@ -1517,9 +1546,22 @@ version = "1.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dce653fb475565de9f6fb0614b28bca8df2c430c0cf84bcd9c843f15de5414cc"
 dependencies = [
+ "bytes 1.1.0",
+ "memchr",
  "num_cpus",
  "once_cell",
  "pin-project-lite",
+]
+
+[[package]]
+name = "tokio-io"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57fc868aae093479e3131e3d165c93b1c7474109d13c90ec0dda2a1bbfff0674"
+dependencies = [
+ "bytes 0.4.12",
+ "futures 0.1.31",
+ "log",
 ]
 
 [[package]]

@@ -1,14 +1,17 @@
 use anyhow::Error as AnyError;
+use async_trait::async_trait;
 use chrono::Local;
-use std::fs::OpenOptions;
-use std::io::BufWriter;
-use std::path::{Path, PathBuf};
-use std::{
-    fs::File,
-    io::{ErrorKind, Write},
-};
+// use futures::AsyncWrite;
+use pin_project::pin_project;
+use std::task::Poll;
+use tokio::fs::OpenOptions;
+// use std::io::BufWriter;
+use std::io::{ErrorKind, Write};
+use std::path::PathBuf;
+use tokio::fs::File;
+use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc::channel;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Sender;
 
 use tracing::info;
 use tracing_subscriber::fmt::MakeWriter;
@@ -28,13 +31,13 @@ struct RollingFileWriter {
 }
 
 impl RollingFileMaker {
-    fn init(name_prefix: String, log_path: PathBuf) -> RollingFileMaker {
+    async fn init(name_prefix: String, log_path: PathBuf) -> Result<RollingFileMaker, AnyError> {
         // let (sender, receiver) = crossbeam_channel::bounded(5000);
         let (sender, mut receiver) = channel(5000);
         let writer = RollingFileWriter { sender };
 
+        let mut tracing_log_consumer = TracingLogConsumer::new(name_prefix, log_path).await?;
         TOKIO_RUN.spawn(async move {
-            let tracing_log_consumer = TracingLogConsumer::new(name_prefix, log_path);
             loop {
                 let msg_event = receiver.recv().await;
                 match msg_event {
@@ -43,12 +46,14 @@ impl RollingFileMaker {
                     }
                     Some(event) => match event {
                         MsgEvent::Flush => {}
-                        MsgEvent::Msg(m) => {}
+                        MsgEvent::Msg(m) => {
+                            tracing_log_consumer.write(m.as_slice()).await;
+                        }
                     },
                 }
             }
         });
-        RollingFileMaker { writer }
+        Ok(RollingFileMaker { writer })
     }
 }
 
@@ -88,13 +93,16 @@ impl<'a> MakeWriter<'a> for RollingFileMaker {
     }
 }
 
+#[async_trait]
 trait RollingAbility {
     fn set_rolling_size(&mut self, rolling_size: usize);
-    fn recreate(&mut self) -> Result<(), AnyError>;
+    async fn recreate(&mut self) -> Result<(), AnyError>;
     fn need_rolling(&self) -> bool;
 }
 
+#[pin_project]
 struct TracingLogConsumer {
+    #[pin]
     writer: Option<BufWriter<File>>,
     log_dir: PathBuf,
     written_bytes: usize,
@@ -104,19 +112,21 @@ struct TracingLogConsumer {
     name_prefix: String,
 }
 
+#[async_trait]
 impl RollingAbility for TracingLogConsumer {
     fn set_rolling_size(&mut self, rolling_size: usize) {
         self.rolling_size = rolling_size;
     }
 
-    fn recreate(&mut self) -> Result<(), AnyError> {
+    async fn recreate(&mut self) -> Result<(), AnyError> {
         if let Some(ref mut w) = self.writer {
             self.written_bytes = 0;
             self.flushed_bytes = 0;
-            let _ = w.flush();
+            w.flush().await?;
         }
         self.writer =
-            Self::create_writer(self.name_prefix.as_str(), &mut self.log_dir, self.file_num)?;
+            Self::create_writer(self.name_prefix.as_str(), &mut self.log_dir, self.file_num)
+                .await?;
         Ok(())
     }
 
@@ -125,19 +135,53 @@ impl RollingAbility for TracingLogConsumer {
     }
 }
 
-impl Write for TracingLogConsumer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        Ok(buf.len())
+impl AsyncWrite for TracingLogConsumer {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        let this = self.project();
+        let s = this.writer.as_pin_mut();
+        match s {
+            Some(w) => w.poll_write(cx, buf),
+            None => Poll::Ready(Err(std::io::Error::new(
+                ErrorKind::Other,
+                "No writer is init",
+            ))),
+        }
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        let this = self.project();
+        let s = this.writer.as_pin_mut();
+        match s {
+            Some(w) => w.poll_flush(cx),
+            None => Poll::Ready(Err(std::io::Error::new(
+                ErrorKind::Other,
+                "No writer is init",
+            ))),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        // do nothing
+        Self::poll_flush(self, cx)
     }
 }
 
 impl TracingLogConsumer {
-    fn new(name_prefix: String, mut log_dir: PathBuf) -> Result<TracingLogConsumer, AnyError> {
-        let writer = Self::create_writer(name_prefix.as_str(), &mut log_dir, 0)?;
+    async fn new(
+        name_prefix: String,
+        mut log_dir: PathBuf,
+    ) -> Result<TracingLogConsumer, AnyError> {
+        let writer = Self::create_writer(name_prefix.as_str(), &mut log_dir, 0).await?;
         Ok(TracingLogConsumer {
             writer,
             log_dir,
@@ -149,7 +193,7 @@ impl TracingLogConsumer {
         })
     }
 
-    fn create_writer(
+    async fn create_writer(
         name_prefix: &str,
         path_buf: &mut PathBuf,
         file_num: usize,
@@ -157,12 +201,12 @@ impl TracingLogConsumer {
         let file_name = Self::gen_new_file_name(name_prefix, file_num + 1);
         path_buf.push(file_name);
 
-        Ok(Some(BufWriter::new(
-            OpenOptions::new()
-                .write(true)
-                .create(true)
-                .open(&path_buf)?,
-        )))
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(&path_buf)
+            .await?;
+        Ok(Some(BufWriter::new(file)))
     }
 
     fn gen_new_file_name(s: &str, file_num: usize) -> String {
