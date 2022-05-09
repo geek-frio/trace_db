@@ -261,7 +261,7 @@ impl TracingLogConsumer {
 
 #[cfg(test)]
 mod tests {
-    use std::{cmp::Ordering, fs::Metadata, time::Duration};
+    use std::{cmp::Ordering, fs::Metadata, path::Path, time::Duration};
 
     use tokio::{fs::DirEntry, time::sleep};
 
@@ -320,8 +320,20 @@ mod tests {
         Ok(())
     }
 
+    async fn check_file_body(path: &Path, body: &str) {}
+
     #[tokio::test]
     async fn test_muliple_lines() -> Result<(), AnyError> {
+        let maker = create_test_rolling_file_maker("/tmp", "test_app", 100).await;
+        let mut w = maker.make_writer();
+        let mut s = String::new();
+        let test_str = "1234567890";
+        for _ in 0..10 {
+            let _ = w.write(test_str.as_bytes());
+            s.push_str(test_str);
+        }
+        w.flush();
+
         Ok(())
     }
 }
