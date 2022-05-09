@@ -1,19 +1,17 @@
 use anyhow::Error as AnyError;
 use async_trait::async_trait;
 use chrono::Local;
-// use futures::AsyncWrite;
 use pin_project::pin_project;
-use std::task::Poll;
-use tokio::fs::OpenOptions;
-// use std::io::BufWriter;
 use std::io::{ErrorKind, Write};
 use std::path::PathBuf;
+use std::task::Poll;
 use tokio::fs::File;
+use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::Sender;
 
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::fmt::MakeWriter;
 
 use crate::TOKIO_RUN;
@@ -45,9 +43,28 @@ impl RollingFileMaker {
                         info!("Log receiver channel has been closed!")
                     }
                     Some(event) => match event {
-                        MsgEvent::Flush => {}
+                        MsgEvent::Flush => {
+                            let _ = tracing_log_consumer.flush().await;
+                            // Check if need rolling operation
+                            if tracing_log_consumer.need_rolling() {
+                                let r= tracing_log_consumer.recreate().await;
+                                if let Err(e) = r {
+                                    error!("Rolling executed failed!{:?}", e);
+                                }
+                            }
+                        }
                         MsgEvent::Msg(m) => {
-                            tracing_log_consumer.write(m.as_slice()).await;
+                            if let Err(e) = tracing_log_consumer.write(m.as_slice()).await {
+                                if e.kind() == ErrorKind::Other {
+                                    let _ = tracing_log_consumer.recreate().await;
+                                    let r = tracing_log_consumer.write(m.as_slice()).await;
+                                    if let Err(e) = r {
+                                        error!(log_data = ?m.as_slice(), "Consume tracing log msgs failed!Recreate Writer can't save it {:?}", e);
+                                    }
+                                } else {
+                                    error!(log_data = ?m.as_slice(), "Consume tracing log msgs failed!{:?}", e);
+                                }
+                            }
                         }
                     },
                 }
@@ -124,6 +141,7 @@ impl RollingAbility for TracingLogConsumer {
             self.flushed_bytes = 0;
             w.flush().await?;
         }
+        self.file_num += 1;
         self.writer =
             Self::create_writer(self.name_prefix.as_str(), &mut self.log_dir, self.file_num)
                 .await?;
@@ -144,7 +162,10 @@ impl AsyncWrite for TracingLogConsumer {
         let this = self.project();
         let s = this.writer.as_pin_mut();
         match s {
-            Some(w) => w.poll_write(cx, buf),
+            Some(w) => {
+                *this.written_bytes = *this.written_bytes + buf.len();
+                w.poll_write(cx, buf)
+            }
             None => Poll::Ready(Err(std::io::Error::new(
                 ErrorKind::Other,
                 "No writer is init",
@@ -159,7 +180,16 @@ impl AsyncWrite for TracingLogConsumer {
         let this = self.project();
         let s = this.writer.as_pin_mut();
         match s {
-            Some(w) => w.poll_flush(cx),
+            Some(w) => {
+                let res = w.poll_flush(cx);
+                match res {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(_) => {
+                        *this.flushed_bytes = *this.written_bytes;
+                        return Poll::Ready(Ok(()));
+                    }
+                }
+            }
             None => Poll::Ready(Err(std::io::Error::new(
                 ErrorKind::Other,
                 "No writer is init",
@@ -181,7 +211,7 @@ impl TracingLogConsumer {
         name_prefix: String,
         mut log_dir: PathBuf,
     ) -> Result<TracingLogConsumer, AnyError> {
-        let writer = Self::create_writer(name_prefix.as_str(), &mut log_dir, 0).await?;
+        let writer = Self::create_writer(name_prefix.as_str(), &mut log_dir, 1).await?;
         Ok(TracingLogConsumer {
             writer,
             log_dir,
@@ -198,7 +228,7 @@ impl TracingLogConsumer {
         path_buf: &mut PathBuf,
         file_num: usize,
     ) -> Result<Option<BufWriter<File>>, AnyError> {
-        let file_name = Self::gen_new_file_name(name_prefix, file_num + 1);
+        let file_name = Self::gen_new_file_name(name_prefix, file_num);
         path_buf.push(file_name);
 
         let file = OpenOptions::new()
