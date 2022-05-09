@@ -274,21 +274,21 @@ mod tests {
     ) -> RollingFileMaker {
         let mut log_dir_buf = PathBuf::new();
         log_dir_buf.push(log_dir);
-        let maker = RollingFileMaker::init(name_prefix.to_string(), log_dir_buf, 100)
+        let maker = RollingFileMaker::init(name_prefix.to_string(), log_dir_buf, rolling_size)
             .await
             .expect("RollingFileMaker init failed!");
         maker
     }
 
     async fn list_sorted_log_file(dir: &str) -> Vec<(DirEntry, Metadata)> {
-        let mut r = tokio::fs::read_dir("/tmp").await.expect("read dir failed");
+        let mut r = tokio::fs::read_dir(dir).await.expect("read dir failed");
         let mut files = vec![];
         while let Ok(item) = r.next_entry().await {
             match item {
                 None => break,
                 Some(item) => {
                     if item.file_name().to_str().unwrap().contains("test_app") {
-                        let meta = item.metadata().await?;
+                        let meta = item.metadata().await.unwrap();
                         files.push((item, meta));
                     }
                 }
