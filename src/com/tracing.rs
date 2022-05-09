@@ -16,7 +16,7 @@ use tracing_subscriber::fmt::MakeWriter;
 
 use crate::TOKIO_RUN;
 
-struct RollingFileMaker {
+pub struct RollingFileMaker {
     writer: RollingFileWriter,
 }
 
@@ -24,12 +24,15 @@ struct MsgSender {
     file: Option<File>,
 }
 
-struct RollingFileWriter {
+pub struct RollingFileWriter {
     sender: Sender<MsgEvent>,
 }
 
 impl RollingFileMaker {
-    async fn init(name_prefix: String, log_path: PathBuf) -> Result<RollingFileMaker, AnyError> {
+    pub async fn init(
+        name_prefix: String,
+        log_path: PathBuf,
+    ) -> Result<RollingFileMaker, AnyError> {
         // let (sender, receiver) = crossbeam_channel::bounded(5000);
         let (sender, mut receiver) = channel(5000);
         let writer = RollingFileWriter { sender };

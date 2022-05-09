@@ -1,5 +1,7 @@
 use lazy_static::lazy_static;
+use skdb::com::tracing::RollingFileMaker;
 use std::fs::File;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::sync::Once;
@@ -156,8 +158,12 @@ fn init_tracing_logger(cfg: Arc<GlobalConfig>) {
                     .expect(SET_GLOBAL_SUBSCRIBER_ERR);
             }
             "pre" | "dev" | "pro" => {
-                let file = File::create(cfg.log_path.as_str()).expect("Create log failed!");
-                let json_log = tracing_subscriber::fmt::layer().json().with_writer(file);
+                let mut log_dir = PathBuf::new();
+                log_dir.push(cfg.log_path.as_str());
+                let maker = TOKIO_RUN
+                    .block_on(RollingFileMaker::init(cfg.app_name.clone(), log_dir))
+                    .expect("Init rolling file failed!");
+                let json_log = tracing_subscriber::fmt::layer().json().with_writer(maker);
                 let subscriber = subscriber.with(json_log);
                 tracing::subscriber::set_global_default(subscriber)
                     .expect(SET_GLOBAL_SUBSCRIBER_ERR)

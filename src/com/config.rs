@@ -13,6 +13,7 @@ pub struct GlobalConfig {
     pub index_dir: String,
     pub env: String,
     pub log_path: String,
+    pub app_name: String,
 }
 
 pub struct ConfigManager;
