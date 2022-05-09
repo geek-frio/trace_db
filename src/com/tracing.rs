@@ -28,13 +28,13 @@ struct RollingFileWriter {
 }
 
 impl RollingFileMaker {
-    fn init(name_prefix: String, log_path: &Path) -> RollingFileMaker {
+    fn init(name_prefix: String, log_path: PathBuf) -> RollingFileMaker {
         // let (sender, receiver) = crossbeam_channel::bounded(5000);
         let (sender, mut receiver) = channel(5000);
         let writer = RollingFileWriter { sender };
 
         TOKIO_RUN.spawn(async move {
-            let tracing_log_consumer = TracingLogConsumer::new(name_prefix);
+            let tracing_log_consumer = TracingLogConsumer::new(name_prefix, log_path);
             loop {
                 let msg_event = receiver.recv().await;
                 match msg_event {
@@ -90,11 +90,13 @@ impl<'a> MakeWriter<'a> for RollingFileMaker {
 
 trait RollingAbility {
     fn set_rolling_size(&mut self, rolling_size: usize);
-    fn recreate(&mut self);
+    fn recreate(&mut self) -> Result<(), AnyError>;
+    fn need_rolling(&self) -> bool;
 }
 
 struct TracingLogConsumer {
     writer: Option<BufWriter<File>>,
+    log_dir: PathBuf,
     written_bytes: usize,
     flushed_bytes: usize,
     rolling_size: usize,
@@ -107,25 +109,38 @@ impl RollingAbility for TracingLogConsumer {
         self.rolling_size = rolling_size;
     }
 
-    fn recreate(&mut self) {}
+    fn recreate(&mut self) -> Result<(), AnyError> {
+        if let Some(ref mut w) = self.writer {
+            self.written_bytes = 0;
+            self.flushed_bytes = 0;
+            let _ = w.flush();
+        }
+        self.writer =
+            Self::create_writer(self.name_prefix.as_str(), &mut self.log_dir, self.file_num)?;
+        Ok(())
+    }
+
+    fn need_rolling(&self) -> bool {
+        self.flushed_bytes > self.rolling_size
+    }
+}
+
+impl Write for TracingLogConsumer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 impl TracingLogConsumer {
-    fn new(name_prefix: String, path: &Path) -> Result<TracingLogConsumer, AnyError> {
-        let file_name = Self::gen_new_file_name(name_prefix.as_str(), 1);
-        let mut path_buf = PathBuf::new();
-        path_buf.push(path);
-        path_buf.push(file_name);
-
-        let writer = Some(BufWriter::new(
-            OpenOptions::new()
-                .write(true)
-                .create(true)
-                .open(&path_buf)?,
-        ));
-
+    fn new(name_prefix: String, mut log_dir: PathBuf) -> Result<TracingLogConsumer, AnyError> {
+        let writer = Self::create_writer(name_prefix.as_str(), &mut log_dir, 0)?;
         Ok(TracingLogConsumer {
             writer,
+            log_dir,
             written_bytes: 0,
             flushed_bytes: 0,
             rolling_size: 500 * 1024,
@@ -133,13 +148,32 @@ impl TracingLogConsumer {
             name_prefix,
         })
     }
+
+    fn create_writer(
+        name_prefix: &str,
+        path_buf: &mut PathBuf,
+        file_num: usize,
+    ) -> Result<Option<BufWriter<File>>, AnyError> {
+        let file_name = Self::gen_new_file_name(name_prefix, file_num + 1);
+        path_buf.push(file_name);
+
+        Ok(Some(BufWriter::new(
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(&path_buf)?,
+        )))
+    }
+
     fn gen_new_file_name(s: &str, file_num: usize) -> String {
         let local = Local::now();
-        let final_name = String::new();
+        let mut final_name = String::new();
         final_name.push_str(s);
         final_name.push_str("-");
         let time_str = format!("{}", local.format("%Y%m%d-%H%M%S"));
         final_name.push_str(time_str.as_str());
+        final_name.push_str("-");
+        final_name.push_str(file_num.to_string().as_str());
         return final_name;
     }
 }
