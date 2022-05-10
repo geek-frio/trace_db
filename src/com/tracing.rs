@@ -364,7 +364,6 @@ mod tracing_log {
         let event = shut_recv.recv().await.unwrap();
         if let ReverseFileEvent::LogFileCreate(p) = event {
             let body = tokio::fs::read_to_string(p.as_path()).await.unwrap();
-            println!("body is:{}, buf is:{}", body, buf);
             assert!(body == buf);
             created_files.push(p);
         }
@@ -424,6 +423,12 @@ mod tracing_log {
             created_files.push(p);
         }
         assert!(created_files.len() == 11);
+        for file in created_files {
+            let r = tokio::fs::remove_file(file.as_path()).await;
+            if let Err(e) = r {
+                println!("Drop file error, e:{:?}", e);
+            }
+        }
         Ok(())
     }
 }
