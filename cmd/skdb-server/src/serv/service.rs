@@ -1,25 +1,18 @@
 use super::bus::RemoteMsgPoller;
-use super::*;
 use anyhow::Error as AnyError;
-use futures::channel::mpsc::channel;
-use futures::channel::mpsc::Receiver;
 use futures::channel::mpsc::Sender;
 use futures::SinkExt;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures_util::{FutureExt as _, TryFutureExt as _};
-use grpcio::DuplexSink;
 use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
 use grpcio::WriteFlags;
 use skdb::com::config::GlobalConfig;
 use skdb::com::index::IndexAddr;
 use skdb::com::index::IndexPath;
-use skdb::com::router::Router;
-use skdb::com::sched::NormalScheduler;
 use skdb::tag::engine::*;
 use skdb::tag::fsm::SegmentDataCallback;
-use skdb::tag::fsm::TagFsm;
 use skdb::*;
 use skproto::tracing::*;
 use std::collections::HashMap;
@@ -33,7 +26,6 @@ use tantivy::Index;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
-use tracing::info;
 
 #[derive(Clone)]
 pub struct SkyTracingService {
@@ -278,21 +270,21 @@ impl SkyTracing for SkyTracingService {
     }
 }
 
-async fn handshake_exec(sink: &mut DuplexSink<SegmentRes>) -> Result<(), AnyError> {
-    let conn_id = CONN_MANAGER.gen_new_conn_id();
-    let mut resp = SegmentRes::new();
-    let mut meta = Meta::new();
-    meta.connId = conn_id;
-    meta.field_type = Meta_RequestType::HANDSHAKE;
-    info!(meta = ?meta, %conn_id, resp = ?resp, "Send handshake resp");
-    resp.set_meta(meta);
-    // We don't care handshake is success or not, client should retry for this
-    sink.send((resp, WriteFlags::default())).await?;
-    println!("Has sent handshake response!");
-    info!("Send handshake resp success");
-    let _ = sink.flush().await;
-    Ok(())
-}
+// async fn handshake_exec(sink: &mut DuplexSink<SegmentRes>) -> Result<(), AnyError> {
+//     let conn_id = CONN_MANAGER.gen_new_conn_id();
+//     let mut resp = SegmentRes::new();
+//     let mut meta = Meta::new();
+//     meta.connId = conn_id;
+//     meta.field_type = Meta_RequestType::HANDSHAKE;
+//     info!(meta = ?meta, %conn_id, resp = ?resp, "Send handshake resp");
+//     resp.set_meta(meta);
+//     // We don't care handshake is success or not, client should retry for this
+//     sink.send((resp, WriteFlags::default())).await?;
+//     println!("Has sent handshake response!");
+//     info!("Send handshake resp success");
+//     let _ = sink.flush().await;
+//     Ok(())
+// }
 
 fn search(
     index: Index,

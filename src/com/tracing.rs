@@ -300,16 +300,6 @@ mod tracing_log {
     const TEST_DIR: &'static str = "/tmp";
     const TEST_PREIFX: &'static str = "test_app";
 
-    fn drop_last_created_log_files() {
-        let mut r = std::fs::read_dir(TEST_DIR).unwrap();
-        while let Some(item) = r.next() {
-            let entry = item.unwrap();
-            if entry.file_name().to_str().unwrap().contains(TEST_PREIFX) {
-                let r = std::fs::remove_file(entry.path().as_path());
-            }
-        }
-    }
-
     async fn create_test_rolling_file_maker(
         log_dir: &str,
         name_prefix: &str,
