@@ -38,6 +38,7 @@ tracing-subscriber = { version = "0.3.11", features = ["fmt", "std", "json"] }
 futures-sink = "0.3"
 tokio-io = "0.1.13"
 async-trait = "0.1.53"
+regex = "1.5.5"
 pin-project = "1"
 
 [dev-dependencies]

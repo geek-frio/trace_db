@@ -1261,6 +1261,7 @@ dependencies = [
  "protobuf",
  "rand 0.8.5",
  "redis",
+ "regex",
  "serde",
  "serde_yaml",
  "skproto",
