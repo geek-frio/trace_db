@@ -157,10 +157,16 @@ fn init_tracing_logger(cfg: Arc<GlobalConfig>) {
                     .expect(SET_GLOBAL_SUBSCRIBER_ERR);
             }
             "pre" | "dev" | "pro" => {
+                let (shut_notify_sender, _log_file_recv) = tokio::sync::mpsc::channel(256);
                 let mut log_dir = PathBuf::new();
                 log_dir.push(cfg.log_path.as_str());
-                let maker = TOKIO_RUN
-                    .block_on(RollingFileMaker::init(cfg.app_name.clone(), log_dir))
+                let (maker, _shut_downsender) = TOKIO_RUN
+                    .block_on(RollingFileMaker::init(
+                        cfg.app_name.clone(),
+                        log_dir,
+                        256 * 1024,
+                        shut_notify_sender,
+                    ))
                     .expect("Init rolling file failed!");
                 let json_log = tracing_subscriber::fmt::layer().json().with_writer(maker);
                 let subscriber = subscriber.with(json_log);
