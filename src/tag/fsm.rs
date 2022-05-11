@@ -10,7 +10,6 @@ use super::engine::TracingTagEngine;
 impl Drop for TagFsm {
     fn drop(&mut self) {}
 }
-#[derive(Debug)]
 pub struct SegmentDataCallback {
     pub data: SegmentData,
     pub callback: AckCallback,

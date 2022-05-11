@@ -198,8 +198,9 @@ impl SkyTracing for SkyTracingService {
         sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
         let mut msg_poller = RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone());
+        let (_sender, recv) = tokio::sync::oneshot::channel();
         TOKIO_RUN.spawn(async move {
-            msg_poller.loop_poll().await;
+            msg_poller.loop_poll(recv).await;
         });
     }
 

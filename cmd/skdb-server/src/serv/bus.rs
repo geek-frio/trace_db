@@ -1,10 +1,10 @@
+use crate::serv::proto::ProtoLogic;
 use anyhow::Error as AnyError;
-use futures::channel::mpsc::{unbounded as funbounded, Sender};
-use futures::{
-    future::{select, Either},
-    stream::Fuse,
-    Stream, StreamExt,
-};
+use futures::channel::mpsc::{unbounded as funbounded, Sender, UnboundedSender};
+use futures::future::FutureExt;
+use futures::select;
+use futures::SinkExt;
+use futures::{stream::Fuse, Stream, StreamExt};
 use futures_sink::Sink;
 use grpcio::{Result as GrpcResult, WriteFlags};
 use skdb::com::ack::AckWindow;
@@ -12,9 +12,8 @@ use skdb::tag::fsm::SegmentDataCallback;
 use skproto::tracing::{SegmentData, SegmentRes};
 use std::fmt::Debug;
 use std::pin::Pin;
-use tracing::{error, trace_span};
-
-use super::proto::ProtoLogic;
+use tokio::sync::oneshot::Receiver;
+use tracing::{error, info, trace_span, warn};
 
 pub struct RemoteMsgPoller<L, S> {
     source_stream: Fuse<L>,
@@ -43,15 +42,16 @@ where
         }
     }
 
-    pub async fn loop_poll(&mut self) {
-        let (ack_s, mut ack_r) = funbounded::<i64>();
+    pub async fn loop_poll(&mut self, shut_recv: Receiver<()>) -> Result<(), AnyError> {
+        let (mut ack_s, mut ack_r) = funbounded::<i64>();
+        let mut fused_shut = shut_recv.fuse();
         loop {
             let _one_msg = trace_span!("recv_msg_one_loop");
-            let mut left = Pin::new(&mut self.source_stream);
-            let mut right = Pin::new(&mut ack_r);
-            match select(left.next(), right.next()).await {
-                Either::Left((seg_data, _)) => {
-                    if let Some(seg) = seg_data {
+            let mut source_stream = Pin::new(&mut self.source_stream);
+            let mut ack_stream = Pin::new(&mut ack_r);
+            select! {
+                data = source_stream.next() => {
+                    if let Some(seg) = data {
                         if !cfg!(test) {
                             let r = ProtoLogic::execute(
                                 seg,
@@ -63,25 +63,28 @@ where
                             .await;
                             if let Err(e) = r {
                                 error!("Has met seriously problem, e:{:?}", e);
-                                return;
+                                return Err(AnyError::msg("source stream has met serious error!"));
                             }
                         } else {
-                            println!("seg:{:?}", seg);
+                            let _ = ack_s.send(seg.unwrap().get_meta().get_seqId()).await;
                         }
-                    }
-                }
-                // Callback ack seqid;
-                Either::Right((seq_id, _)) => {
-                    if !cfg!(test) {
-                        let _ =
-                            ProtoLogic::handle_callback(&mut self.sink, &mut self.ack_win, seq_id)
-                                .await;
                     } else {
-                        println!("Has received acked seq_id");
+                        warn!("Source stream has been terminated!");
+                    }
+                },
+                data = ack_stream.next() => {
+                    if !cfg!(test) {
+                        let _ = ProtoLogic::handle_callback(&mut self.sink, &mut self.ack_win, data).await;
                     }
                 }
-            }
+                // Has received shutdown signal
+                _ = fused_shut => {
+                    info!("Received shutdown signal, quit");
+                    break;
+                }
+            };
         }
+        Ok(())
     }
 }
 
@@ -91,7 +94,7 @@ mod test_remote_msg_poller {
     use chrono::Local;
     use skdb::test::gen::*;
     use skproto::tracing::{Meta, Meta_RequestType};
-    use std::task::Poll;
+    use std::{task::Poll, thread::sleep, time::Duration};
 
     struct MockSink;
 
@@ -165,6 +168,7 @@ mod test_remote_msg_poller {
             }
             self.api_id += 1;
             self.seq_id += 1;
+            self.idx += 1;
             let seg = mock_seg(1, self.api_id, self.seq_id);
             return Poll::Ready(Some(GrpcResult::Ok(seg)));
         }
@@ -173,7 +177,7 @@ mod test_remote_msg_poller {
     #[tokio::test]
     async fn test_loop_poll() -> Result<(), AnyError> {
         let (local_send, mut local_recv) = futures::channel::mpsc::channel(5000);
-
+        let (one_send, one_recv) = tokio::sync::oneshot::channel();
         let source = MockStream {
             idx: 0,
             api_id: 1,
@@ -183,10 +187,15 @@ mod test_remote_msg_poller {
         let mut remote = RemoteMsgPoller::new(source, sink, local_send);
         tokio::spawn(async move {
             while let Some(data) = local_recv.next().await {
-                println!("data callback :{:?}", data);
+                println!("data callback :{:?}", data.data);
             }
         });
-        remote.loop_poll().await;
+
+        tokio::spawn(async {
+            sleep(Duration::from_millis(500));
+            let _ = one_send.send(());
+        });
+        let _ = remote.loop_poll(one_recv).await;
         Ok(())
     }
 }
