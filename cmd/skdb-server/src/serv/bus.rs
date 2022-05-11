@@ -1,5 +1,4 @@
 use anyhow::Error as AnyError;
-// use crossbeam_channel::Sender;
 use futures::channel::mpsc::{unbounded as funbounded, Sender};
 use futures::{
     future::{select, Either},
@@ -158,12 +157,14 @@ mod test_remote_msg_poller {
         type Item = GrpcResult<SegmentData>;
 
         fn poll_next(
-            self: Pin<&mut Self>,
+            mut self: Pin<&mut Self>,
             _cx: &mut std::task::Context<'_>,
         ) -> Poll<Option<Self::Item>> {
             if self.idx > 100 {
                 return Poll::Ready(None);
             }
+            self.api_id += 1;
+            self.seq_id += 1;
             let seg = mock_seg(1, self.api_id, self.seq_id);
             return Poll::Ready(Some(GrpcResult::Ok(seg)));
         }
@@ -171,6 +172,21 @@ mod test_remote_msg_poller {
 
     #[tokio::test]
     async fn test_loop_poll() -> Result<(), AnyError> {
+        let (local_send, mut local_recv) = futures::channel::mpsc::channel(5000);
+
+        let source = MockStream {
+            idx: 0,
+            api_id: 1,
+            seq_id: 1,
+        };
+        let sink = MockSink;
+        let mut remote = RemoteMsgPoller::new(source, sink, local_send);
+        tokio::spawn(async move {
+            while let Some(data) = local_recv.next().await {
+                println!("data callback :{:?}", data);
+            }
+        });
+        remote.loop_poll().await;
         Ok(())
     }
 }
