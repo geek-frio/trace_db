@@ -1,15 +1,17 @@
 use crate::serv::proto::ProtoLogic;
+use crate::serv::CONN_MANAGER;
 use anyhow::Error as AnyError;
 use async_trait::async_trait;
 use futures::channel::mpsc::{unbounded as funbounded, Sender, UnboundedSender};
 use futures::future::FutureExt;
 use futures::select;
+use futures::SinkExt;
 use futures::{stream::Fuse, Stream, StreamExt};
 use futures_sink::Sink;
 use grpcio::{Result as GrpcResult, WriteFlags};
 use skdb::com::ack::AckWindow;
 use skdb::tag::fsm::SegmentDataCallback;
-use skproto::tracing::{SegmentData, SegmentRes};
+use skproto::tracing::{Meta, Meta_RequestType, SegmentData, SegmentRes};
 use std::fmt::Debug;
 use std::pin::Pin;
 use tokio::sync::oneshot::Receiver;
@@ -56,23 +58,44 @@ impl<S: Sync + Send> SegmentProcess<S> for SegmentData {
     }
 }
 
-enum Executor<'a, S> {
+enum ExecutorStat<'a, S> {
     HandShake(SegmentProcessor<'a, S>),
     Trans(SegmentProcessor<'a, S>),
     NeedTrans(SegmentProcessor<'a, S>),
 }
 
 #[async_trait]
-impl<'a, S: Send> SegmentExecute for Executor<'a, S> {
+impl<'a, S: Send + Sink<(SegmentRes, WriteFlags)> + Unpin> SegmentExecute for ExecutorStat<'a, S>
+where
+    S::Error: Send,
+{
     type ErrorProcess = ErrorExecutor;
 
-    type Next = Executor<'a, S>;
+    type Next = ExecutorStat<'a, S>;
 
     async fn exec(self) -> Result<Self::Next, Self::ErrorProcess> {
         match self {
-            Executor::HandShake(s) => {}
-            Executor::Trans(s) => {}
-            Executor::NeedTrans(s) => {}
+            ExecutorStat::HandShake(mut s) => {
+                let conn_id = CONN_MANAGER.gen_new_conn_id();
+                let mut resp = SegmentRes::new();
+                let mut meta = Meta::new();
+                meta.connId = conn_id;
+                meta.field_type = Meta_RequestType::HANDSHAKE;
+                info!(meta = ?meta, %conn_id, resp = ?resp, "Send handshake resp");
+                resp.set_meta(meta);
+                let mut sink = Pin::new(&mut s.sink);
+                // We don't care handshake is success or not, client should retry for this
+                let send_res = sink.send((resp, WriteFlags::default())).await;
+                info!("Send handshake resp success");
+                let _ = sink.flush().await;
+                return Ok(ExecutorStat::Trans(s));
+            }
+            ExecutorStat::Trans(s) => {
+                todo!()
+            }
+            ExecutorStat::NeedTrans(s) => {
+                todo!()
+            }
         }
     }
 }
@@ -85,16 +108,16 @@ trait SegmentExecute {
     async fn exec(self) -> Result<Self::Next, Self::ErrorProcess>;
 }
 
-#[async_trait]
-impl<'a, S: Sync + Send> SegmentExecute for SegmentProcessor<'a, S> {
-    type ErrorProcess = ErrorExecutor;
+// #[async_trait]
+// impl<'a, S: Sync + Send> SegmentExecute for SegmentProcessor<'a, S> {
+//     type ErrorProcess = ErrorExecutor;
 
-    type Next = Executor<'a, S>;
+//     type Next = ExecutorStat<'a, S>;
 
-    async fn exec(self) -> Result<Self::Next, Self::ErrorProcess> {
-        todo!()
-    }
-}
+//     async fn exec(self) -> Result<Self::Next, Self::ErrorProcess> {
+//         todo!()
+//     }
+// }
 
 struct ErrorExecutor(SegmentData);
 #[async_trait]
