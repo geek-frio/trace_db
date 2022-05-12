@@ -1,9 +1,9 @@
 use crate::serv::proto::ProtoLogic;
 use anyhow::Error as AnyError;
+use async_trait::async_trait;
 use futures::channel::mpsc::{unbounded as funbounded, Sender, UnboundedSender};
 use futures::future::FutureExt;
 use futures::select;
-use futures::SinkExt;
 use futures::{stream::Fuse, Stream, StreamExt};
 use futures_sink::Sink;
 use grpcio::{Result as GrpcResult, WriteFlags};
@@ -22,10 +22,108 @@ pub struct RemoteMsgPoller<L, S> {
     local_sender: Sender<SegmentDataCallback>,
 }
 
+#[async_trait]
+trait SegmentProcess<S> {
+    fn with_process<'a>(
+        self,
+        ack_win: &'a mut AckWindow,
+        mail: &'a mut Sender<SegmentDataCallback>,
+        sink: &'a mut S,
+    ) -> SegmentProcessor<'a, S>;
+}
+
+struct SegmentProcessor<'a, S> {
+    data: SegmentData,
+    ack_win: &'a mut AckWindow,
+    mail: &'a mut Sender<SegmentDataCallback>,
+    sink: &'a mut S,
+}
+
+#[async_trait]
+impl<S: Sync + Send> SegmentProcess<S> for SegmentData {
+    fn with_process<'a>(
+        self,
+        ack_win: &'a mut AckWindow,
+        mail: &'a mut Sender<SegmentDataCallback>,
+        sink: &'a mut S,
+    ) -> SegmentProcessor<'a, S> {
+        SegmentProcessor {
+            data: self,
+            ack_win,
+            mail,
+            sink,
+        }
+    }
+}
+
+enum Executor<'a, S> {
+    HandShake(SegmentProcessor<'a, S>),
+    Trans(SegmentProcessor<'a, S>),
+    NeedTrans(SegmentProcessor<'a, S>),
+}
+
+#[async_trait]
+impl<'a, S: Send> SegmentExecute for Executor<'a, S> {
+    type ErrorProcess = ErrorExecutor;
+
+    type Next = Executor<'a, S>;
+
+    async fn exec(self) -> Result<Self::Next, Self::ErrorProcess> {
+        match self {
+            Executor::HandShake(s) => {}
+            Executor::Trans(s) => {}
+            Executor::NeedTrans(s) => {}
+        }
+    }
+}
+
+#[async_trait]
+trait SegmentExecute {
+    type ErrorProcess: SegmentExecute;
+    type Next: SegmentExecute;
+
+    async fn exec(self) -> Result<Self::Next, Self::ErrorProcess>;
+}
+
+#[async_trait]
+impl<'a, S: Sync + Send> SegmentExecute for SegmentProcessor<'a, S> {
+    type ErrorProcess = ErrorExecutor;
+
+    type Next = Executor<'a, S>;
+
+    async fn exec(self) -> Result<Self::Next, Self::ErrorProcess> {
+        todo!()
+    }
+}
+
+struct ErrorExecutor(SegmentData);
+#[async_trait]
+impl SegmentExecute for ErrorExecutor {
+    type ErrorProcess = Last;
+
+    type Next = Last;
+
+    async fn exec(self) -> Result<Self::Next, Self::ErrorProcess> {
+        todo!()
+    }
+}
+
+struct Last(Result<(), AnyError>);
+#[async_trait]
+impl SegmentExecute for Last {
+    type ErrorProcess = ErrorExecutor;
+
+    type Next = Last;
+
+    async fn exec(self) -> Result<Self::Next, Self::ErrorProcess> {
+        Ok(Last(Ok(())))
+    }
+}
+
 impl<L, S> RemoteMsgPoller<L, S>
 where
     L: Stream<Item = GrpcResult<SegmentData>> + Unpin,
-    S: Sink<(SegmentRes, WriteFlags)> + Unpin,
+    S: Sink<(SegmentRes, WriteFlags)> + Unpin + Sync + Send,
     AnyError: From<S::Error>,
     S::Error: Debug + Sync + Send,
 {
@@ -42,47 +140,56 @@ where
         }
     }
 
-    pub async fn loop_poll(&mut self, shut_recv: Receiver<()>) -> Result<(), AnyError> {
+    pub async fn loop_poll(mut self, shut_recv: Receiver<()>) -> Result<(), AnyError> {
         let (mut ack_s, mut ack_r) = funbounded::<i64>();
-        let mut fused_shut = shut_recv.fuse();
+
+        let mut source_stream = Pin::new(&mut self.source_stream);
+        let mut ack_stream = Pin::new(&mut ack_r);
+        let mut shut_recv = shut_recv.fuse();
+
+        let mut ack_win = self.ack_win;
+        let mut sink = self.sink;
+        let mut local_sender = self.local_sender;
+        // let
         loop {
             let _one_msg = trace_span!("recv_msg_one_loop");
-            let mut source_stream = Pin::new(&mut self.source_stream);
-            let mut ack_stream = Pin::new(&mut ack_r);
-            select! {
-                data = source_stream.next() => {
-                    if let Some(seg) = data {
-                        if !cfg!(test) {
-                            let r = ProtoLogic::execute(
-                                seg,
-                                &mut self.sink,
-                                &mut self.ack_win,
-                                ack_s.clone(),
-                                &mut self.local_sender,
-                            )
-                            .await;
-                            if let Err(e) = r {
-                                error!("Has met seriously problem, e:{:?}", e);
-                                return Err(AnyError::msg("source stream has met serious error!"));
-                            }
-                        } else {
-                            let _ = ack_s.send(seg.unwrap().get_meta().get_seqId()).await;
-                        }
-                    } else {
-                        warn!("Source stream has been terminated!");
-                    }
-                },
-                data = ack_stream.next() => {
-                    if !cfg!(test) {
-                        let _ = ProtoLogic::handle_callback(&mut self.sink, &mut self.ack_win, data).await;
-                    }
-                }
-                // Has received shutdown signal
-                _ = fused_shut => {
-                    info!("Received shutdown signal, quit");
-                    break;
-                }
-            };
+            let segment = SegmentData::default();
+
+            let processor = segment.with_process(&mut ack_win, &mut local_sender, &mut sink);
+            // select! {
+            //     data = source_stream.next() => {
+            //         // if let Some(seg) = data {
+            //         //     if !cfg!(test) {
+            //         //         let r = ProtoLogic::execute(
+            //         //             seg,
+            //         //             &mut self.sink,
+            //         //             &mut self.ack_win,
+            //         //             ack_s.clone(),
+            //         //             &mut self.local_sender,
+            //         //         )
+            //         //         .await;
+            //         //         if let Err(e) = r {
+            //         //             error!("Has met seriously problem, e:{:?}", e);
+            //         //             return Err(AnyError::msg("source stream has met serious error!"));
+            //         //         }
+            //         //     } else {
+            //         //         let _ = ack_s.send(seg.unwrap().get_meta().get_seqId()).await;
+            //         //     }
+            //         // } else {
+            //         //     warn!("Source stream has been terminated!");
+            //         // }
+            //     },
+            //     data = ack_stream.next() => {
+            //         // if !cfg!(test) {
+            //         //     let _ = ProtoLogic::handle_callback(&mut self.sink, &mut self.ack_win, data).await;
+            //         // }
+            //     }
+            //     // Has received shutdown signal
+            //     _ = shut_recv => {
+            //         info!("Received shutdown signal, quit");
+            //         break;
+            //     }
+            // };
         }
         Ok(())
     }

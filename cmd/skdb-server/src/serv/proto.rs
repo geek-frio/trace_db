@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 
 use anyhow::Error as AnyError;
+use async_trait::async_trait;
 use futures::channel::mpsc::Sender;
 use futures::channel::mpsc::UnboundedSender;
 use futures::SinkExt;
@@ -30,6 +31,49 @@ pub(crate) struct ProtoLogic<T> {
     _sink: PhantomData<T>,
 }
 
+// #[async_trait]
+// trait SegmentExecutor {
+//     type ErrorProcess: SegmentExecutor;
+//     type Next: SegmentExecutor;
+
+//     async fn exec<Item, S: Sink<Item>>(
+//         self,
+//         ack: &mut AckWindow,
+//         sink: S,
+//     ) -> Result<Self::Next, Self::ErrorProcess>;
+// }
+
+// struct ErrorExec(SegmentData);
+// #[async_trait]
+// impl SegmentExecutor for ErrorExec {
+//     type ErrorProcess = Last;
+
+//     type Next = Last;
+
+//     async fn exec<Item, S: Sink<Item>>(
+//         self,
+//         ack: &mut AckWindow,
+//         sink: S,
+//     ) -> Result<Self::Next, Self::ErrorProcess> {
+//     }
+// }
+
+// struct Last(Result<(), AnyError>);
+// #[async_trait]
+// impl SegmentExecutor for Last {
+//     type ErrorProcess = ErrorExec;
+
+//     type Next = Last;
+
+//     async fn exec<Item, S: Sink<Item>>(
+//         self,
+//         ack: &mut AckWindow,
+//         sink: S,
+//     ) -> Result<Self::Next, Self::ErrorProcess> {
+//         Ok(Last(Ok(())))
+//     }
+// }
+
 impl<T> ProtoLogic<T>
 where
     T: Sink<(SegmentRes, WriteFlags)> + Unpin,
@@ -48,6 +92,12 @@ where
         sink.send((resp, WriteFlags::default())).await?;
         info!("Send handshake resp success");
         let _ = sink.flush().await;
+        Ok(())
+    }
+
+    async fn handle_trans_v2(data: SegmentData) -> Result<(), AnyError> {
+        // let seg_process_handle = data.tag_process_start();
+        // seg_process_handle.mailto_processor();
         Ok(())
     }
 
@@ -185,4 +235,16 @@ where
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod test_proto_handle {
+    use super::*;
+    struct MockSink {}
+
+    // impl Sink<Item> for MockSink {
+
+    // }
+    #[test]
+    fn test_handle_trans_ack_full() {}
 }
