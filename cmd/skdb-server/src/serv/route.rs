@@ -4,7 +4,7 @@ use futures::stream::StreamExt;
 use skdb::{
     com::{
         config::GlobalConfig,
-        index::{IndexAddr, IndexPath},
+        index::{IndexAddr, MailKeyAddress, ConvertIndexAddr},
         mail::BasicMailbox,
         router::{Either,  RouteMsg},
     },
@@ -51,14 +51,14 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
     }
 
     fn route_msg(&self, seg: SegmentDataCallback) -> Result<(), SegmentDataCallback> {
-        let path = IndexPath::compute_index_addr(seg.data.biz_timestamp as IndexAddr);
+        let path = seg.data.biz_timestamp.with_index_addr();
         let path = match path {
             Ok(path) => path,
             Err(_) => return Err(seg),
         };
         let trace_id = seg.data.get_trace_id();
         trace!(
-            index_addr = path,
+            index_addr = ?path,
             seq_id = seg.data.get_meta().get_seqId(),
             trace_id = trace_id,
             "Has computed segment's address"
@@ -69,7 +69,6 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
         match send_stat {
             Either::Right(msg) => {
                 info!(
-                    index_addr = path,
                     "Can't find addr's mailbox, create a new one"
                 );
                 let (s, r) = crossbeam_channel::unbounded();

@@ -9,7 +9,7 @@ use tracing::info;
 use crossbeam_channel::TrySendError;
 
 use super::fsm::Fsm;
-use super::index::IndexAddr;
+use super::index::{IndexAddr, MailKeyAddress};
 use super::mail::BasicMailbox;
 use super::sched::FsmScheduler;
 use super::util::{CountTracker, LruCache};
@@ -81,7 +81,7 @@ impl<L, R> Either<L, R> {
 impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<Result<(), TrySendError<N::Message>>, N>
     for Router<N, S>
 {
-    type Addr = IndexAddr;
+    type Addr = MailKeyAddress;
 
     fn route_msg(
         &self,
@@ -89,7 +89,7 @@ impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<Result<(), TrySendError<N:
         msg: N::Message,
     ) -> Either<Result<(), TrySendError<N::Message>>, N::Message> {
         let mut msg = Some(msg);
-        let res = self.check_do(addr, |mailbox| {
+        let res = self.check_do(addr.into(), |mailbox| {
             let m = msg.take().unwrap();
             match mailbox.send(m, &self.normal_scheduler) {
                 Ok(()) => Some(()),

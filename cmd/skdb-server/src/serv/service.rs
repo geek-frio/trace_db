@@ -44,8 +44,6 @@ impl SkyTracingService {
         config: Arc<GlobalConfig>,
         data_sender: Sender<SegmentDataCallback>,
     ) -> SkyTracingService {
-        // let (s, r) = crossbeam_channel::unbounded::<SegmentDataCallback>();
-        // let (s, r) = channel(5000);
         let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
         let service = SkyTracingService {
@@ -54,108 +52,8 @@ impl SkyTracingService {
             tracing_schema: schema.clone(),
             index_map: index_map.clone(),
         };
-        // thread::spawn(move || {
-        //     let r = Self::recv_and_process(r, router1, index_path, schema, index_map);
-        //     if let Err(e) = r {
-        //         println!(
-        //             "Channel of getting sky segment is empty and disconnected!e:{:?}",
-        //             e
-        //         );
-        //     }
-        // });
-        // Periodicily send Tick event to notify Fsm
-        // Every 5 secs we force active fsm to notify
-        // TOKIO_RUN.spawn(
-        //     async move {
-        //         trace!("Sent tick event to TagPollHandler");
-        //         let _ = router.notify_all_idle_mailbox();
-        //         sleep(Duration::from_secs(10))
-        //     }
-        //     .instrument(info_span!("tick_event")),
-        // );
         service
     }
-
-    // fn recv_and_process(
-    //     recv: Receiver<SegmentDataCallback>,
-    //     router: Router<TagFsm, NormalScheduler<TagFsm>>,
-    //     index_path: String,
-    //     schema: Schema,
-    //     index_map: Arc<Mutex<HashMap<i64, Index>>>,
-    // ) -> Result<(), AnyError> {
-    //     loop {
-    //         let segment_callback = recv.recv()?;
-    //         let _consume_span = trace_span!(
-    //             "recv_and_process",
-    //             trace_id = ?segment_callback.data.trace_id
-    //         )
-    //         .entered();
-    //         trace!(parent: &segment_callback.span, "Has received the segment, try to route to mailbox.");
-
-    //         let res =
-    //             IndexPath::compute_index_addr(segment_callback.data.biz_timestamp as IndexAddr);
-    //         trace!(index_addr = ?res, seq_id = segment_callback.data.get_meta().get_seqId(), trace_id = ?segment_callback.data.trace_id, "Has computed segment's address");
-    //         match res {
-    //             Ok(addr) => {
-    //                 let sent_stat = router.send(addr, segment_callback);
-    //                 trace!(index_addr = ?res, "Has computed segment's address");
-    //                 match sent_stat {
-    //                     // Can't find the mailbox which is dependent by this segment
-    //                     Either::Right(msg) => {
-    //                         // Mailbox not exists, so we regists a new one
-    //                         trace!(
-    //                             index_addr = addr,
-    //                             "Can't find addr's mailbox, create a new one"
-    //                         );
-    //                         let (s, r) = crossbeam_channel::unbounded();
-    //                         // TODO: use config struct
-    //                         let mut engine =
-    //                             TracingTagEngine::new(addr, index_path.clone(), schema.clone());
-    //                         // TODO: error process logic is emitted currently
-    //                         let res = engine.init();
-    //                         match res {
-    //                             Ok(index) => {
-    //                                 index_map.lock().unwrap().insert(addr, index);
-    //                                 let fsm = Box::new(TagFsm::new(r, None, engine));
-    //                                 let state_cnt = Arc::new(AtomicUsize::new(0));
-    //                                 let mailbox = BasicMailbox::new(s, fsm, state_cnt);
-    //                                 let fsm = mailbox.take_fsm();
-    //                                 if let Some(mut f) = fsm {
-    //                                     f.mailbox = Some(mailbox.clone());
-    //                                     mailbox.release(f);
-    //                                 }
-    //                                 router.register(addr, mailbox);
-    //                                 router.send(addr, msg);
-    //                             }
-    //                             // TODO: This error can not fix by retry, so we just ack this msg
-    //                             // Maybe we should store this msg anywhere
-    //                             Err(e) => {
-    //                                 error!(index_addr = addr, seq_id = msg.data.get_meta().get_seqId(), trace_id = ?msg.data.trace_id, "Init addr's TagEngine failed!Just callback this data.e:{:?}", e);
-    //                                 msg.callback.callback(msg.data.get_meta().get_seqId());
-    //                             }
-    //                         }
-    //                     }
-    //                     Either::Left(v) => {
-    //                         if let Err(e) = v {
-    //                             error!(
-    //                                 index_addr = addr,
-    //                                 "Mailbox's receiver has dropped, {:?}", e
-    //                             );
-    //                         }
-    //                         panic!("Should never come here!");
-    //                     }
-    //                 }
-    //             }
-    //             Err(e) => {
-    //                 error!(
-    //                     biz_timestamp = segment_callback.data.biz_timestamp,
-    //                     "Incorrect segment data format, skip this data. e:{:?}", e
-    //                 );
-    //                 continue;
-    //             }
-    //         }
-    //     }
-    // }
 
     pub fn init_sk_schema() -> Schema {
         let mut schema_builder = Schema::builder();
@@ -276,22 +174,6 @@ impl SkyTracing for SkyTracingService {
         }
     }
 }
-
-// async fn handshake_exec(sink: &mut DuplexSink<SegmentRes>) -> Result<(), AnyError> {
-//     let conn_id = CONN_MANAGER.gen_new_conn_id();
-//     let mut resp = SegmentRes::new();
-//     let mut meta = Meta::new();
-//     meta.connId = conn_id;
-//     meta.field_type = Meta_RequestType::HANDSHAKE;
-//     info!(meta = ?meta, %conn_id, resp = ?resp, "Send handshake resp");
-//     resp.set_meta(meta);
-//     // We don't care handshake is success or not, client should retry for this
-//     sink.send((resp, WriteFlags::default())).await?;
-//     println!("Has sent handshake response!");
-//     info!("Send handshake resp success");
-//     let _ = sink.flush().await;
-//     Ok(())
-// }
 
 fn search(
     index: Index,
