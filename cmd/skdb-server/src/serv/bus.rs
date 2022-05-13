@@ -34,7 +34,46 @@ where
     AnyError: From<S::Error>,
     S::Error: Send + std::error::Error + Sync,
 {
-    async fn remote_msg<'a>(
+    // Loop poll remote from grpc stream, until:
+    // 1. Have met serious grpc transport problem;
+    // 2. Have received shutdown signal;
+    pub(crate) async fn loop_poll(self: Pin<&mut Self>) -> Result<(), AnyError> {
+        let this = self.project();
+
+        let (ack_s, mut ack_r) = funbounded::<i64>();
+
+        let mut source_stream = this.source_stream;
+        let mut ack_stream = Pin::new(&mut ack_r);
+        let mut shut_recv = this.shut_recv.fuse();
+
+        let mut ack_win = this.ack_win;
+        let mut sink = this.sink;
+        let mut local_sender = this.local_sender;
+
+        loop {
+            let _one_msg = trace_span!("recv_msg_one_loop");
+            select! {
+                remote_data = source_stream.next() => {
+                    if let Some(remote_data) = remote_data{
+                        let r = Self::remote_msg_exec(remote_data, &mut ack_win, &mut local_sender, &mut sink, ack_s.clone()).await;
+                        if let Err(e) = r {
+                            error!("Serious error:{:?}", e);
+                            return Err(e);
+                        }
+                    };
+                },
+                ack_data = ack_stream.next() => {
+                    let _ = Self::remote_msg_callback(&mut sink, &mut ack_win, ack_data).await;
+                }
+                _ = shut_recv => {
+                    info!("Received shutdown signal, quit");
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn remote_msg_exec<'a>(
         data: GrpcResult<SegmentData>,
         ack_win: &'a mut AckWindow,
         mail: &'a mut Sender<SegmentDataCallback>,
@@ -83,7 +122,7 @@ where
         Ok(())
     }
 
-    pub async fn handle_callback(
+    pub async fn remote_msg_callback(
         sink: &mut S,
         ack_win: &mut AckWindow,
         seq_id: Option<i64>,
@@ -121,42 +160,6 @@ where
             }
             _ => {
                 return Err(AnyError::msg("Invalid seqid"));
-            }
-        }
-        Ok(())
-    }
-    pub(crate) async fn loop_poll(self: Pin<&mut Self>) -> Result<(), AnyError> {
-        let this = self.project();
-
-        let (ack_s, mut ack_r) = funbounded::<i64>();
-
-        let mut source_stream = this.source_stream;
-        let mut ack_stream = Pin::new(&mut ack_r);
-        let mut shut_recv = this.shut_recv.fuse();
-
-        let mut ack_win = this.ack_win;
-        let mut sink = this.sink;
-        let mut local_sender = this.local_sender;
-        // let
-        loop {
-            let _one_msg = trace_span!("recv_msg_one_loop");
-            select! {
-                remote_data = source_stream.next() => {
-                    if let Some(remote_data) = remote_data{
-                        let r = Self::remote_msg(remote_data, &mut ack_win, &mut local_sender, &mut sink, ack_s.clone()).await;
-                        if let Err(e) = r {
-                            error!("Serious error:{:?}", e);
-                            return Err(e);
-                        }
-                    };
-                },
-                ack_data = ack_stream.next() => {
-                    let _ = Self::handle_callback(&mut sink, &mut ack_win, ack_data).await;
-                }
-                _ = shut_recv => {
-                    info!("Received shutdown signal, quit");
-                    break;
-                }
             }
         }
         Ok(())
