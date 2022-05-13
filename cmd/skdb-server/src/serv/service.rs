@@ -16,6 +16,7 @@ use skdb::tag::fsm::SegmentDataCallback;
 use skdb::*;
 use skproto::tracing::*;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tantivy::collector::TopDocs;
@@ -26,6 +27,7 @@ use tantivy::Index;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
+use tracing::error;
 
 #[derive(Clone)]
 pub struct SkyTracingService {
@@ -197,10 +199,14 @@ impl SkyTracing for SkyTracingService {
         stream: ::grpcio::RequestStream<SegmentData>,
         sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
-        let mut msg_poller = RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone());
         let (_sender, recv) = tokio::sync::oneshot::channel();
+        let mut msg_poller = RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone(), recv);
         TOKIO_RUN.spawn(async move {
-            msg_poller.loop_poll(recv).await;
+            let p = Pin::new(&mut msg_poller);
+            let poll_res = p.loop_poll().await;
+            if let Err(e) = poll_res {
+                error!("Serious problem, loop poll failed!, e:{:?}", e);
+            }
         });
     }
 

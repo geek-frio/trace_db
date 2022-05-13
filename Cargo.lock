@@ -1308,6 +1308,7 @@ dependencies = [
  "futures-util",
  "grpcio",
  "lazy_static",
+ "pin-project",
  "skdb",
  "skproto",
  "tantivy",

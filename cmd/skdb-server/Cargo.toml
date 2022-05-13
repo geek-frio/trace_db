@@ -26,3 +26,4 @@ tracing-subscriber = { version = "0.3.11", features = ["fmt", "std"] }
 futures-sink = "0.3"
 ctrlc = "3.2.2"
 uuid = {version = "0.8", features = ["serde", "v4"]}
+pin-project = "1.0.10"

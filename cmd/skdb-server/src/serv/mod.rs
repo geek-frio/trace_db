@@ -1,6 +1,5 @@
 pub mod bus;
 pub mod conn;
-pub mod proto;
 pub mod route;
 pub mod service;
 
