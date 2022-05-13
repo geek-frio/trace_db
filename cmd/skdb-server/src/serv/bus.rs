@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures::channel::mpsc::{unbounded as funbounded, Sender, UnboundedSender};
 use futures::future::FutureExt;
 use futures::{select, SinkExt};
-use futures::{stream::Fuse, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use futures_sink::Sink;
 use grpcio::Error as GrpcError;
 use grpcio::{Result as GrpcResult, WriteFlags};
@@ -20,7 +20,7 @@ use tracing::{error, info, span, trace, trace_span, warn, Level};
 #[pin_project]
 pub struct RemoteMsgPoller<L, S> {
     #[pin]
-    source_stream: Fuse<L>,
+    source_stream: L,
     sink: S,
     ack_win: AckWindow,
     local_sender: Sender<SegmentDataCallback>,
@@ -42,7 +42,7 @@ where
 
         let (ack_s, mut ack_r) = funbounded::<i64>();
 
-        let mut source_stream = this.source_stream;
+        let mut source_stream = this.source_stream.fuse();
         let mut ack_stream = Pin::new(&mut ack_r);
         let mut shut_recv = this.shut_recv.fuse();
 
@@ -341,7 +341,7 @@ where
         shut_recv: Receiver<()>,
     ) -> RemoteMsgPoller<L, S> {
         RemoteMsgPoller {
-            source_stream: source.fuse(),
+            source_stream: source,
             ack_win: Default::default(),
             sink,
             local_sender,
