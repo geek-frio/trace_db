@@ -130,32 +130,31 @@ where
         trace!(seq_id = seq_id, "Has received ack callback");
         match seq_id {
             Some(seq_id) if seq_id > 0 => {
-                if seq_id <= 0 {
-                    error!(%seq_id, "Invalid seq_id");
-                    return Ok(());
-                }
                 let r = ack_win.ack(seq_id);
-                if let Err(e) = r {
-                    error!(%seq_id, "Have got an unexpeced seqid to ack; e:{:?}", e);
-                    return Ok(());
-                } else {
-                    // Make ack window enter into ready status
-                    if ack_win.is_ready() {
-                        info!("Ack window is ready");
-                        ack_win.clear();
+                match r {
+                    Ok(_) => {
+                        if ack_win.is_ready() {
+                            ack_win.clear();
+                        }
+                        let seg = {
+                            let mut s = SegmentRes::default();
+                            let mut meta = Meta::new();
+                            meta.set_field_type(Meta_RequestType::TRANS_ACK);
+                            meta.set_seqId(ack_win.curr_ack_id());
+                            s.set_meta(meta);
+                            (s, WriteFlags::default())
+                        };
+                        let r = sink.send(seg).await;
+
+                        if let Err(e) = r {
+                            error!("Send trans ack failed!e:{:?}", e);
+                        } else {
+                            trace!(seq_id = ack_win.curr_ack_id(), "Sending ack to client");
+                        }
                     }
-                }
-                let mut seg_res = SegmentRes::default();
-                let mut meta = Meta::new();
-                meta.set_field_type(Meta_RequestType::TRANS_ACK);
-                meta.set_seqId(ack_win.curr_ack_id());
-                seg_res.set_meta(meta);
-                let d = (seg_res, WriteFlags::default());
-                let r = sink.send(d).await;
-                if let Err(e) = r {
-                    error!("Send trans ack failed!e:{:?}", e);
-                } else {
-                    trace!(seq_id = ack_win.curr_ack_id(), "Sending ack to client");
+                    Err(e) => {
+                        error!(%seq_id, "Have got an unexpeced seqid to ack; e:{:?}, just ignore this segment", e);
+                    }
                 }
             }
             _ => {
