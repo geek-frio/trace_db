@@ -452,6 +452,7 @@ impl PollHandler<TagFsm> for TagPollHandler {
             normal.commit(&self.msg_buf);
             self.msg_cnt = 0;
             self.msg_buf.clear();
+            normal.tick = false;
         }
         if keep_process {
             trace!("Fsm has unconsumed msgs so return KeepProcessing!");

@@ -5,7 +5,7 @@ use tantivy::error::TantivyError;
 use tantivy::schema::*;
 use tantivy::{Document, Index, IndexReader, IndexWriter};
 
-use crate::com::index::{IndexAddr, MailKeyAddress};
+use crate::com::index::MailKeyAddress;
 
 pub const ZONE: &'static str = "zone";
 pub const API_ID: &'static str = "api_id";
@@ -148,6 +148,7 @@ impl TracingTagEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::com::index::*;
     use crate::test::gen::{_gen_data_binary, _gen_tag};
     use std::sync::Once;
     use tantivy::{chrono::Local, collector::TopDocs, query::QueryParser};
@@ -178,7 +179,7 @@ mod tests {
     #[test]
     fn test_normal_write() {
         let mut engine = TracingTagEngine::new(
-            123,
+            123i64.with_index_addr().unwrap(),
             Box::new("/tmp/tantivy_records".to_string()),
             init_tracing_schema(),
         );
@@ -226,7 +227,7 @@ mod tests {
     #[test]
     fn test_read_traceid() {
         let mut engine = TracingTagEngine::new(
-            (150202 as i64).into(),
+            (150202 as i64).with_index_addr().unwrap(),
             Box::new("/tmp".to_string()),
             init_tracing_schema(),
         );
