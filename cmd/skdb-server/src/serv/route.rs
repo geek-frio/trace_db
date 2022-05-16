@@ -4,7 +4,7 @@ use futures::stream::StreamExt;
 use skdb::{
     com::{
         config::GlobalConfig,
-        index::{IndexAddr, MailKeyAddress, ConvertIndexAddr},
+        index::{ConvertIndexAddr, MailKeyAddress},
         mail::BasicMailbox,
         router::{Either,  RouteMsg},
     },
@@ -32,7 +32,7 @@ pub(crate) struct LocalSegmentMsgConsumer<Router, Err> {
     _err: PhantomData<Err>,
 }
 
-impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Result<(), Err>, TagFsm, Addr = i64> {
+impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Result<(), Err>, TagFsm, Addr = MailKeyAddress> {
     pub(crate) fn new(
         router: Router,
         config: Arc<GlobalConfig>,
@@ -51,35 +51,33 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
     }
 
     fn route_msg(&self, seg: SegmentDataCallback) -> Result<(), SegmentDataCallback> {
-        let path = seg.data.biz_timestamp.with_index_addr();
-        let path = match path {
+        let mail_key_addr= seg.data.biz_timestamp.with_index_addr();
+        let mail_key_addr= match mail_key_addr{
             Ok(path) => path,
             Err(_) => return Err(seg),
         };
         let trace_id = seg.data.get_trace_id();
         trace!(
-            index_addr = ?path,
+            index_addr = ?mail_key_addr,
             seq_id = seg.data.get_meta().get_seqId(),
             trace_id = trace_id,
             "Has computed segment's address"
         );
 
         let index_path = Box::new(self.config.index_dir.clone());
-        let send_stat = self.router.route_msg(path, seg);
+        let send_stat = self.router.route_msg(mail_key_addr.into(), seg);
         match send_stat {
             Either::Right(msg) => {
                 info!(
                     "Can't find addr's mailbox, create a new one"
                 );
                 let (s, r) = crossbeam_channel::unbounded();
-                // TODO: use config struct
                 let mut engine =
-                    TracingTagEngine::new(path, index_path.clone(), self.schema.clone());
-                // TODO: error process logic is emitted currently
+                    TracingTagEngine::new(mail_key_addr, index_path.clone(), self.schema.clone());
                 let res = engine.init();
                 match res {
                     Ok(index) => {
-                        self.index_map.lock().unwrap().insert(path, index);
+                        self.index_map.lock().unwrap().insert(mail_key_addr.into(), index);
                         let fsm = Box::new(TagFsm::new(r, None, engine));
                         let state_cnt = Arc::new(AtomicUsize::new(0));
                         let mailbox = BasicMailbox::new(s, fsm, state_cnt); 
@@ -88,14 +86,14 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                             f.mailbox = Some(mailbox.clone());
                             mailbox.release(f);
                         }
-                        self.router.register(path, mailbox);
-                        self.router.route_msg(path, msg);
+                        self.router.register(mail_key_addr.into(), mailbox);
+                        self.router.route_msg(mail_key_addr.into(), msg);
                     }
                     // TODO: This error can not fix by retry, so we just ack this msg
                     // Maybe we should store this msg anywhere
                     Err(e) => {
                         error!("This error can not fix by retry, so we just ack this msg Maybe we should store this msg anywhere!");
-                        error!(index_addr = path, seq_id = msg.data.get_meta().get_seqId(), trace_id = ?msg.data.trace_id, "Init addr's TagEngine failed!Just callback this data.e:{:?}", e);
+                        error!(seq_id = msg.data.get_meta().get_seqId(), trace_id = ?msg.data.trace_id, "Init addr's TagEngine failed!Just callback this data.e:{:?}", e);
                         msg.callback.callback(msg.data.get_meta().get_seqId());
                     }
                 }

@@ -1,14 +1,11 @@
-use std::fmt::Display;
-use std::path::{Path, PathBuf};
-
 use skproto::tracing::SegmentData;
-use std::error::Error;
+use std::fmt::Display;
 use tantivy::directory::MmapDirectory;
 use tantivy::error::TantivyError;
 use tantivy::schema::*;
 use tantivy::{Document, Index, IndexReader, IndexWriter};
 
-use crate::com::index::IndexAddr;
+use crate::com::index::{IndexAddr, MailKeyAddress};
 
 pub const ZONE: &'static str = "zone";
 pub const API_ID: &'static str = "api_id";
@@ -21,7 +18,7 @@ pub const PAYLOAD: &'static str = "payload";
 pub struct TracingTagEngine {
     dir: Box<String>,
     // tag data gps (Every 15 minutes of a day, we create a new directory)
-    addr: IndexAddr,
+    addr: MailKeyAddress,
     index_writer: Option<IndexWriter>,
     index: Option<Index>,
     schema: Schema,
@@ -49,16 +46,16 @@ pub enum TagEngineError {
     IndexDirCreateFailed,
 }
 
+impl std::error::Error for TagEngineError {}
+
 impl Display for TagEngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("EngineError:{:?}", self))
     }
 }
 
-impl Error for TagEngineError {}
-
 impl TracingTagEngine {
-    pub fn new(addr: IndexAddr, dir: Box<String>, schema: Schema) -> TracingTagEngine {
+    pub fn new(addr: MailKeyAddress, dir: Box<String>, schema: Schema) -> TracingTagEngine {
         TracingTagEngine {
             dir: dir,
             addr,
@@ -70,18 +67,16 @@ impl TracingTagEngine {
 
     pub fn init(&mut self) -> Result<Index, TagEngineError> {
         // TODO: check if it is an outdated directory
-        // create directory
-        let dir_path: &Path = self.dir.as_ref().as_ref();
-        let path: PathBuf = dir_path.join(<String as AsRef<Path>>::as_ref(&self.addr.to_string()));
-        // Create index directory
+        let path = self.addr.get_idx_path(self.dir.as_str());
+
         let result = std::fs::create_dir_all(path.as_path());
         if result.is_err() {
             return Err(TagEngineError::IndexDirCreateFailed);
         }
+
         // TODO: check open operation valid
         let dir = MmapDirectory::open(path.as_path()).unwrap();
         let index = Index::open_or_create(dir, self.schema.clone()).unwrap();
-
         self.index_writer = Some(index.writer(100_100_000).unwrap());
         self.index = Some(index.clone());
         return Ok(index);
@@ -152,13 +147,10 @@ impl TracingTagEngine {
 
 #[cfg(test)]
 mod tests {
-
-    use std::sync::Once;
-
-    use tantivy::{chrono::Local, collector::TopDocs, query::QueryParser};
-
     use super::*;
     use crate::test::gen::{_gen_data_binary, _gen_tag};
+    use std::sync::Once;
+    use tantivy::{chrono::Local, collector::TopDocs, query::QueryParser};
 
     pub fn init_tracing_schema() -> Schema {
         let mut schema_builder = Schema::builder();
@@ -233,8 +225,11 @@ mod tests {
 
     #[test]
     fn test_read_traceid() {
-        let mut engine =
-            TracingTagEngine::new(150202, Box::new("/tmp".to_string()), init_tracing_schema());
+        let mut engine = TracingTagEngine::new(
+            (150202 as i64).into(),
+            Box::new("/tmp".to_string()),
+            init_tracing_schema(),
+        );
         println!("Init result is:{:?}", engine.init());
         let (reader, index) = engine.reader().unwrap();
         let query_parser =

@@ -9,8 +9,8 @@ use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
 use grpcio::WriteFlags;
 use skdb::com::config::GlobalConfig;
+use skdb::com::index::ConvertIndexAddr;
 use skdb::com::index::IndexAddr;
-use skdb::com::index::IndexPath;
 use skdb::tag::engine::*;
 use skdb::tag::fsm::SegmentDataCallback;
 use skdb::*;
@@ -144,10 +144,15 @@ impl SkyTracing for SkyTracingService {
             })
             .ok()
             .unwrap_or_else(|| {
-                let index_path =
-                    IndexPath::gen_idx_path(addr.to_owned(), self.config.index_dir.clone());
-                let res = Index::create_in_dir(index_path, self.tracing_schema.clone());
-                res.ok()
+                let mail_addr = addr.with_index_addr();
+                match mail_addr {
+                    Ok(mail_key_addr) => Index::create_in_dir(
+                        mail_key_addr.get_idx_path(self.config.index_dir.as_str()),
+                        self.tracing_schema.clone(),
+                    )
+                    .ok(),
+                    Err(_) => None,
+                }
             });
         match idx {
             Some(index) => {
@@ -168,7 +173,7 @@ impl SkyTracing for SkyTracingService {
             None => {
                 sink.fail(RpcStatus::with_message(
                     RpcStatusCode::INVALID_ARGUMENT,
-                    "Invalid argument, addr is not given!".to_string(),
+                    "Invalid argument, addr is correct!".to_string(),
                 ));
             }
         }
