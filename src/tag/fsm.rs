@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::slice::Iter;
 
 use crate::com::{ack::AckCallback, fsm::Fsm, mail::BasicMailbox};
 use crossbeam_channel::Receiver;
@@ -17,10 +18,10 @@ pub struct SegmentDataCallback {
 }
 
 pub struct TagFsm {
-    pub receiver: Receiver<SegmentDataCallback>,
-    pub mailbox: Option<BasicMailbox<TagFsm>>,
-    pub engine: TracingTagEngine,
-    pub tick: bool,
+    receiver: Receiver<SegmentDataCallback>,
+    mailbox: Option<BasicMailbox<TagFsm>>,
+    engine: TracingTagEngine,
+    tick: bool,
 }
 
 impl TagFsm {
@@ -36,12 +37,54 @@ impl TagFsm {
             tick: false,
         }
     }
-    // TODO: use batch logic, currently directly write to disk
-    pub fn handle_tasks(&mut self, msgs: &mut Vec<SegmentDataCallback>, msg_cnt: usize) -> usize {
-        for (i, msg) in msgs.into_iter().enumerate() {
-            if i < msg_cnt {
+}
+
+pub(crate) trait FsmExecutor {
+    type Msg;
+
+    fn try_fill_batch(&mut self, msg_buf: &mut Vec<Self::Msg>, counter: &mut usize) -> bool;
+
+    fn handle_tasks(&mut self, msg_buf: &mut Vec<Self::Msg>, msg_cnt: &mut usize);
+
+    fn commit(&mut self, msg_buf: &Vec<Self::Msg>);
+
+    fn remain_msgs(&self) -> usize;
+}
+
+impl FsmExecutor for TagFsm {
+    type Msg = SegmentDataCallback;
+
+    fn try_fill_batch(&mut self, msg_buf: &mut Vec<Self::Msg>, counter: &mut usize) -> bool {
+        let mut keep_process = false;
+        const TAG_POLLER_BATCH_SIZE: usize = 5000;
+        loop {
+            match self.receiver.try_recv() {
+                Ok(msg) => {
+                    *counter += 1;
+                    trace!("Received a new msg");
+                    msg_buf.push(msg);
+                    if msg_buf.len() >= TAG_POLLER_BATCH_SIZE {
+                        trace!("Batch max has overceeded");
+                        keep_process = self.receiver.len() > 0;
+                        break;
+                    }
+                }
+                Err(_) => {
+                    trace!("Mailbox's msgs has consumed");
+                    break;
+                }
+            }
+        }
+        keep_process
+    }
+
+    fn handle_tasks(&mut self, msg_buf: &mut Vec<Self::Msg>, msg_cnt: &mut usize) {
+        let slice = msg_buf.as_slice();
+        for i in *msg_cnt..msg_buf.len() {
+            if i < *msg_cnt {
                 continue;
             }
+            let msg = &slice[i];
             let span = &msg.span;
             let _entered = span.enter();
             self.engine.add_record(&msg.data);
@@ -50,11 +93,11 @@ impl TagFsm {
                 seq_id = msg.data.get_meta().get_seqId(),
                 "Segment has added to Tag Engine, but not be flushed!"
             );
+            *msg_cnt += 1;
         }
-        msgs.len()
     }
 
-    pub fn commit(&mut self, msgs: &Vec<SegmentDataCallback>) {
+    fn commit(&mut self, msgs: &Vec<Self::Msg>) {
         let res = self.engine.flush();
         for msg in msgs {
             let span = &msg.span;
@@ -66,18 +109,16 @@ impl TagFsm {
                 "segment has been callback"
             );
         }
-        match res {
-            Ok(_) => {}
-            Err(e) => {
-                error!("We should do something to backup these data, it's a CAN'T RETRY ERROR so currently we do nothing;");
-                error!("Serious problem, backup data!:{:?}", e);
-                // TODO: We should do something to backup these data, it's a CAN'T RETRY ERROR
-                //  currently we do nothing;
-            }
+        if let Err(e) = res {
+            error!("We should do something to backup these data, it's a CAN'T RETRY ERROR so currently we do nothing;");
+            error!("Serious problem, backup data!:{:?}", e);
         }
     }
-}
 
+    fn remain_msgs(&self) -> usize {
+        self.receiver.len()
+    }
+}
 impl Fsm for TagFsm {
     type Message = SegmentDataCallback;
 
@@ -101,6 +142,14 @@ impl Fsm for TagFsm {
     }
 
     fn tag_tick(&mut self) {
+        self.tick = true;
+    }
+
+    fn is_tick(&self) -> bool {
+        self.tick
+    }
+
+    fn untag_tick(&mut self) {
         self.tick = true;
     }
 }

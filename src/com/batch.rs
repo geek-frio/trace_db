@@ -1,7 +1,7 @@
 use super::fsm::Fsm;
 use super::router::Router;
 use super::sched::FsmScheduler;
-use crate::tag::fsm::{SegmentDataCallback, TagFsm};
+use crate::tag::fsm::{FsmExecutor, SegmentDataCallback, TagFsm};
 use crossbeam_channel::{Receiver, TryRecvError};
 use std::borrow::Cow;
 use std::ops::Deref;
@@ -14,7 +14,7 @@ use std::{
     thread::ThreadId,
     time::Instant,
 };
-use tracing::{info, info_span, trace, trace_span, warn};
+use tracing::{error, info, info_span, trace, trace_span, warn};
 
 const TAG_POLLER_BATCH_SIZE: usize = 5000;
 
@@ -46,7 +46,7 @@ impl<N: Fsm> Batch<N> {
     }
 
     fn release(&mut self, mut fsm: NormalFsm<N>, checked_len: usize) -> Option<NormalFsm<N>> {
-        let mailbox = fsm.take_mailbox().unwrap();
+        let mailbox = fsm.as_mut().take_mailbox().unwrap();
         // 交换回NormalFsm手中的fsm到mailbox之中
         mailbox.release(fsm.fsm);
         if mailbox.len() == checked_len {
@@ -67,12 +67,12 @@ impl<N: Fsm> Batch<N> {
     // if there are no messsages waiting to be processed, fsm should be reset to mailbox
     // (It means this fsm is waiting for new schedualed operation)
     fn remove(&mut self, mut fsm: NormalFsm<N>) -> Option<NormalFsm<N>> {
-        let mailbox = fsm.take_mailbox().unwrap();
+        let mailbox = fsm.as_mut().take_mailbox().unwrap();
         if mailbox.is_empty() {
             mailbox.release(fsm.fsm);
             None
         } else {
-            fsm.set_mailbox(Cow::Owned(mailbox));
+            fsm.as_mut().set_mailbox(Cow::Owned(mailbox));
             Some(fsm)
         }
     }
@@ -129,16 +129,14 @@ pub struct NormalFsm<N> {
     policy: Option<ReschedulePolicy>,
 }
 
-impl<N> Deref for NormalFsm<N> {
-    type Target = N;
-
-    fn deref(&self) -> &N {
+impl<N> AsRef<N> for NormalFsm<N> {
+    fn as_ref(&self) -> &N {
         &self.fsm
     }
 }
 
-impl<N> DerefMut for NormalFsm<N> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+impl<N> AsMut<N> for NormalFsm<N> {
+    fn as_mut(&mut self) -> &mut N {
         &mut self.fsm
     }
 }
@@ -286,7 +284,7 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 let res = self.handler.handle(p);
 
                 trace!(handle_result = ?res, "Fsm handle logic execute complete");
-                if p.is_stopped() {
+                if p.as_ref().is_stopped() {
                     p.policy = Some(ReschedulePolicy::Remove);
                     warn!(policy = ?p.policy, "Fsm is stopped!Set fsm policy");
                     reschedule_fsms.push(i);
@@ -332,7 +330,7 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 let p = batch.normals[fsm_cnt].as_mut().unwrap();
                 info!("Get new fsm and start to handle it");
                 let res = self.handler.handle(p);
-                if p.is_stopped() {
+                if p.as_ref().is_stopped() {
                     p.policy = Some(ReschedulePolicy::Remove);
                     warn!(policy = ?p.policy, "Fsm is stopped!Set fsm policy");
                     reschedule_fsms.push(fsm_cnt);
@@ -390,60 +388,43 @@ pub enum HandleResult {
     StopAt { progress: usize, skip_end: bool },
 }
 
-pub trait PollHandler<N: Fsm>: Send + 'static {
+pub trait PollHandler<N>: Send + 'static
+where
+    N: Fsm,
+{
     fn begin(&mut self, batch_size: usize);
-    fn handle(&mut self, normal: &mut impl DerefMut<Target = N>) -> HandleResult;
-    fn light_end(&mut self, _batch: &mut [Option<impl DerefMut<Target = N>>]);
-    fn end(&mut self, _batch: &mut [Option<impl DerefMut<Target = N>>]);
+    fn handle(&mut self, normal: &mut impl AsMut<N>) -> HandleResult;
+    fn light_end(&mut self, batch: &mut [Option<impl AsMut<N>>]);
+    fn end(&mut self, batch: &mut [Option<impl AsMut<N>>]);
     fn pause(&mut self);
 }
 
-struct TagPollHandler {
-    msg_buf: Vec<SegmentDataCallback>,
+struct TagPollHandler<N: FsmExecutor> {
+    msg_buf: Vec<N::Msg>,
     counter: usize,
     last_time: Option<Instant>,
     msg_cnt: usize,
 }
 
-impl PollHandler<TagFsm> for TagPollHandler {
+impl<N> PollHandler<N> for TagPollHandler<N>
+where
+    N: 'static + Fsm + FsmExecutor,
+    N::Msg: Send,
+{
     fn begin(&mut self, _batch_size: usize) {
         if self.last_time.is_none() {
             self.last_time = Some(Instant::now());
             return;
         }
-        // TODO: currently do nothing
     }
 
-    fn handle(&mut self, normal: &mut impl DerefMut<Target = TagFsm>) -> HandleResult {
+    fn handle(&mut self, normal: &mut impl AsMut<N>) -> HandleResult {
         let _poll_handler_span = trace_span!("handle");
-        let mut keep_process = false;
-        loop {
-            match normal.receiver.try_recv() {
-                Ok(msg) => {
-                    self.counter += 1;
-                    trace!("Received a new msg");
-                    self.msg_buf.push(msg);
-                    if self.msg_buf.len() >= TAG_POLLER_BATCH_SIZE {
-                        trace!("Batch max has overceeded");
-                        keep_process = normal.receiver.len() > 0;
-                        break;
-                    }
-                }
-                Err(TryRecvError::Empty) => {
-                    trace!("Mailbox's msgs has consumed");
-                    break;
-                }
-                Err(TryRecvError::Disconnected) => {
-                    return HandleResult::StopAt {
-                        progress: normal.receiver.len(),
-                        skip_end: false,
-                    };
-                }
-            }
-        }
+        let normal = normal.as_mut();
         // batch got msg, batch consume
-        self.msg_cnt = normal.handle_tasks(&mut self.msg_buf, self.msg_cnt);
-        if normal.tick {
+        let keep_process = normal.try_fill_batch(&mut self.msg_buf, &mut self.counter);
+        normal.handle_tasks(&mut self.msg_buf, &mut self.msg_cnt);
+        if normal.is_tick() {
             trace!(
                 counter = self.counter,
                 msg_cnt = self.msg_cnt,
@@ -452,22 +433,22 @@ impl PollHandler<TagFsm> for TagPollHandler {
             normal.commit(&self.msg_buf);
             self.msg_cnt = 0;
             self.msg_buf.clear();
-            normal.tick = false;
+            normal.untag_tick();
         }
         if keep_process {
             trace!("Fsm has unconsumed msgs so return KeepProcessing!");
             HandleResult::KeepProcessing
         } else {
             HandleResult::StopAt {
-                progress: normal.receiver.len(),
+                progress: normal.remain_msgs(),
                 skip_end: false,
             }
         }
     }
 
-    fn light_end(&mut self, _batch: &mut [Option<impl DerefMut<Target = TagFsm>>]) {}
+    fn light_end(&mut self, _batch: &mut [Option<impl AsMut<N>>]) {}
 
-    fn end(&mut self, _batch: &mut [Option<impl DerefMut<Target = TagFsm>>]) {}
+    fn end(&mut self, _batch: &mut [Option<impl AsMut<N>>]) {}
 
     // We just sleep to wait for more data to be processed.
     fn pause(&mut self) {}

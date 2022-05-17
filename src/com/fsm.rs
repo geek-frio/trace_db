@@ -136,6 +136,8 @@ pub trait Fsm {
         Self: Sized;
 
     fn tag_tick(&mut self);
-}
 
-// For tag fsm 处理
+    fn untag_tick(&mut self);
+
+    fn is_tick(&self) -> bool;
+}
