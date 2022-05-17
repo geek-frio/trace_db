@@ -1,20 +1,18 @@
 use super::fsm::Fsm;
 use super::router::Router;
 use super::sched::FsmScheduler;
-use crate::tag::fsm::{FsmExecutor, SegmentDataCallback, TagFsm};
-use crossbeam_channel::{Receiver, TryRecvError};
+use crate::tag::fsm::{FsmExecutor, TagFsm};
+use crossbeam_channel::Receiver;
 use std::borrow::Cow;
-use std::ops::Deref;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{
-    ops::DerefMut,
     sync::{Arc, Mutex},
     thread,
     thread::ThreadId,
     time::Instant,
 };
-use tracing::{error, info, info_span, trace, trace_span, warn};
+use tracing::{info, info_span, trace, trace_span, warn};
 
 const TAG_POLLER_BATCH_SIZE: usize = 5000;
 
@@ -382,7 +380,7 @@ impl<N: Fsm, H, S> Drop for Poller<N, H, S> {
     fn drop(&mut self) {}
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum HandleResult {
     KeepProcessing,
     StopAt { progress: usize, skip_end: bool },
@@ -452,4 +450,118 @@ where
 
     // We just sleep to wait for more data to be processed.
     fn pause(&mut self) {}
+}
+
+#[cfg(test)]
+mod test_poll_handler {
+    use crate::tag::fsm::FsmExecutor;
+
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    struct MockMsg {
+        val: usize,
+    }
+
+    impl MockMsg {
+        fn new(i: usize) -> MockMsg {
+            Self { val: i }
+        }
+    }
+
+    struct MockFsm {
+        tick: bool,
+        is_commit: bool,
+    }
+
+    impl Fsm for MockFsm {
+        type Message = MockMsg;
+
+        fn is_stopped(&self) -> bool {
+            todo!()
+        }
+
+        fn set_mailbox(&mut self, _mailbox: Cow<'_, crate::com::mail::BasicMailbox<Self>>)
+        where
+            Self: Sized,
+        {
+        }
+
+        fn take_mailbox(&mut self) -> Option<crate::com::mail::BasicMailbox<Self>>
+        where
+            Self: Sized,
+        {
+            return None;
+        }
+
+        fn tag_tick(&mut self) {
+            self.tick = true;
+        }
+
+        fn untag_tick(&mut self) {
+            self.tick = false;
+        }
+
+        fn is_tick(&self) -> bool {
+            self.tick
+        }
+    }
+
+    impl FsmExecutor for MockFsm {
+        type Msg = MockMsg;
+
+        fn try_fill_batch(&mut self, msg_buf: &mut Vec<Self::Msg>, counter: &mut usize) -> bool {
+            const TAG_POLLER_BATCH_SIZE: usize = 5000;
+            for i in 0..100usize {
+                *counter += 1;
+                msg_buf.push(MockMsg::new(i));
+            }
+            true
+        }
+
+        fn handle_tasks(&mut self, msg_buf: &mut Vec<Self::Msg>, msg_cnt: &mut usize) {
+            *msg_cnt += msg_buf.len();
+        }
+
+        fn commit(&mut self, _: &Vec<Self::Msg>) {
+            self.is_commit = true;
+        }
+
+        fn remain_msgs(&self) -> usize {
+            0
+        }
+    }
+
+    fn init() -> (TagPollHandler<MockFsm>, NormalFsm<MockFsm>) {
+        let poll_handler = TagPollHandler::<MockFsm> {
+            msg_buf: Vec::new(),
+            counter: 0,
+            last_time: None,
+            msg_cnt: 0,
+        };
+        let mock_fsm = MockFsm {
+            tick: false,
+            is_commit: false,
+        };
+        let normal_fsm = NormalFsm::new(Box::new(mock_fsm));
+        (poll_handler, normal_fsm)
+    }
+    #[test]
+    fn test_handle_keep_processing() {
+        let (mut poll_handler, mut normal_fsm) = init();
+        let handle_res = poll_handler.handle(&mut normal_fsm);
+        assert!(handle_res == HandleResult::KeepProcessing);
+    }
+
+    #[test]
+    fn test_tick() {
+        let (mut poll_handler, mut normal_fsm) = init();
+        poll_handler.msg_buf.push(MockMsg { val: 0 });
+        normal_fsm.as_mut().tag_tick();
+        let _ = poll_handler.handle(&mut normal_fsm);
+        assert!(poll_handler.msg_buf.len() == 0);
+        assert!(!normal_fsm.as_ref().is_tick());
+        assert!(poll_handler.msg_cnt == 0);
+        assert!(normal_fsm.as_mut().is_commit);
+    }
 }
