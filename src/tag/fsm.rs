@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::slice::Iter;
 
 use crate::com::{ack::AckCallback, fsm::Fsm, mail::BasicMailbox};
 use crossbeam_channel::Receiver;
