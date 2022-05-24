@@ -6,7 +6,7 @@ use skdb::{
         config::GlobalConfig,
         index::{ConvertIndexAddr, MailKeyAddress},
         mail::BasicMailbox,
-        router::{Either,  RouteMsg},
+        router::{Either,  RouteMsg}, fsm::Fsm,
     },
     tag::{
         engine::*,
@@ -15,7 +15,7 @@ use skdb::{
 };
 use std::{
     collections::HashMap,
-    sync::{atomic::AtomicUsize, Arc, Mutex}, marker::PhantomData,
+    sync::{atomic::AtomicUsize, Arc, Mutex}, marker::PhantomData, borrow::Cow,
 };
 use tantivy::{
     schema::{Schema, INDEXED, STORED, STRING, TEXT},
@@ -83,7 +83,7 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                         let mailbox = BasicMailbox::new(s, fsm, state_cnt); 
                         let fsm = mailbox.take_fsm();
                         if let Some(mut f) = fsm {
-                            f.mailbox = Some(mailbox.clone());
+                            f.set_mailbox(Cow::Borrowed(&mailbox));
                             mailbox.release(f);
                         }
                         self.router.register(mail_key_addr.into(), mailbox);

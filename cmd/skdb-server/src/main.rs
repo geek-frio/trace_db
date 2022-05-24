@@ -83,12 +83,15 @@ impl MainServer {
         let (segment_sender, segment_receiver) = futures::channel::mpsc::channel(10000);
         let router = self.start_batch_system_for_segment();
         self.start_bridge_channel(segment_receiver, router, self.shutdown_sender.clone());
-        self.start_grpc(segment_sender);
-        let _ = self.shutdown_receiver.recv();
-        info!("");
+        self.start_grpc(segment_sender.clone(), self.shutdown_receiver.clone());
+        info!("Shut receiver has received.");
     }
 
-    fn start_grpc(&mut self, sender: Sender<SegmentDataCallback>) {
+    fn start_grpc(
+        &mut self,
+        sender: Sender<SegmentDataCallback>,
+        receiver: ShutdownReceiver<ShutdownEvent>,
+    ) {
         let skytracing = SkyTracingService::new(self.global_config.clone(), sender);
         let service = create_sky_tracing(skytracing);
         let env = Environment::new(1);
@@ -98,6 +101,7 @@ impl MainServer {
             .build()
             .unwrap();
         server.start();
+        let _ = receiver.recv();
     }
 
     fn start_batch_system_for_segment(&self) -> Router<TagFsm, NormalScheduler<TagFsm>> {
