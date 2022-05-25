@@ -84,7 +84,6 @@ impl<N: Fsm> Batch<N> {
         let to_schedule = match self.normals[index].take() {
             Some(f) => f,
             None => {
-                // 是否保留占位
                 if !inplace {
                     self.normals.swap_remove(index);
                 }
@@ -102,8 +101,6 @@ impl<N: Fsm> Batch<N> {
             }
             None => Some(to_schedule),
         };
-
-        // 处理重新调度结果
         if let Some(f) = &mut res {
             f.policy.take();
             self.normals[index] = res;
@@ -259,6 +256,13 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
             }
         }
         !batch.is_empty()
+    }
+
+    pub fn poll_new(&mut self) {
+        // fetch_fsm
+        //  handle fsm
+        //  check execute statue
+        //    if time is long, try to reschedule
     }
 
     pub fn poll(&mut self) {
@@ -450,6 +454,11 @@ where
 
     // We just sleep to wait for more data to be processed.
     fn pause(&mut self) {}
+}
+#[cfg(test)]
+mod test_batch_system {
+    #[test]
+    fn test() {}
 }
 
 #[cfg(test)]
