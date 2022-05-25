@@ -1,12 +1,15 @@
 use std::error::Error;
 use std::fmt::Display;
+use std::task::Context;
+use std::task::Poll;
+use std::task::Waker;
 use std::{marker::PhantomData, time::Duration};
 
 use futures::Future;
 use tower::buffer::Buffer;
 use tower::{limit::RateLimit, Layer, Service, ServiceBuilder};
 
-use crate::com::ring::RingQueue;
+use crate::com::ring::{BlankElement, RingQueue, SeqId};
 
 pub struct TracingConnection<Status> {
     marker: PhantomData<Status>,
@@ -73,10 +76,7 @@ impl Service<SinkEvent> for TracingSinker {
     type Future =
         Box<dyn Future<Output = Result<Self::Response, Self::Error>> + 'static + Unpin + Send>;
 
-    fn poll_ready(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         todo!()
     }
 
@@ -103,11 +103,13 @@ impl TracingSinker {
 struct RingService<S, Req> {
     inner: S,
     ring: RingQueue<Req>,
+    free_waker: Option<Waker>,
 }
 
 impl<S, Request> Service<Request> for RingService<S, Request>
 where
     S: Service<Request>,
+    Request: std::fmt::Debug + SeqId + BlankElement<Item = Request> + Clone,
 {
     type Response = S::Response;
 
@@ -115,11 +117,15 @@ where
 
     type Future = Box<dyn Future<Output = Result<S::Response, S::Error>> + Unpin + 'static + Send>;
 
-    fn poll_ready(
+    fn poll_ready<'a>(
         &mut self,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut std::task::Context<'a>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
-        todo!()
+        if self.ring.is_full() {
+            self.free_waker = Some(cx.waker().clone())
+        } else {
+        }
+        todo!();
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
