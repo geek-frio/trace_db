@@ -4,13 +4,9 @@ use std::{marker::PhantomData, time::Duration};
 
 use futures::Future;
 use tower::buffer::Buffer;
-use tower::{
-    layer::util::Identity,
-    limit::{rate::Rate, RateLimit},
-    Layer, Service, ServiceBuilder,
-};
+use tower::{limit::RateLimit, Layer, Service, ServiceBuilder};
 
-use crate::com::util::Freq;
+use crate::com::ring::RingQueue;
 
 pub struct TracingConnection<Status> {
     marker: PhantomData<Status>,
@@ -65,9 +61,12 @@ pub trait TracingMsgStream {
 
 // loop poll SinkEvent
 pub struct TracingSinker;
+pub enum SinkResp {
+    Success,
+}
 
 impl Service<SinkEvent> for TracingSinker {
-    type Response = ();
+    type Response = SinkResp;
 
     type Error = SinkErr;
 
@@ -98,6 +97,33 @@ impl TracingSinker {
             .buffer::<SinkEvent>(buf)
             .rate_limit(num, per)
             .service(self)
+    }
+}
+
+struct RingService<S, Req> {
+    inner: S,
+    ring: RingQueue<Req>,
+}
+
+impl<S, Request> Service<Request> for RingService<S, Request>
+where
+    S: Service<Request>,
+{
+    type Response = S::Response;
+
+    type Error = S::Error;
+
+    type Future = Box<dyn Future<Output = Result<S::Response, S::Error>> + Unpin + 'static + Send>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        todo!()
+    }
+
+    fn call(&mut self, req: Request) -> Self::Future {
+        todo!()
     }
 }
 
