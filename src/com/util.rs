@@ -324,3 +324,6 @@ where
     T: Send + SizePolicy<K, V>,
 {
 }
+
+// flow control
+pub trait Freq {}
