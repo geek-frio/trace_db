@@ -40,7 +40,7 @@ tokio-io = "0.1.13"
 async-trait = "0.1.53"
 regex = "1.5.5"
 pin-project = "1"
-tower = { version = "0.4.12", features = ["limit"] }
+tower = { version = "0.4.12", features = ["limit", "buffer"] }
 
 [dev-dependencies]
 pretty_assertions = "1"
