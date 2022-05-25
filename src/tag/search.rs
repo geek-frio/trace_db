@@ -19,34 +19,33 @@ use tantivy_common::BinarySerializable;
 use crate::com::config::GlobalConfig;
 use crate::com::index::IndexAddr;
 use crate::com::redis::RedisTTLSet;
-use crate::GLOBAL_CONFIG;
 
-trait ConfigWatcher<T>: Send {
+pub trait ConfigWatcher<T>: Send {
     fn watch<F>(&self, cb: F, sender: Sender<Vec<T>>)
     where
         F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy;
 }
 // Global Single Instance
 #[derive(Clone)]
-struct SearchBuilder<T> {
+pub struct SearchBuilder<T> {
     searcher: Arc<Mutex<DistSearchManager<T>>>,
-    redis_client: RedisClient,
 }
 
 impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
-    fn new_init<
+    pub fn new_init<
         F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy,
         W: ConfigWatcher<T> + 'static,
     >(
         watcher: W,
         cb: F,
         redis_client: RedisClient,
+        config: Arc<GlobalConfig>,
     ) -> Result<SearchBuilder<T>, AnyError> {
         // Regist new address
         let ttl_set = RedisTTLSet { ttl: 5 };
         let mut conn = redis_client.get_connection()?;
         // TODO generate
-        ttl_set.push(&mut conn, GLOBAL_CONFIG.redis_addr.clone())?;
+        ttl_set.push(&mut conn, config.redis_addr.clone())?;
         let (s, r) = unbounded::<Vec<T>>();
         // Wait for client init connection ready
         watcher.watch(cb, s);
@@ -55,7 +54,6 @@ impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
         let searcher = Arc::new(mutex);
         let builder = SearchBuilder {
             searcher: searcher.clone(),
-            redis_client,
         };
         // Task for receiving client change events
         thread::spawn(move || loop {
@@ -180,13 +178,13 @@ impl<T: RemoteClient> DistSearchManager<T> {
     }
 }
 
-struct AddrsConfigWatcher {
+pub struct AddrsConfigWatcher {
     redis_client: RedisClient,
     config: Arc<GlobalConfig>,
 }
 
 impl AddrsConfigWatcher {
-    fn new(client: RedisClient, config: Arc<GlobalConfig>) -> AddrsConfigWatcher {
+    pub fn new(client: RedisClient, config: Arc<GlobalConfig>) -> AddrsConfigWatcher {
         AddrsConfigWatcher {
             redis_client: client,
             config,
@@ -248,12 +246,12 @@ mod tests {
     #[test]
     fn test_xxx() -> Result<(), AnyError> {
         let client = redis::Client::open("redis://127.0.0.1:6379")?;
-        let config = ConfigManager::load("/tmp/skdb_test.yaml".into());
+        let config = Arc::new(ConfigManager::load("/tmp/skdb_test.yaml".into()));
         let addrs_watcher = AddrsConfigWatcher {
             redis_client: client.clone(),
-            config: Arc::new(config),
+            config: config.clone(),
         };
-        let builder = SearchBuilder::<SkyTracingClient>::new_init(
+        let _ = SearchBuilder::<SkyTracingClient>::new_init(
             addrs_watcher,
             |v: Vec<String>| {
                 let mut clients = Vec::new();
@@ -267,6 +265,7 @@ mod tests {
                 clients
             },
             client,
+            config,
         );
         Ok(())
     }

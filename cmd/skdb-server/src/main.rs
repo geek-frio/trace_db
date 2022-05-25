@@ -1,5 +1,11 @@
+use grpcio::ChannelBuilder;
+use grpcio::Environment;
+use grpcio::ServerBuilder;
 use lazy_static::lazy_static;
+use skdb::com::redis::RedisAddr;
 use skdb::com::tracing::RollingFileMaker;
+use skdb::tag::search::AddrsConfigWatcher;
+use skdb::tag::search::SearchBuilder;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
@@ -11,7 +17,6 @@ use clap::Parser;
 use crossbeam_channel::Receiver as ShutdownReceiver;
 use crossbeam_channel::Sender as ShutdownSender;
 use futures::channel::mpsc::{Receiver, Sender};
-use grpcio::*;
 use serv::service::*;
 use skdb::com::batch::BatchSystem;
 use skdb::com::batch::FsmTypes;
@@ -79,7 +84,8 @@ impl MainServer {
     }
     fn start(&mut self) {
         let _span = info_span!("main_server");
-
+        info!("Start to init search builder...");
+        let _search_builder = self.create_search_builder(self.global_config.clone());
         let (segment_sender, segment_receiver) = futures::channel::mpsc::channel(10000);
         let router = self.start_batch_system_for_segment();
         self.start_bridge_channel(segment_receiver, router, self.shutdown_sender.clone());
@@ -147,6 +153,35 @@ impl MainServer {
             }
             .instrument(info_span!("local_consumer")),
         );
+    }
+
+    fn create_search_builder(&self, config: Arc<GlobalConfig>) -> SearchBuilder<SkyTracingClient> {
+        let mut redis_addr: RedisAddr = self
+            .global_config
+            .redis_addr
+            .as_str()
+            .try_into()
+            .expect("Invalid redis addr config");
+
+        let redis_cli = redis_addr.client().expect("Redis connect failed!");
+        let addrs_watcher = AddrsConfigWatcher::new(redis_cli.clone(), config.clone());
+        SearchBuilder::<SkyTracingClient>::new_init(
+            addrs_watcher,
+            |v: Vec<String>| {
+                let mut clients = Vec::new();
+                for addr in v {
+                    let env = Environment::new(3);
+                    // TODO: config change
+                    let channel = ChannelBuilder::new(Arc::new(env)).connect(addr.as_str());
+                    let client = SkyTracingClient::new(channel);
+                    clients.push(client);
+                }
+                clients
+            },
+            redis_cli,
+            config,
+        )
+        .expect("SearchBuilder init start failed!")
     }
 }
 

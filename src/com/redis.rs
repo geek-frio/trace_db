@@ -1,11 +1,48 @@
 use anyhow::Error as AnyError;
 use chrono::Local;
+use redis::Client as RedisClient;
 use redis::{Connection, Value};
+use regex::Regex;
 
 type Secs = i64;
 
 const KEY: &'static str = "SK_DB_SERVER_ADDR";
 const LEASE_TIME_OUT: i64 = 15;
+
+pub struct RedisAddr {
+    addr: String,
+    client: Option<RedisClient>,
+}
+
+impl RedisAddr {
+    pub fn client(&mut self) -> Result<RedisClient, AnyError> {
+        match self.client {
+            Some(ref client) => Ok(client.clone()),
+            None => {
+                let client = redis::Client::open(self.addr.as_str())?;
+                Ok(client)
+            }
+        }
+    }
+}
+
+impl<'a> TryInto<RedisAddr> for &'a str {
+    type Error = String;
+
+    fn try_into(self) -> Result<RedisAddr, Self::Error> {
+        let re = Regex::new(r"\d+\.\d+\.\d+\.\d+:\d+").unwrap();
+        if re.is_match(self) {
+            let mut s = String::new();
+            s.push_str("redis://");
+            s.push_str(self);
+            return Ok(RedisAddr {
+                addr: s,
+                client: None,
+            });
+        }
+        Err("Invalid redis address".to_string())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct RedisTTLSet {
@@ -143,7 +180,7 @@ where
     }
 }
 
-// #[cfg(tests)]
+#[cfg(test)]
 mod tests {
     use crate::test::gen;
     use rand::Rng;
@@ -195,5 +232,11 @@ mod tests {
             },
             sub_key: gen::_gen_tag(3, 5, 'a'),
         }
+    }
+
+    #[test]
+    fn test_into_redis_addr() {
+        let s = "127.0.0.1:6379";
+        let _: RedisAddr = s.try_into().unwrap();
     }
 }
