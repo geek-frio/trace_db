@@ -6,6 +6,7 @@ use chrono::{TimeZone, Utc};
 
 pub type IndexAddr = i64;
 
+#[allow(dead_code)]
 #[derive(Debug, Copy, Clone)]
 pub struct MailKeyAddress {
     val: i64,

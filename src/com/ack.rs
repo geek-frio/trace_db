@@ -276,13 +276,13 @@ impl BitSet {
         }
     }
 
-    fn intersect_update_with_iter(&mut self, other: impl Iterator<Item = TinySet>) {
-        self.len = 0;
-        for (left, right) in self.tinysets.iter_mut().zip(other) {
-            *left = left.intersect(right);
-            self.len += left.len() as u64;
-        }
-    }
+    // fn intersect_update_with_iter(&mut self, other: impl Iterator<Item = TinySet>) {
+    //     self.len = 0;
+    //     for (left, right) in self.tinysets.iter_mut().zip(other) {
+    //         *left = left.intersect(right);
+    //         self.len += left.len() as u64;
+    //     }
+    // }
 
     pub fn len(&self) -> usize {
         self.len as usize

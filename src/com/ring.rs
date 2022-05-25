@@ -152,6 +152,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     fn is_acked(&self) -> bool {
         self.send_pos == self.ack_pos
     }

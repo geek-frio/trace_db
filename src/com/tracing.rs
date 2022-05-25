@@ -20,10 +20,6 @@ pub struct RollingFileMaker {
     writer: RollingFileWriter,
 }
 
-struct MsgSender {
-    file: Option<File>,
-}
-
 pub struct RollingFileWriter {
     sender: Sender<MsgEvent>,
 }

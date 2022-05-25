@@ -14,8 +14,6 @@ use std::{
 };
 use tracing::{info, info_span, trace, trace_span, warn};
 
-const TAG_POLLER_BATCH_SIZE: usize = 5000;
-
 pub struct Batch<N> {
     pub normals: Vec<Option<NormalFsm<N>>>,
 }
