@@ -465,6 +465,7 @@ mod test_poll_handler {
 
     use super::*;
 
+    #[allow(dead_code)]
     #[derive(Debug, Clone)]
     struct MockMsg {
         val: usize,
@@ -518,7 +519,6 @@ mod test_poll_handler {
         type Msg = MockMsg;
 
         fn try_fill_batch(&mut self, msg_buf: &mut Vec<Self::Msg>, counter: &mut usize) -> bool {
-            const TAG_POLLER_BATCH_SIZE: usize = 5000;
             for i in 0..100usize {
                 *counter += 1;
                 msg_buf.push(MockMsg::new(i));

@@ -16,6 +16,6 @@ else
 	endif
 endif
 
-test-start-server: test-start-local-redis
+local-server-run: test-start-local-redis
 	cd cmd/skdb-server/; \
 		cargo run -- --config ../../skdb_config.yaml 
