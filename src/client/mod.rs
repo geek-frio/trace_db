@@ -1,23 +1,30 @@
+use crossbeam_channel::Receiver;
+use crossbeam_channel::Sender;
+use futures::Future;
+use futures::Stream;
+use grpcio::ClientDuplexReceiver;
+use grpcio::StreamingCallSink;
+use pin_project::pin_project;
+use redis::streams::StreamMaxlen;
 use std::error::Error;
+use std::fmt::Debug;
 use std::fmt::Display;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use std::{marker::PhantomData, time::Duration};
-
-use crossbeam_channel::Receiver;
-use crossbeam_channel::Sender;
-use futures::Future;
 use tower::buffer::Buffer;
-use tower::{limit::RateLimit, Layer, Service, ServiceBuilder};
+use tower::{limit::RateLimit, Service, ServiceBuilder};
 
 use crate::com::ring::{RingQueue, SeqId};
 
-pub struct TracingConnection<Status> {
+pub struct TracingConnection<Status, T> {
+    sink: Option<StreamingCallSink<T>>,
+    recv: Option<ClientDuplexReceiver<T>>,
     marker: PhantomData<Status>,
 }
 
-impl<Status> Drop for TracingConnection<Status> {
+impl<Status, T> Drop for TracingConnection<Status, T> {
     fn drop(&mut self) {
         todo!();
     }
@@ -26,36 +33,43 @@ impl<Status> Drop for TracingConnection<Status> {
 pub struct Created;
 pub struct HandShaked;
 
-pub trait Connector {
-    fn create_new_conn(&self) -> TracingConnection<Created>;
+pub trait Connector<T> {
+    fn create_new_conn(&self) -> TracingConnection<Created, T>;
     fn conn_count(&self) -> usize;
 }
 
-impl TracingConnection<Created> {
-    pub fn handshake(self) -> TracingConnection<HandShaked> {
+impl<T> TracingConnection<Created, T> {
+    pub fn handshake(mut self) -> TracingConnection<HandShaked, T> {
+        let sink = std::mem::replace(&mut (self.sink), None);
+        let recv = std::mem::replace(&mut (self.recv), None);
         TracingConnection {
+            sink,
+            recv,
             marker: PhantomData,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SinkEvent {
-    PushMsg,
+pub enum SinkEvent<T> {
+    PushMsg(T),
     Blank,
 }
 
-// impl BlankElement for SinkEvent {
-//     type Item = SinkEvent;
+impl<T> Default for SinkEvent<T> {
+    fn default() -> Self {
+        todo!()
+    }
+}
 
-//     fn is_blank(&self) -> bool {
-//         todo!();
-//     }
-
-//     fn blank_val() -> Self::Item {
-//         SinkEvent::Blank
-//     }
-// }
+impl<T> SeqId for SinkEvent<T>
+where
+    T: SeqId,
+{
+    fn seq_id(&self) -> usize {
+        todo!()
+    }
+}
 
 impl Error for SinkErr {}
 
@@ -69,21 +83,24 @@ impl Display for SinkErr {
 pub enum SinkErr {}
 
 pub trait TracingMsgSink<F> {
-    fn sink(&mut self, event: SinkEvent) -> Result<(), SinkErr>;
+    type Item;
+    fn sink(&mut self, event: SinkEvent<Self::Item>) -> Result<(), SinkErr>;
 }
 
-pub trait TracingMsgStream {
-    fn poll_remote(&mut self) -> Option<SinkEvent>;
-    fn poll_local(&mut self) -> Option<SinkEvent>;
+pub trait TracingMsgStream<T> {
+    type Item;
+    fn poll_remote(&mut self) -> Option<SinkEvent<Self::Item>>;
+    fn poll_local(&mut self) -> Option<SinkEvent<Self::Item>>;
 }
 
-// loop poll SinkEvent
-pub struct TracingSinker;
+pub struct TracingSinker<T> {
+    _item: PhantomData<T>,
+}
 pub enum SinkResp {
     Success,
 }
 
-impl Service<SinkEvent> for TracingSinker {
+impl<T> Service<SinkEvent<T>> for TracingSinker<T> {
     type Response = SinkResp;
 
     type Error = SinkErr;
@@ -95,28 +112,42 @@ impl Service<SinkEvent> for TracingSinker {
         todo!()
     }
 
-    fn call(&mut self, req: SinkEvent) -> Self::Future {
+    fn call(&mut self, req: SinkEvent<T>) -> Self::Future {
         todo!()
     }
 }
 
-impl TracingSinker {
-    pub fn with_limit(self, buf: usize, num: u64, per: Duration) {
+impl<T: SeqId + Debug + Clone + Send + 'static> TracingSinker<T> {
+    pub fn with_limit(
+        self,
+        buf: usize,
+        num: u64,
+        per: Duration,
+    ) -> (
+        Buffer<RateLimit<RingService<TracingSinker<T>, SinkEvent<T>>>, SinkEvent<T>>,
+        Receiver<Waker>,
+    ) {
         let service_builder = ServiceBuilder::new();
         let (wak_send, wak_recv) = crossbeam_channel::unbounded();
-        let ring_service: RingService<TracingSinker, SinkEvent> = RingService {
+        let ring_service: RingService<TracingSinker<T>, SinkEvent<T>> = RingService {
             inner: self,
             ring: Default::default(),
             wak_sender: wak_send,
         };
-        // let a = service_builder
-        //     .buffer::<SinkEvent>(buf)
-        //     .rate_limit(num, per)
-        //     .service(ring_service);
+        (
+            service_builder
+                .buffer::<SinkEvent<T>>(buf)
+                .rate_limit(num, per)
+                .service(ring_service),
+            wak_recv,
+        )
     }
 }
 
-struct RingService<S, Req> {
+pub struct RingService<S, Req>
+where
+    Req: SeqId + Sized + Debug + Default + Clone,
+{
     inner: S,
     ring: RingQueue<Req>,
     wak_sender: Sender<Waker>,
@@ -124,7 +155,7 @@ struct RingService<S, Req> {
 
 impl<S, Req> RingService<S, Req>
 where
-    Req: std::fmt::Debug + SeqId + Clone,
+    Req: SeqId + Sized + Debug + Default + Clone,
 {
     fn need_wake(&mut self, waker: Waker) {}
 }
@@ -132,7 +163,7 @@ where
 impl<S, Request> Service<Request> for RingService<S, Request>
 where
     S: Service<Request>,
-    Request: std::fmt::Debug + SeqId + Clone,
+    Request: SeqId + Sized + Debug + Default + Clone,
 {
     type Response = S::Response;
 
@@ -154,14 +185,30 @@ where
 }
 
 // keep polling msg from remote
-pub struct TracingStreamer {
-    wak_receiver: Receiver<Waker>,
+#[pin_project]
+pub struct TracingStreamer<T> {
+    #[pin]
+    recv: ClientDuplexReceiver<T>,
+    wak_recv: Receiver<Waker>,
 }
 
-impl TracingStreamer {}
+pub enum StreamEvent<T> {
+    WakeEvent(Waker),
+    Resp(T),
+}
 
-impl TracingConnection<HandShaked> {
-    pub fn split(self) -> (TracingSinker, TracingStreamer) {
+impl<T> Stream for TracingStreamer<T> {
+    type Item = StreamEvent<T>;
+
+    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        todo!()
+    }
+}
+
+impl<T> TracingStreamer<T> {}
+
+impl<T> TracingConnection<HandShaked, T> {
+    pub fn split(self) -> (TracingSinker<T>, TracingStreamer<T>) {
         todo!();
     }
 }

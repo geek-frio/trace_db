@@ -36,17 +36,6 @@ pub struct SeqMail<T, W, Resp> {
 #[derive(PartialEq, Debug, Clone)]
 pub struct SegmentDataWrap(pub SegmentData);
 
-// impl BlankElement for SegmentDataWrap {
-//     type Item = SegmentDataWrap;
-
-//     fn is_blank(&self) -> bool {
-//         !self.0.has_meta()
-//     }
-
-//     fn blank_val() -> Self::Item {
-//         SegmentDataWrap(SegmentData::default())
-//     }
-// }
 
 impl SeqId for SegmentDataWrap {
     fn seq_id(&self) -> usize {

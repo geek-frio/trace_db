@@ -24,7 +24,7 @@ pub struct RingQueue<E> {
 
 impl<E> Default for RingQueue<E>
 where
-    E: SeqId + Debug + Clone + Sized + Default,
+    E: SeqId + Sized + Debug + Default + Clone,
 {
     fn default() -> Self {
         RingQueue::new(64 * 100)
@@ -58,9 +58,9 @@ impl<'a, T> Iterator for RingIter<'a, T> {
     }
 }
 
-impl<E: Debug + Sized> RingQueue<E>
+impl<E> RingQueue<E>
 where
-    E: SeqId + Debug + Clone + Sized + Default,
+    E: SeqId + Sized + Debug + Default + Clone,
 {
     pub fn new(size: usize) -> RingQueue<E> {
         let internal = vec![Default::default(); size];
