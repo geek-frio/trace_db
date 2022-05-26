@@ -8,13 +8,6 @@ pub trait SeqId {
     fn seq_id(&self) -> usize;
 }
 
-pub trait BlankElement: PartialEq {
-    type Item;
-    fn is_blank(&self) -> bool;
-
-    fn blank_val() -> Self::Item;
-}
-
 // RingQueue's length should be bigger than receiver window's length.
 // We only care about data between ack position and send position
 #[derive(Debug)]
@@ -27,6 +20,15 @@ pub struct RingQueue<E> {
     // current seqid
     cur_num: usize,
     start_num: usize,
+}
+
+impl<E> Default for RingQueue<E>
+where
+    E: SeqId + Debug + Clone + Sized + Default,
+{
+    fn default() -> Self {
+        RingQueue::new(64 * 100)
+    }
 }
 
 pub enum RingIter<'a, T> {
@@ -58,10 +60,10 @@ impl<'a, T> Iterator for RingIter<'a, T> {
 
 impl<E: Debug + Sized> RingQueue<E>
 where
-    E: SeqId + BlankElement<Item = E> + Debug + Clone + Sized,
+    E: SeqId + Debug + Clone + Sized + Default,
 {
     pub fn new(size: usize) -> RingQueue<E> {
-        let internal = vec![E::blank_val(); size];
+        let internal = vec![Default::default(); size];
         RingQueue {
             data: internal.into_boxed_slice(),
             ack_pos: 0,
@@ -122,6 +124,10 @@ where
         }
     }
 
+    pub fn cur_seq_id(&self) -> usize {
+        self.cur_num
+    }
+
     // send_pos is ack_pos's neighbour
     pub fn is_full(&self) -> bool {
         // Only the first time, ack pos and send pos can be the same postion
@@ -162,24 +168,12 @@ where
 mod tests {
     use super::*;
 
-    #[derive(Debug, Clone, PartialEq)]
+    #[derive(Debug, Default, Clone, PartialEq)]
     struct Element(usize, bool);
 
     impl SeqId for Element {
         fn seq_id(&self) -> usize {
             self.0
-        }
-    }
-
-    impl BlankElement for Element {
-        type Item = Element;
-
-        fn is_blank(&self) -> bool {
-            self.1
-        }
-
-        fn blank_val() -> Self::Item {
-            Element(0, true)
         }
     }
 

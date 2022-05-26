@@ -5,11 +5,13 @@ use std::task::Poll;
 use std::task::Waker;
 use std::{marker::PhantomData, time::Duration};
 
+use crossbeam_channel::Receiver;
+use crossbeam_channel::Sender;
 use futures::Future;
 use tower::buffer::Buffer;
 use tower::{limit::RateLimit, Layer, Service, ServiceBuilder};
 
-use crate::com::ring::{BlankElement, RingQueue, SeqId};
+use crate::com::ring::{RingQueue, SeqId};
 
 pub struct TracingConnection<Status> {
     marker: PhantomData<Status>,
@@ -37,10 +39,23 @@ impl TracingConnection<Created> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SinkEvent {
     PushMsg,
+    Blank,
 }
+
+// impl BlankElement for SinkEvent {
+//     type Item = SinkEvent;
+
+//     fn is_blank(&self) -> bool {
+//         todo!();
+//     }
+
+//     fn blank_val() -> Self::Item {
+//         SinkEvent::Blank
+//     }
+// }
 
 impl Error for SinkErr {}
 
@@ -86,30 +101,38 @@ impl Service<SinkEvent> for TracingSinker {
 }
 
 impl TracingSinker {
-    pub fn with_limit(
-        self,
-        buf: usize,
-        num: u64,
-        per: Duration,
-    ) -> Buffer<RateLimit<TracingSinker>, SinkEvent> {
+    pub fn with_limit(self, buf: usize, num: u64, per: Duration) {
         let service_builder = ServiceBuilder::new();
-        service_builder
-            .buffer::<SinkEvent>(buf)
-            .rate_limit(num, per)
-            .service(self)
+        let (wak_send, wak_recv) = crossbeam_channel::unbounded();
+        let ring_service: RingService<TracingSinker, SinkEvent> = RingService {
+            inner: self,
+            ring: Default::default(),
+            wak_sender: wak_send,
+        };
+        // let a = service_builder
+        //     .buffer::<SinkEvent>(buf)
+        //     .rate_limit(num, per)
+        //     .service(ring_service);
     }
 }
 
 struct RingService<S, Req> {
     inner: S,
     ring: RingQueue<Req>,
-    free_waker: Option<Waker>,
+    wak_sender: Sender<Waker>,
+}
+
+impl<S, Req> RingService<S, Req>
+where
+    Req: std::fmt::Debug + SeqId + Clone,
+{
+    fn need_wake(&mut self, waker: Waker) {}
 }
 
 impl<S, Request> Service<Request> for RingService<S, Request>
 where
     S: Service<Request>,
-    Request: std::fmt::Debug + SeqId + BlankElement<Item = Request> + Clone,
+    Request: std::fmt::Debug + SeqId + Clone,
 {
     type Response = S::Response;
 
@@ -117,15 +140,12 @@ where
 
     type Future = Box<dyn Future<Output = Result<S::Response, S::Error>> + Unpin + 'static + Send>;
 
-    fn poll_ready<'a>(
-        &mut self,
-        cx: &mut std::task::Context<'a>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready<'a>(&mut self, cx: &mut std::task::Context<'a>) -> Poll<Result<(), Self::Error>> {
         if self.ring.is_full() {
-            self.free_waker = Some(cx.waker().clone())
+            Poll::Pending
         } else {
+            Poll::Ready(Ok(()))
         }
-        todo!();
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
@@ -134,7 +154,11 @@ where
 }
 
 // keep polling msg from remote
-pub struct TracingStreamer;
+pub struct TracingStreamer {
+    wak_receiver: Receiver<Waker>,
+}
+
+impl TracingStreamer {}
 
 impl TracingConnection<HandShaked> {
     pub fn split(self) -> (TracingSinker, TracingStreamer) {

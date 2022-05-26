@@ -7,7 +7,6 @@ use futures::sink::SinkExt;
 use futures::StreamExt;
 use grpcio::Error as GrpcErr;
 use grpcio::{ClientDuplexReceiver, StreamingCallSink, WriteFlags};
-use skdb::com::ring::BlankElement;
 use skdb::com::ring::RingQueue;
 use skdb::com::ring::RingQueueError;
 use skdb::com::ring::SeqId;
@@ -37,17 +36,17 @@ pub struct SeqMail<T, W, Resp> {
 #[derive(PartialEq, Debug, Clone)]
 pub struct SegmentDataWrap(pub SegmentData);
 
-impl BlankElement for SegmentDataWrap {
-    type Item = SegmentDataWrap;
+// impl BlankElement for SegmentDataWrap {
+//     type Item = SegmentDataWrap;
 
-    fn is_blank(&self) -> bool {
-        !self.0.has_meta()
-    }
+//     fn is_blank(&self) -> bool {
+//         !self.0.has_meta()
+//     }
 
-    fn blank_val() -> Self::Item {
-        SegmentDataWrap(SegmentData::default())
-    }
-}
+//     fn blank_val() -> Self::Item {
+//         SegmentDataWrap(SegmentData::default())
+//     }
+// }
 
 impl SeqId for SegmentDataWrap {
     fn seq_id(&self) -> usize {
@@ -235,7 +234,7 @@ impl From<GrpcErr> for IndexSendErr {
     }
 }
 
-impl<W: Debug + SeqId + Clone + BlankElement<Item = W> + Into<T>, T> IndexSender<T, W> {
+impl<W: Debug + SeqId + Clone + Into<T>, T> IndexSender<T, W> {
     pub fn new(sender: StreamingCallSink<T>, win_size: u32) -> IndexSender<T, W> {
         IndexSender {
             ack_win: RingQueue::new(win_size as usize),
