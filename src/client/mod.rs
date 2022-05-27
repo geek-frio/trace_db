@@ -189,7 +189,15 @@ where
 }
 
 impl<T: SeqId + Debug + Clone + Send + 'static + Default> TracingSinker<T> {
-    pub fn with_limit(self, buf: usize, num: u64, per: Duration) {
+    pub fn with_limit(
+        self,
+        buf: usize,
+        num: u64,
+        per: Duration,
+    ) -> (
+        Buffer<RateLimit<RingService<TracingSinker<T>, T>>, RingServiceReqEvent<T>>,
+        Receiver<Waker>,
+    ) {
         let service_builder = ServiceBuilder::new();
         let (wak_send, wak_recv) = crossbeam_channel::unbounded();
         let ring_service: RingService<TracingSinker<T>, T> = RingService {
@@ -197,18 +205,11 @@ impl<T: SeqId + Debug + Clone + Send + 'static + Default> TracingSinker<T> {
             ring: Default::default(),
             wak_sender: wak_send,
         };
-        service_builder
+        let service = service_builder
             .buffer::<RingServiceReqEvent<T>>(buf)
             .rate_limit(num, per)
             .service(ring_service);
-        // (
-        // service_builder
-        //     .buffer::<SinkEvent<T>>(buf)
-        //     .rate_limit(num, per)
-        //     .service(ring_service);
-        // wak_recv,
-        // )
-        todo!();
+        (service, wak_recv)
     }
 }
 
@@ -245,7 +246,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-enum RingServiceReqEvent<Req: Debug> {
+pub enum RingServiceReqEvent<Req: Debug> {
     Ack(Req),
     NeedResend(usize),
     Msg(Req),
