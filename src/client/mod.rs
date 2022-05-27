@@ -3,12 +3,16 @@ use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
 use futures::future::Either;
 use futures::ready;
+use futures::stream::StreamExt;
 use futures::Future;
+use futures::Sink;
+use futures::SinkExt;
 use futures::Stream;
+use futures::TryFutureExt;
 use grpcio::ClientDuplexReceiver;
 use grpcio::StreamingCallSink;
+use grpcio::WriteFlags;
 use pin_project::pin_project;
-use redis::streams::StreamMaxlen;
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -23,13 +27,13 @@ use tower::{limit::RateLimit, Service, ServiceBuilder};
 use crate::com::ring::RingQueueError;
 use crate::com::ring::{RingQueue, SeqId};
 
-pub struct TracingConnection<Status, T> {
-    sink: Option<StreamingCallSink<T>>,
-    recv: Option<ClientDuplexReceiver<T>>,
+pub struct TracingConnection<Status, Req, Resp> {
+    sink: Option<StreamingCallSink<Req>>,
+    recv: Option<ClientDuplexReceiver<Resp>>,
     marker: PhantomData<Status>,
 }
 
-impl<Status, T> Drop for TracingConnection<Status, T> {
+impl<Status, Req, Resp> Drop for TracingConnection<Status, Req, Resp> {
     fn drop(&mut self) {
         todo!();
     }
@@ -38,27 +42,72 @@ impl<Status, T> Drop for TracingConnection<Status, T> {
 pub struct Created;
 pub struct HandShaked;
 
-pub trait Connector<T> {
-    fn create_new_conn(&self) -> TracingConnection<Created, T>;
+pub trait Connector<Req, Resp> {
+    fn create_new_conn(&self) -> TracingConnection<Created, Req, Resp>;
     fn conn_count(&self) -> usize;
 }
 
-impl<T> TracingConnection<Created, T> {
-    pub fn handshake(mut self) -> TracingConnection<HandShaked, T> {
+pub trait Handshake {
+    fn gen_handshake_pkt() -> Self;
+}
+
+impl<Req, Resp> TracingConnection<Created, Req, Resp>
+where
+    Req: Handshake + Clone,
+{
+    pub async fn handshake(
+        mut self,
+        f: impl FnOnce(Resp, Req) -> bool,
+    ) -> Result<TracingConnection<HandShaked, Req, Resp>, AnyError> {
+        if self.sink.is_none() || self.recv.is_none() {
+            return Err(AnyError::msg("sink and receiver is not properly inited!"));
+        }
+
         let sink = std::mem::replace(&mut (self.sink), None);
         let recv = std::mem::replace(&mut (self.recv), None);
-        TracingConnection {
-            sink,
-            recv,
-            marker: PhantomData,
+        let mut sink = sink.unwrap();
+        let mut recv = recv.unwrap();
+        let pkt = <Req as Handshake>::gen_handshake_pkt();
+
+        let res = sink.send((pkt.clone(), WriteFlags::default())).await;
+
+        match res {
+            Ok(_) => {
+                let resp: Option<Result<Resp, grpcio::Error>> = recv.next().await;
+                match resp {
+                    Some(r) => match r {
+                        Ok(resp) => {
+                            if !f(resp, pkt) {
+                                Err(AnyError::msg(
+                                    "Hanshake response check with request failed!",
+                                ))
+                            } else {
+                                Ok(TracingConnection {
+                                    sink: Some(sink),
+                                    recv: Some(recv),
+                                    marker: PhantomData,
+                                })
+                            }
+                        }
+                        Err(e) => Err(e.into()),
+                    },
+                    None => Err(AnyError::msg("Receiving handshake resp failed!")),
+                }
+            }
+            Err(e) => Err(e.into()),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SinkEvent<T> {
-    PushMsg(T),
-    Blank,
+pub enum SinkEvent<Req> {
+    PushMsg(Option<Req>),
+}
+
+impl<T> Ack for SinkEvent<T> {
+    fn is_ack(&self) -> bool {
+        todo!()
+    }
 }
 
 impl<T> Default for SinkEvent<T> {
@@ -85,7 +134,10 @@ impl Display for SinkErr {
 }
 
 #[derive(Debug, Clone)]
-pub enum SinkErr {}
+pub enum SinkErr {
+    GrpcSinkErr(String),
+    NoReq,
+}
 
 pub trait TracingMsgSink<F> {
     type Item;
@@ -99,26 +151,40 @@ pub trait TracingMsgStream<T> {
 }
 
 pub struct TracingSinker<T> {
-    _item: PhantomData<T>,
-}
-pub enum SinkResp {
-    Success,
+    sink: StreamingCallSink<T>,
 }
 
-impl<T> Service<SinkEvent<T>> for TracingSinker<T> {
-    type Response = SinkResp;
+impl<T> Service<SinkEvent<T>> for TracingSinker<T>
+where
+    T: Send + 'static,
+{
+    type Response = ();
 
     type Error = SinkErr;
 
-    type Future =
-        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + 'static + Send>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        todo!()
+    fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        return Poll::Ready(Ok(()));
     }
 
     fn call(&mut self, req: SinkEvent<T>) -> Self::Future {
-        todo!()
+        let sink = Pin::new(&mut self.sink);
+        match req {
+            SinkEvent::PushMsg(req) => {
+                if let Some(v) = req {
+                    let send_res = sink.start_send((v, WriteFlags::default()));
+                    let res = match send_res {
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(SinkErr::GrpcSinkErr(e.to_string())),
+                    };
+
+                    return Box::pin(futures::future::ready(res));
+                } else {
+                    return Box::pin(futures::future::ready(Err(SinkErr::NoReq)));
+                }
+            }
+        }
     }
 }
 
@@ -186,9 +252,10 @@ where
     S: Service<Request>,
     S::Response: Send + 'static,
     S::Error: Send + 'static,
-    Request: SeqId + Sized + Debug + Default + Clone,
+    S::Future: Send + 'static,
+    Request: SeqId + Sized + Debug + Default + Clone + Ack,
 {
-    type Response = S::Response;
+    type Response = Either<(), S::Response>;
 
     type Error = RingServiceErr<S::Error, RingQueueError>;
 
@@ -197,6 +264,7 @@ where
 
     fn poll_ready<'a>(&mut self, cx: &mut std::task::Context<'a>) -> Poll<Result<(), Self::Error>> {
         if self.ring.is_full() {
+            let _ = self.wak_sender.send(cx.waker().clone());
             Poll::Pending
         } else {
             Poll::Ready(Ok(()))
@@ -204,12 +272,22 @@ where
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
-        let res = self.ring.send(req);
+        if req.is_ack() {
+            self.ring.ack(req.seq_id());
+            return Box::pin(futures::future::ready(Ok(Either::Left(()))));
+        }
+        let res = self.ring.send(req.clone());
         match res {
-            Ok(_) => {}
+            Ok(_) => {
+                let inner_res = self.inner.call(req);
+                return Box::pin(
+                    inner_res
+                        .map_ok(|a| Either::Right(a))
+                        .map_err(|e| RingServiceErr::Left(e)),
+                );
+            }
             Err(e) => return Box::pin(futures::future::ready(Err(RingServiceErr::Right(e)))),
         }
-        Box::pin(async move { todo!() })
     }
 }
 
@@ -256,9 +334,3 @@ where
 }
 
 impl<T> TracingStreamer<T> {}
-
-impl<T> TracingConnection<HandShaked, T> {
-    pub fn split(self) -> (TracingSinker<T>, TracingStreamer<T>) {
-        todo!();
-    }
-}
