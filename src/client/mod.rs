@@ -188,36 +188,33 @@ where
     }
 }
 
-impl<T: SeqId + Debug + Clone + Send + 'static> TracingSinker<T> {
-    pub fn with_limit(
-        self,
-        buf: usize,
-        num: u64,
-        per: Duration,
-    ) -> (
-        Buffer<RateLimit<RingService<TracingSinker<T>, SinkEvent<T>>>, SinkEvent<T>>,
-        Receiver<Waker>,
-    ) {
+impl<T: SeqId + Debug + Clone + Send + 'static + Default> TracingSinker<T> {
+    pub fn with_limit(self, buf: usize, num: u64, per: Duration) {
         let service_builder = ServiceBuilder::new();
         let (wak_send, wak_recv) = crossbeam_channel::unbounded();
-        let ring_service: RingService<TracingSinker<T>, SinkEvent<T>> = RingService {
+        let ring_service: RingService<TracingSinker<T>, T> = RingService {
             inner: self,
             ring: Default::default(),
             wak_sender: wak_send,
         };
-        (
-            service_builder
-                .buffer::<SinkEvent<T>>(buf)
-                .rate_limit(num, per)
-                .service(ring_service),
-            wak_recv,
-        )
+        service_builder
+            .buffer::<RingServiceReqEvent<T>>(buf)
+            .rate_limit(num, per)
+            .service(ring_service);
+        // (
+        // service_builder
+        //     .buffer::<SinkEvent<T>>(buf)
+        //     .rate_limit(num, per)
+        //     .service(ring_service);
+        // wak_recv,
+        // )
+        todo!();
     }
 }
 
 pub struct RingService<S, Req>
 where
-    Req: SeqId + Sized + Debug + Default + Clone,
+    Req: Sized + Debug + Clone + Default,
 {
     inner: S,
     ring: RingQueue<Req>,
@@ -247,13 +244,20 @@ where
 {
 }
 
-impl<S, Request> Service<Request> for RingService<S, Request>
+#[derive(Debug, Clone)]
+enum RingServiceReqEvent<Req: Debug> {
+    Ack(Req),
+    NeedResend(usize),
+    Msg(Req),
+}
+
+impl<S, Request> Service<RingServiceReqEvent<Request>> for RingService<S, Request>
 where
-    S: Service<Request>,
+    S: Service<SinkEvent<Request>>,
     S::Response: Send + 'static,
     S::Error: Send + 'static,
     S::Future: Send + 'static,
-    Request: SeqId + Sized + Debug + Default + Clone + Ack,
+    Request: SeqId + Sized + Debug + Default + Clone,
 {
     type Response = Either<(), S::Response>;
 
@@ -271,22 +275,31 @@ where
         }
     }
 
-    fn call(&mut self, req: Request) -> Self::Future {
-        if req.is_ack() {
-            self.ring.ack(req.seq_id());
-            return Box::pin(futures::future::ready(Ok(Either::Left(()))));
-        }
-        let res = self.ring.send(req.clone());
-        match res {
-            Ok(_) => {
-                let inner_res = self.inner.call(req);
-                return Box::pin(
-                    inner_res
-                        .map_ok(|a| Either::Right(a))
-                        .map_err(|e| RingServiceErr::Left(e)),
-                );
+    fn call(&mut self, req: RingServiceReqEvent<Request>) -> Self::Future {
+        match req {
+            RingServiceReqEvent::Ack(r) => {
+                self.ring.ack(r.seq_id());
+                return Box::pin(futures::future::ready(Ok(Either::Left(()))));
             }
-            Err(e) => return Box::pin(futures::future::ready(Err(RingServiceErr::Right(e)))),
+            RingServiceReqEvent::Msg(req) => {
+                let res = self.ring.send(req.clone());
+                match res {
+                    Ok(_) => {
+                        let inner_res = self.inner.call(SinkEvent::PushMsg(Some(req)));
+                        return Box::pin(
+                            inner_res
+                                .map_ok(|a| Either::Right(a))
+                                .map_err(|e| RingServiceErr::Left(e)),
+                        );
+                    }
+                    Err(e) => {
+                        return Box::pin(futures::future::ready(Err(RingServiceErr::Right(e))))
+                    }
+                }
+            }
+            RingServiceReqEvent::NeedResend(seq_id) => {
+                todo!();
+            }
         }
     }
 }
