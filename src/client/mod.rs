@@ -1,5 +1,7 @@
+use anyhow::Error as AnyError;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
+use futures::ready;
 use futures::Future;
 use futures::Stream;
 use grpcio::ClientDuplexReceiver;
@@ -153,13 +155,6 @@ where
     wak_sender: Sender<Waker>,
 }
 
-impl<S, Req> RingService<S, Req>
-where
-    Req: SeqId + Sized + Debug + Default + Clone,
-{
-    fn need_wake(&mut self, waker: Waker) {}
-}
-
 impl<S, Request> Service<Request> for RingService<S, Request>
 where
     S: Service<Request>,
@@ -186,22 +181,43 @@ where
 
 // keep polling msg from remote
 #[pin_project]
-pub struct TracingStreamer<T> {
+pub struct TracingStreamer<Resp> {
     #[pin]
-    recv: ClientDuplexReceiver<T>,
+    recv: ClientDuplexReceiver<Resp>,
     wak_recv: Receiver<Waker>,
 }
 
-pub enum StreamEvent<T> {
-    WakeEvent(Waker),
-    Resp(T),
+trait Ack {
+    fn is_ack(&self) -> bool;
 }
 
-impl<T> Stream for TracingStreamer<T> {
-    type Item = StreamEvent<T>;
+impl<Resp> Stream for TracingStreamer<Resp>
+where
+    Resp: Ack,
+{
+    type Item = Result<Resp, AnyError>;
 
     fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        todo!()
+        let this = self.project();
+        let recv = this.recv;
+        let wak = this.wak_recv;
+        let msg = ready!(recv.poll_next(cx));
+        match msg {
+            None => return Poll::Ready(None),
+            Some(res) => {
+                let res = res
+                    .map(|v| {
+                        if v.is_ack() {
+                            if let Ok(waker) = wak.try_recv() {
+                                waker.wake();
+                            }
+                        }
+                        v
+                    })
+                    .map_err(|e| <AnyError as From<grpcio::Error>>::from(e.into()));
+                Poll::Ready(Some(res))
+            }
+        }
     }
 }
 
