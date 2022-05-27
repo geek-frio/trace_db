@@ -1,6 +1,7 @@
 use anyhow::Error as AnyError;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
+use futures::future::join_all;
 use futures::future::Either;
 use futures::ready;
 use futures::stream::StreamExt;
@@ -188,7 +189,10 @@ where
     }
 }
 
-impl<T: SeqId + Debug + Clone + Send + 'static + Default> TracingSinker<T> {
+impl<T> TracingSinker<T>
+where
+    T: SeqId + Debug + Clone + Send + 'static + Default + ChangeResend,
+{
     pub fn with_limit(
         self,
         buf: usize,
@@ -252,13 +256,17 @@ pub enum RingServiceReqEvent<Req: Debug> {
     Msg(Req),
 }
 
+pub trait ChangeResend {
+    fn change(&mut self);
+}
+
 impl<S, Request> Service<RingServiceReqEvent<Request>> for RingService<S, Request>
 where
     S: Service<SinkEvent<Request>>,
     S::Response: Send + 'static,
     S::Error: Send + 'static,
     S::Future: Send + 'static,
-    Request: SeqId + Sized + Debug + Default + Clone,
+    Request: SeqId + Sized + Debug + Default + Clone + ChangeResend,
 {
     type Response = Either<(), S::Response>;
 
@@ -298,8 +306,19 @@ where
                     }
                 }
             }
-            RingServiceReqEvent::NeedResend(seq_id) => {
-                todo!();
+            RingServiceReqEvent::NeedResend(_) => {
+                let ring_iter = self.ring.not_ack_iter();
+                let futs = ring_iter
+                    .map(|req| {
+                        let mut req = req.clone();
+                        req.change();
+                        self.inner.call(SinkEvent::PushMsg(Some(req)))
+                    })
+                    .collect::<Vec<_>>();
+                Box::pin(async {
+                    join_all(futs).await;
+                    Ok(Either::Left(()))
+                })
             }
         }
     }
