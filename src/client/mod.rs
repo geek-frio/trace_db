@@ -1,6 +1,7 @@
 use anyhow::Error as AnyError;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
+use futures::future::Either;
 use futures::ready;
 use futures::Future;
 use futures::Stream;
@@ -11,6 +12,7 @@ use redis::streams::StreamMaxlen;
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Display;
+use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -18,6 +20,7 @@ use std::{marker::PhantomData, time::Duration};
 use tower::buffer::Buffer;
 use tower::{limit::RateLimit, Service, ServiceBuilder};
 
+use crate::com::ring::RingQueueError;
 use crate::com::ring::{RingQueue, SeqId};
 
 pub struct TracingConnection<Status, T> {
@@ -108,7 +111,7 @@ impl<T> Service<SinkEvent<T>> for TracingSinker<T> {
     type Error = SinkErr;
 
     type Future =
-        Box<dyn Future<Output = Result<Self::Response, Self::Error>> + 'static + Unpin + Send>;
+        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + 'static + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         todo!()
@@ -155,16 +158,42 @@ where
     wak_sender: Sender<Waker>,
 }
 
+#[derive(Debug)]
+pub enum RingServiceErr<L, R> {
+    Left(L),
+    Right(R),
+}
+
+impl<L, R> Display for RingServiceErr<L, R>
+where
+    L: Display + Debug,
+    R: Display + Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("self:{:?}", self))
+    }
+}
+
+impl<L, R> std::error::Error for RingServiceErr<L, R>
+where
+    L: Display + Debug,
+    R: Display + Debug,
+{
+}
+
 impl<S, Request> Service<Request> for RingService<S, Request>
 where
     S: Service<Request>,
+    S::Response: Send + 'static,
+    S::Error: Send + 'static,
     Request: SeqId + Sized + Debug + Default + Clone,
 {
     type Response = S::Response;
 
-    type Error = S::Error;
+    type Error = RingServiceErr<S::Error, RingQueueError>;
 
-    type Future = Box<dyn Future<Output = Result<S::Response, S::Error>> + Unpin + 'static + Send>;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + 'static + Send>>;
 
     fn poll_ready<'a>(&mut self, cx: &mut std::task::Context<'a>) -> Poll<Result<(), Self::Error>> {
         if self.ring.is_full() {
@@ -175,7 +204,12 @@ where
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
-        todo!()
+        let res = self.ring.send(req);
+        match res {
+            Ok(_) => {}
+            Err(e) => return Box::pin(futures::future::ready(Err(RingServiceErr::Right(e)))),
+        }
+        Box::pin(async move { todo!() })
     }
 }
 

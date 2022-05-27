@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::iter::Chain;
 use std::slice::Iter;
 
@@ -44,6 +44,12 @@ pub type CurId = usize;
 pub enum RingQueueError {
     SendNotOneByOne(CurId),
     QueueIsFull(CurId, QueueLength),
+}
+
+impl Display for RingQueueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{:?}", self))
+    }
 }
 
 impl<'a, T> Iterator for RingIter<'a, T> {
