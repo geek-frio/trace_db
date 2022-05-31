@@ -28,32 +28,39 @@ use tower::{limit::RateLimit, Service, ServiceBuilder};
 use crate::com::ring::RingQueueError;
 use crate::com::ring::{RingQueue, SeqId};
 
-pub struct TracingConnection<Status, Req, Resp> {
+pub struct TracingConnection<Status, WrapReq, Req, Resp> {
     sink: Option<StreamingCallSink<Req>>,
     recv: Option<ClientDuplexReceiver<Resp>>,
+    conn_id: Option<i32>,
     marker: PhantomData<Status>,
+    wrap_marker: PhantomData<WrapReq>,
 }
 
 pub struct Created;
 pub struct HandShaked;
 
-pub trait Connector<Req, Resp> {
-    fn create_new_conn(&self) -> TracingConnection<Created, Req, Resp>;
-    fn conn_count(&self) -> usize;
-}
-
-pub trait Handshake {
-    fn gen_handshake_pkt() -> Self;
-}
-
-impl<Req, Resp> TracingConnection<Created, Req, Resp>
+impl<WrapReq, Req, Resp> TracingConnection<Created, WrapReq, Req, Resp>
 where
-    Req: Handshake + Clone,
+    Req: Clone,
 {
+    pub fn new(
+        sink: StreamingCallSink<Req>,
+        recv: ClientDuplexReceiver<Resp>,
+    ) -> TracingConnection<Created, WrapReq, Req, Resp> {
+        Self {
+            sink: Some(sink),
+            recv: Some(recv),
+            conn_id: None,
+            marker: PhantomData,
+            wrap_marker: PhantomData,
+        }
+    }
+
     pub async fn handshake(
         mut self,
-        f: impl FnOnce(Resp, Req) -> bool,
-    ) -> Result<TracingConnection<HandShaked, Req, Resp>, AnyError> {
+        check_hand_resp: impl Fn(Resp, Req) -> (bool, i32),
+        gen_hand_pkg: impl Fn() -> Req,
+    ) -> Result<TracingConnection<HandShaked, WrapReq, Req, Resp>, AnyError> {
         if self.sink.is_none() || self.recv.is_none() {
             return Err(AnyError::msg("sink and receiver is not properly inited!"));
         }
@@ -62,7 +69,7 @@ where
         let recv = std::mem::replace(&mut (self.recv), None);
         let mut sink = sink.unwrap();
         let mut recv = recv.unwrap();
-        let pkt = <Req as Handshake>::gen_handshake_pkt();
+        let pkt = gen_hand_pkg();
 
         let res = sink.send((pkt.clone(), WriteFlags::default())).await;
 
@@ -72,7 +79,8 @@ where
                 match resp {
                     Some(r) => match r {
                         Ok(resp) => {
-                            if !f(resp, pkt) {
+                            let (stat, conn_id) = check_hand_resp(resp, pkt);
+                            if stat {
                                 Err(AnyError::msg(
                                     "Hanshake response check with request failed!",
                                 ))
@@ -80,7 +88,9 @@ where
                                 Ok(TracingConnection {
                                     sink: Some(sink),
                                     recv: Some(recv),
+                                    conn_id: Some(conn_id),
                                     marker: PhantomData,
+                                    wrap_marker: PhantomData,
                                 })
                             }
                         }
@@ -95,8 +105,8 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SinkEvent<Req> {
-    PushMsg(Option<Req>),
+pub enum SinkEvent<WrapReq> {
+    PushMsg(Option<WrapReq>),
 }
 
 impl<Req> Default for SinkEvent<Req>
@@ -147,13 +157,15 @@ pub trait TracingMsgStream<T> {
     fn poll_local(&mut self) -> Option<SinkEvent<Self::Item>>;
 }
 
-pub struct TracingSinker<T> {
-    sink: StreamingCallSink<T>,
+pub struct TracingSinker<WrapReq, Req> {
+    sink: StreamingCallSink<Req>,
+    marker: PhantomData<WrapReq>,
 }
 
-impl<T> Service<SinkEvent<T>> for TracingSinker<T>
+impl<WrapReq, Req> Service<SinkEvent<WrapReq>> for TracingSinker<WrapReq, Req>
 where
-    T: Send + 'static,
+    Req: Send + 'static,
+    WrapReq: Into<Req>,
 {
     type Response = ();
 
@@ -165,12 +177,12 @@ where
         return Poll::Ready(Ok(()));
     }
 
-    fn call(&mut self, req: SinkEvent<T>) -> Self::Future {
+    fn call(&mut self, req: SinkEvent<WrapReq>) -> Self::Future {
         let sink = Pin::new(&mut self.sink);
         match req {
             SinkEvent::PushMsg(req) => {
                 if let Some(v) = req {
-                    let send_res = sink.start_send((v, WriteFlags::default()));
+                    let send_res = sink.start_send((v.into(), WriteFlags::default()));
                     let res = match send_res {
                         Ok(_) => Ok(()),
                         Err(e) => Err(SinkErr::GrpcSinkErr(e.to_string())),
@@ -185,9 +197,10 @@ where
     }
 }
 
-impl<T> TracingSinker<T>
+impl<WrapReq, Req> TracingSinker<WrapReq, Req>
 where
-    T: SeqId + Debug + Clone + Send + 'static + Default + ChangeResend,
+    WrapReq: SeqId + Debug + Clone + Send + 'static + Default + ChangeResend,
+    Req: From<WrapReq> + Send + 'static,
 {
     pub fn with_limit(
         self,
@@ -195,18 +208,21 @@ where
         num: u64,
         per: Duration,
     ) -> (
-        Buffer<RateLimit<RingService<TracingSinker<T>, T>>, RingServiceReqEvent<T>>,
+        Buffer<
+            RateLimit<RingService<TracingSinker<WrapReq, Req>, WrapReq>>,
+            RingServiceReqEvent<WrapReq>,
+        >,
         Receiver<Waker>,
     ) {
         let service_builder = ServiceBuilder::new();
         let (wak_send, wak_recv) = crossbeam_channel::unbounded();
-        let ring_service: RingService<TracingSinker<T>, T> = RingService {
+        let ring_service: RingService<TracingSinker<WrapReq, Req>, WrapReq> = RingService {
             inner: self,
             ring: Default::default(),
             wak_sender: wak_send,
         };
         let service = service_builder
-            .buffer::<RingServiceReqEvent<T>>(buf)
+            .buffer::<RingServiceReqEvent<WrapReq>>(buf)
             .rate_limit(num, per)
             .service(ring_service);
         (service, wak_recv)
@@ -371,9 +387,10 @@ where
     }
 }
 
-impl<Req, Resp> TracingConnection<HandShaked, Req, Resp>
+impl<WrapReq, Req, Resp> TracingConnection<HandShaked, WrapReq, Req, Resp>
 where
-    Req: SeqId + Sized + Debug + Default + Clone + ChangeResend + Send + 'static,
+    WrapReq: SeqId + Sized + Debug + Default + Clone + ChangeResend + Send + 'static,
+    Req: Send + 'static + From<WrapReq>,
 {
     // buf: Request buf size
     // (num, per): Ratelimit config
@@ -383,11 +400,15 @@ where
         num: u64,
         per: Duration,
     ) -> (
-        Buffer<RateLimit<RingService<TracingSinker<Req>, Req>>, RingServiceReqEvent<Req>>,
+        Buffer<
+            RateLimit<RingService<TracingSinker<WrapReq, Req>, WrapReq>>,
+            RingServiceReqEvent<WrapReq>,
+        >,
         TracingStreamer<Resp>,
     ) {
         let tracing_sinker = TracingSinker {
             sink: self.sink.unwrap(),
+            marker: PhantomData,
         };
         let (service, wak_recv) = TracingSinker::with_limit(tracing_sinker, buf, num, per);
         let streamer = TracingStreamer {

@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::hash::Hash;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::time::Duration;
 
 pub fn hash_set_with_capacity<T: Hash + Eq>(capacity: usize) -> HashSet<T> {
     HashSet::with_capacity(capacity)
@@ -323,4 +324,22 @@ where
     V: Send,
     T: Send + SizePolicy<K, V>,
 {
+}
+
+pub trait CalcSleepTime {
+    fn caculate_sleep_time(&mut self, time_unit: Duration) -> Duration;
+}
+
+impl CalcSleepTime for usize {
+    fn caculate_sleep_time(&mut self, time_unit: Duration) -> Duration {
+        *self += 1;
+        if *self < 3 {
+            return time_unit;
+        } else {
+            if *self < 100 {
+                *self = 2;
+            }
+            time_unit.mul_f32(*self as f32)
+        }
+    }
 }
