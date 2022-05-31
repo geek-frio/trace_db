@@ -1,4 +1,4 @@
-pub(crate) mod chan;
+// pub(crate) mod chan;
 pub(crate) mod conn;
 
 use chrono::Local;
@@ -10,7 +10,7 @@ use tokio::time::{sleep, Duration};
 use tracing::{info_span, Instrument};
 use tracing_subscriber::fmt::Subscriber;
 
-use crate::chan::{SegmentDataWrap, SeqMail};
+// use crate::chan::{SegmentDataWrap, SeqMail};
 use crate::conn::Connector;
 use futures::SinkExt;
 
@@ -87,24 +87,24 @@ fn main() {
     );
 
     let exec_func = async {
-        let (sink, r, conn_id, _client) = Connector::sk_connect_handshake().await.unwrap();
-        let window_size = 64 * 100;
-        let mut sender = SeqMail::start_task(sink, r, window_size, conn_id)
-            .instrument(info_span!("start_task"))
-            .await;
-        let qps_set = QpsSetValue::val_of(&args.qps);
-        let mut seq_id = 1;
-        loop {
-            for i in 0..qps_set.record_num_every_10ms() {
-                let segment = mock_seg(conn_id, i as i32, seq_id);
-                let _ = sender.send(SegmentDataWrap(segment)).await;
-                seq_id += 1;
-            }
-            sleep(Duration::from_millis(10)).await;
-            if seq_id > 1000000 {
-                break;
-            }
-        }
+        // let (sink, r, conn_id, _client) = Connector::sk_connect_handshake().await.unwrap();
+        // let window_size = 64 * 100;
+        // let mut sender = SeqMail::start_task(sink, r, window_size, conn_id)
+        //     .instrument(info_span!("start_task"))
+        //     .await;
+        // let qps_set = QpsSetValue::val_of(&args.qps);
+        // let mut seq_id = 1;
+        // loop {
+        //     for i in 0..qps_set.record_num_every_10ms() {
+        //         let segment = mock_seg(conn_id, i as i32, seq_id);
+        //         let _ = sender.send(SegmentDataWrap(segment)).await;
+        //         seq_id += 1;
+        //     }
+        //     sleep(Duration::from_millis(10)).await;
+        //     if seq_id > 1000000 {
+        //         break;
+        //     }
+        // }
     }
     .instrument(info_span!("main"));
 

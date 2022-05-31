@@ -34,12 +34,6 @@ pub struct TracingConnection<Status, Req, Resp> {
     marker: PhantomData<Status>,
 }
 
-impl<Status, Req, Resp> Drop for TracingConnection<Status, Req, Resp> {
-    fn drop(&mut self) {
-        todo!();
-    }
-}
-
 pub struct Created;
 pub struct HandShaked;
 
@@ -105,24 +99,26 @@ pub enum SinkEvent<Req> {
     PushMsg(Option<Req>),
 }
 
-impl<T> Ack for SinkEvent<T> {
-    fn is_ack(&self) -> bool {
-        todo!()
-    }
-}
-
-impl<T> Default for SinkEvent<T> {
-    fn default() -> Self {
-        todo!()
-    }
-}
-
-impl<T> SeqId for SinkEvent<T>
+impl<Req> Default for SinkEvent<Req>
 where
-    T: SeqId,
+    Req: Default,
+{
+    fn default() -> Self {
+        SinkEvent::PushMsg(Some(Default::default()))
+    }
+}
+
+impl<Req> SeqId for SinkEvent<Req>
+where
+    Req: SeqId,
 {
     fn seq_id(&self) -> usize {
-        todo!()
+        match self {
+            SinkEvent::PushMsg(o) => match o {
+                None => 0,
+                Some(r) => r.seq_id(),
+            },
+        }
     }
 }
 
@@ -257,7 +253,7 @@ pub enum RingServiceReqEvent<Req: Debug> {
 }
 
 pub trait ChangeResend {
-    fn change(&mut self);
+    fn change_resend_meta(&mut self);
 }
 
 impl<S, Request> Service<RingServiceReqEvent<Request>> for RingService<S, Request>
@@ -311,7 +307,7 @@ where
                 let futs = ring_iter
                     .map(|req| {
                         let mut req = req.clone();
-                        req.change();
+                        req.change_resend_meta();
                         self.inner.call(SinkEvent::PushMsg(Some(req)))
                     })
                     .collect::<Vec<_>>();
@@ -332,8 +328,17 @@ pub struct TracingStreamer<Resp> {
     wak_recv: Receiver<Waker>,
 }
 
-trait Ack {
+pub trait Ack {
     fn is_ack(&self) -> bool;
+}
+
+impl<T> Ack for T
+where
+    T: Fn(&T) -> bool,
+{
+    fn is_ack(&self) -> bool {
+        self(self)
+    }
 }
 
 impl<Resp> Stream for TracingStreamer<Resp>
@@ -366,4 +371,29 @@ where
     }
 }
 
-impl<T> TracingStreamer<T> {}
+impl<Req, Resp> TracingConnection<HandShaked, Req, Resp>
+where
+    Req: SeqId + Sized + Debug + Default + Clone + ChangeResend + Send + 'static,
+{
+    // buf: Request buf size
+    // (num, per): Ratelimit config
+    pub fn split(
+        self,
+        buf: usize,
+        num: u64,
+        per: Duration,
+    ) -> (
+        Buffer<RateLimit<RingService<TracingSinker<Req>, Req>>, RingServiceReqEvent<Req>>,
+        TracingStreamer<Resp>,
+    ) {
+        let tracing_sinker = TracingSinker {
+            sink: self.sink.unwrap(),
+        };
+        let (service, wak_recv) = TracingSinker::with_limit(tracing_sinker, buf, num, per);
+        let streamer = TracingStreamer {
+            recv: self.recv.unwrap(),
+            wak_recv,
+        };
+        (service, streamer)
+    }
+}
