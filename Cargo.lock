@@ -1276,7 +1276,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "skdb-ctl"
+name = "skdb-proxy"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1289,6 +1289,7 @@ dependencies = [
  "skdb",
  "skproto",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1600,6 +1601,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a89fd63ad6adf737582df5db40d286574513c69a11dac5214dc3b5603d6713e"
 dependencies = [
  "futures-core",
+ "futures-util",
+ "pin-project",
  "pin-project-lite",
  "tokio",
  "tokio-util",

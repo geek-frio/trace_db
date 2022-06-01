@@ -8,7 +8,7 @@ version = "0.1.0"
 [workspace]
 members = [
     "cmd/skdb-server",
-    "cmd/skdb-ctl",
+    "cmd/skdb-proxy",
     "cmd/skdb-test",
     "skproto",
 ]
@@ -40,7 +40,7 @@ tokio-io = "0.1.13"
 async-trait = "0.1.53"
 regex = "1.5.5"
 pin-project = "1"
-tower = { version = "0.4.12", features = ["limit", "buffer"] }
+tower = { version = "0.4.12", features = ["limit", "buffer", "util"] }
 
 [dev-dependencies]
 pretty_assertions = "1"

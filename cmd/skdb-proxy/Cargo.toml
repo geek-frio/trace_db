@@ -1,5 +1,5 @@
 [package]
-name = "skdb-ctl"
+name = "skdb-proxy"
 version = "0.1.0"
 edition = "2021"
 
@@ -19,3 +19,4 @@ anyhow = "1.0.56"
 tracing = "0.1.5"
 tracing-subscriber = { version = "0.3.11", features = ["fmt", "std"] }
 uuid = {version = "0.8", features = ["serde", "v4"]}
+tower = { version = "0.4", features = ["limit", "buffer", "util"] }

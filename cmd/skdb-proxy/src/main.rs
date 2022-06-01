@@ -1,24 +1,61 @@
-use grpc_cli::{gen_hand_pkt, handshake};
-use grpc_cli::{init_grpc_chan, init_push_msg_conn};
-use skdb::com::util::CalcSleepTime;
-use skdb::{client::*, TOKIO_RUN};
-use skproto::tracing::{Meta, Meta_RequestType, SegmentData, SegmentRes};
-use std::time::Duration;
-use tokio::time::sleep;
-use tracing::{error, info_span, Instrument};
+use futures::Future;
+use grpc_cli::{handshake, WrapSegmentData};
+use skdb::client::{RingServiceErr, SinkErr};
+use skdb::com::ring::RingQueueError;
+use skdb::{client::RingServiceReqEvent, TOKIO_RUN};
+use std::task::Poll;
+use std::{marker::PhantomData, time::Duration};
+use tokio::sync::mpsc::unbounded_channel;
+use tower::{Service, ServiceExt};
+use tracing::{error, info};
 use tracing_subscriber::fmt::Subscriber;
 
 mod grpc_cli;
+mod serv;
 
 fn main() {
     let fmt_scriber = Subscriber::new();
     tracing::subscriber::set_global_default(fmt_scriber).expect("Set global subscriber");
 
+    let (send, mut recv) = unbounded_channel::<WrapSegmentData>();
     let exec = async {
-        let (tracing_conn, client) =
-            handshake("127.0.0.1:9000", 20000, 1, Duration::from_secs(1)).await;
+        let (tracing_conn, client) = handshake("127.0.0.1:9000").await;
+        let (mut service, client) = tracing_conn.split(20000, 10, Duration::from_secs(1));
 
-        tracing_conn.split(20000, 10, Duration::from_secs(1));
+        loop {
+            let wrap_segment = recv.recv().await;
+            match wrap_segment {
+                Some(seg) => {
+                    let event = RingServiceReqEvent::Msg(seg);
+                    // Currently our service poll ready don't throw Error
+                    let _ = service.ready().await;
+
+                    let req_res = service.call(event).await;
+                    if let Err(e) = req_res {
+                        let err = e.downcast::<RingServiceErr<SinkErr, RingQueueError>>();
+                        if let Ok(e) = err {
+                            match *e {
+                                RingServiceErr::Left(sink_err) => {
+                                    if let SinkErr::GrpcSinkErr(e) = sink_err {
+                                        error!("Grpc sink has met serious problem, we should drop current connection ");
+                                        break;
+                                    }
+                                }
+                                RingServiceErr::Right(ring_queue_err) => match ring_queue_err {
+                                    RingQueueError::QueueIsFull(cur, size) => {}
+                                    RingQueueError::SendNotOneByOne(cur_id) => {
+                                        error!(%cur_id, "Data seqid is sent not one by one");
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+                None => {
+                    info!("Sender has been dropped..");
+                }
+            }
+        }
     };
     TOKIO_RUN.block_on(exec);
 }
