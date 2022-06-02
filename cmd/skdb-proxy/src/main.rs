@@ -42,9 +42,11 @@ fn main() {
                                     }
                                 }
                                 RingServiceErr::Right(ring_queue_err) => match ring_queue_err {
-                                    RingQueueError::QueueIsFull(cur, size) => {}
-                                    RingQueueError::SendNotOneByOne(cur_id) => {
-                                        error!(%cur_id, "Data seqid is sent not one by one");
+                                    RingQueueError::Full(_, _) => {
+                                        unreachable!("Every request will be called poll ready, poll ready will check the ringqueue's length");
+                                    }
+                                    RingQueueError::InvalidAckId(cur_id, seq_id) => {
+                                        error!("Invalid ackId, maybe we got a error response from remote peer, cur_id:{}, seq_id:{}", cur_id, seq_id);
                                     }
                                 },
                             }

@@ -1,264 +1,201 @@
-use std::fmt::{Debug, Display};
-use std::iter::Chain;
-use std::slice::Iter;
+use std::collections::{linked_list::Iter, LinkedList};
 
-use tracing::instrument;
+use super::ack::DEFAULT_WIN_SIZE;
 
-pub trait SeqId {
-    fn seq_id(&self) -> usize;
-}
-
-// RingQueue's length should be bigger than receiver window's length.
-// We only care about data between ack position and send position
 #[derive(Debug)]
-pub struct RingQueue<E> {
-    data: Box<[E]>,
-    ack_pos: i32,
-    send_pos: i32,
-    size: i32,
-    cur_id: i32,
-    start_id: i32,
+pub struct RingQueue<T>
+where
+    T: std::fmt::Debug,
+{
+    start_id: i64,
+    cur_id: i64,
+    size: usize,
+    data: LinkedList<Element<T>>,
 }
 
-impl<E> Default for RingQueue<E>
+impl<T> Default for RingQueue<T>
 where
-    E: SeqId + Sized + Debug + Default + Clone,
+    T: std::fmt::Debug,
 {
     fn default() -> Self {
-        RingQueue::new(64 * 100)
+        RingQueue::new(DEFAULT_WIN_SIZE as usize)
     }
 }
 
-pub enum RingIter<'a, T> {
-    Chain(Chain<Iter<'a, T>, Iter<'a, T>>),
-    Single(Iter<'a, T>),
-    Empty,
+pub struct RangeIter<'a, T>
+where
+    T: std::fmt::Debug,
+{
+    data: Iter<'a, Element<T>>,
+    start_id: i64,
+    end_id: i64,
 }
 
-pub type QueueLength = i32;
-pub type CurId = i32;
-
-#[derive(PartialEq, Debug)]
+#[derive(Debug)]
 pub enum RingQueueError {
-    SendNotOneByOne(CurId),
-    QueueIsFull(CurId, QueueLength),
+    // cur_id, start_id
+    Full(i64, i64),
+    // cur_id, start_id
+    InvalidAckId(i64, i64),
 }
 
-impl Display for RingQueueError {
+impl std::fmt::Display for RingQueueError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("{:?}", self))
     }
 }
 
-impl<'a, T> Iterator for RingIter<'a, T> {
-    type Item = &'a T;
+#[derive(Debug)]
+struct Element<T: std::fmt::Debug>(i64, T);
 
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Chain(c) => c.next(),
-            Self::Single(i) => i.next(),
-            _ => None,
+impl<T> RingQueue<T>
+where
+    T: std::fmt::Debug,
+{
+    pub fn new(size: usize) -> RingQueue<T> {
+        RingQueue {
+            start_id: 1,
+            cur_id: 0,
+            size,
+            data: LinkedList::new(),
         }
+    }
+
+    pub fn allocate(&mut self) -> Result<i64, RingQueueError> {
+        if self.cur_id != 0 && self.cur_id - self.start_id + 1 == self.size as i64 {
+            return Err(RingQueueError::Full(self.cur_id, self.start_id));
+        }
+        self.cur_id += 1;
+        return Ok(self.cur_id);
+    }
+
+    pub fn push(&mut self, el: T) -> Result<i64, RingQueueError> {
+        let id = self.allocate()?;
+        self.data.push_back(Element(id, el));
+        return Ok(id);
+    }
+
+    pub fn ack(&mut self, ack_id: i64) -> Result<(), RingQueueError> {
+        if ack_id > self.cur_id {
+            return Err(RingQueueError::InvalidAckId(self.cur_id, self.start_id));
+        }
+        let poped_size = ack_id - self.start_id + 1;
+        for _ in 0..poped_size {
+            let _ = self.data.pop_front();
+        }
+        self.start_id = ack_id + 1;
+        Ok(())
+    }
+
+    pub fn not_acked_len(&self) -> i64 {
+        self.cur_id - self.start_id + 1
+    }
+
+    pub fn is_full(&self) -> bool {
+        (self.cur_id - self.start_id + 1) == (self.size as i64)
+    }
+
+    pub fn range_iter(&self, range_start: i64) -> RangeIter<T> {
+        let data = self.data.iter();
+        RangeIter {
+            data,
+            start_id: range_start,
+            end_id: self.cur_id,
+        }
+    }
+
+    pub fn not_ack_iter(&self) -> RangeIter<T> {
+        self.range_iter(self.start_id)
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    pub fn len(&self) -> usize {
+        if self.cur_id == 0 {
+            return 0;
+        }
+        (self.cur_id - self.start_id + 1) as usize
     }
 }
 
-impl<E> RingQueue<E>
+impl<'a, T> Iterator for RangeIter<'a, T>
 where
-    E: Sized + Debug + Default + Clone,
+    T: std::fmt::Debug,
 {
-    pub fn new(size: usize) -> RingQueue<E> {
-        let internal = vec![Default::default(); size];
-        RingQueue {
-            data: internal.into_boxed_slice(),
-            ack_pos: -1,
-            send_pos: -1,
-            size: size as i32,
-            cur_id: 0,
-            start_id: -1,
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(el) = self.data.next() {
+            if el.0 < self.start_id {
+                continue;
+            } else if el.0 > self.end_id {
+                break;
+            } else {
+                return Some(&el.1);
+            }
         }
-    }
-
-    // When you get a QueueIsFull error, you should stop
-    // sending new msg until [ack position] follow up [send position]
-    pub fn send(&mut self, el: E) -> Result<i32, RingQueueError> {
-        if self.is_full() {
-            return Err(RingQueueError::QueueIsFull(self.cur_id, self.size));
-        }
-        self.send_pos += 1;
-        self.cur_id += 1;
-
-        if self.start_id == -1 {
-            self.start_id = self.cur_id;
-        }
-
-        let _ = std::mem::replace(&mut self.data[self.send_pos as usize], el);
-        Ok(self.cur_id)
-    }
-
-    #[instrument]
-    pub fn check(&self, el: &E) -> Result<(), RingQueueError> {
-        if self.is_full() {
-            return Err(RingQueueError::QueueIsFull(self.cur_id, self.size));
-        }
-        return Ok(());
-    }
-
-    pub fn ack(&mut self, seq_id: i32) {
-        // let offset = seq_id - self.start_id;
-        // // Invalid seq_id
-        // if offset >= (self.size - 1) {
-        //     return;
-        // }
-
-        // self.start_id += offset;
-        // self.ack_pos = offset;
-        // self.start_id += offset;
-        // if self.ack_pos == self.size - 1 {
-        //     self.ack_pos = 0;
-        //     self.send_pos = 0;
-        //     if seq_id >= i32::MAX - 64 * 100 * 10 {
-        //         self.start_id = 0;
-        //         self.cur_id = 0;
-        //     } else {
-        //         self.start_id = self.cur_id;
-        //     }
-        // }
-    }
-
-    pub fn cur_seq_id(&self) -> i32 {
-        self.cur_id
-    }
-
-    // send_pos is ack_pos's neighbour
-    pub fn is_full(&self) -> bool {
-        self.send_pos == self.size - 1
-    }
-
-    pub fn not_ack_iter(&self) -> RingIter<'_, E> {
-        if self.ack_pos > self.send_pos {
-            let start = (self.ack_pos + 1) % self.size;
-            let left = self.data[start as usize..].iter();
-            let right = self.data[0..self.send_pos as usize + 1].iter();
-            RingIter::Chain(left.chain(right))
-        } else if self.ack_pos == self.send_pos {
-            RingIter::Empty
-        } else {
-            let start = (self.ack_pos + 1) % self.size;
-            RingIter::Single(self.data[start as usize..self.send_pos as usize + 1].iter())
-        }
-    }
-
-    #[allow(dead_code)]
-    fn is_acked(&self) -> bool {
-        (self.send_pos == 0) || (self.send_pos - 1) == self.ack_pos
+        None
     }
 }
 
 #[cfg(test)]
-mod ring_tests {
+mod ring1_test {
     use super::*;
 
-    #[derive(Debug, Default, Clone, PartialEq)]
-    struct Element(i32, bool);
-
-    // impl SeqId for Element {
-    //     fn seq_id(&self) -> usize {
-    //         self.0
-    //     }
-    // }
-
-    impl From<i32> for Element {
-        fn from(i: i32) -> Self {
-            Element(i, false)
-        }
-    }
-
     #[test]
-    fn test_one_by_one_ack() {
-        let mut ring: RingQueue<Element> = RingQueue::new(100);
-        for _ in 0..100000 {
-            let seq_id = ring.send(1i32.into()).unwrap();
-            ring.ack(seq_id);
-        }
-        assert!(ring.is_acked());
-    }
+    fn test_basics() {
+        let mut queue = RingQueue::<i64>::new(10);
+        let mut pushed_ids = vec![];
 
-    #[test]
-    fn test_hundred_by_hundred() {
-        let mut ring: RingQueue<Element> = RingQueue::new(100);
-        for _ in 0..100000 {
-            let mut max_id = 0;
-            for _ in 0..100 {
-                max_id = ring.send(1i32.into()).unwrap();
+        // 1.Test Full
+        for i in 1..11 {
+            let id = queue.push(i).unwrap();
+            pushed_ids.push(id);
+        }
+        assert!(queue.push(10).is_err());
+
+        // 2.Test AckAll
+        let _ = queue.ack(10);
+        assert!(queue.not_acked_len() == 0);
+        println!("queue is:{:?}", queue);
+
+        // 3.Test Ack one by one
+        for i in 1..100000 {
+            let id = queue.push(i).unwrap();
+            queue.ack(id).unwrap();
+        }
+        assert!(0 == queue.not_acked_len());
+
+        // 4.Test Ack step 10
+        let mut queue = RingQueue::<i64>::new(10);
+        for i in 1..100001 {
+            let id = queue.push(i).unwrap();
+            if id % 4 == 0 {
+                queue.ack(id).unwrap();
             }
-            ring.ack(max_id);
         }
-        assert!(ring.is_acked());
-    }
+        println!("queue is:{:?}", queue);
+        assert!(0 == queue.not_acked_len());
 
-    #[test]
-    fn test_send_first_full_not_move_ack() {
-        let mut ring: RingQueue<Element> = RingQueue::new(100);
-        for i in 0..100 {
-            let _ = ring.send(i.into());
+        let mut queue = RingQueue::<i64>::new(100);
+        let mut collect = vec![];
+        for i in 1..101 {
+            let seq_id = queue.push(i).unwrap();
+            collect.push(seq_id);
         }
-        let r = ring.send(1i32.into());
-        assert!(r.is_err());
-    }
+        let iter = queue.range_iter(90);
+        let a = iter.collect::<Vec<&i64>>();
+        assert_eq!(a.len(), 11);
 
-    #[test]
-    fn test_send_and_then_ack() {
-        let mut ring: RingQueue<Element> = RingQueue::new(100);
-        let mut seq_ids = Vec::new();
-        for i in 0..2i32 {
-            let seq_id = ring.send(i.into()).unwrap();
-            seq_ids.push(seq_id);
-        }
-        for v in seq_ids {
-            ring.ack(v);
-        }
-        assert!(ring.is_acked());
-    }
+        let mut queue = RingQueue::<i64>::new(10);
+        queue.push(1).unwrap();
+        let id = queue.push(2).unwrap();
+        queue.push(3).unwrap();
 
-    #[test]
-    fn test_send_ack_iter_test_cross_vec_length() {
-        let mut ring: RingQueue<Element> = RingQueue::new(100);
-        for i in 0..50 {
-            let seq_id = ring.send(i.into()).unwrap();
-            ring.ack(seq_id);
-        }
-
-        let mut sent_ids = vec![];
-        let v: Vec<Element> = Vec::new();
-        for i in 0..60 {
-            let seq_id = ring.send(i.into()).unwrap();
-            sent_ids.push(seq_id);
-        }
-
-        let i = ring.not_ack_iter();
-        let mut iter = i.zip(v.into_iter());
-        while let Some((e1, e2)) = iter.next() {
-            assert!(*e1 == e2);
-        }
-    }
-
-    #[test]
-    fn test_send_ack_iter_not_cross_vec_length() {
-        let start_element = 1i32;
-        let mut ring: RingQueue<Element> = RingQueue::new(100);
-
-        let bound1 = start_element + 50;
-        for i in start_element..bound1 {
-            let _ = ring.send(i.into());
-            ring.ack(i);
-        }
-        for i in bound1..bound1 + 20 {
-            let _ = ring.send(i.into());
-        }
-        let check_els = 51i32..71i32;
-        let mut iter = ring.not_ack_iter().zip(check_els);
-        while let Some((e1, e2)) = iter.next() {
-            assert!(*e1 == <i32 as Into<Element>>::into(e2));
-        }
+        let _ = queue.ack(id);
+        println!("current queue is:{:?}", queue);
+        println!("i64 max:{}", i64::MAX)
     }
 }

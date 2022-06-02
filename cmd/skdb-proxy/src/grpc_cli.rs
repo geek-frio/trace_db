@@ -4,7 +4,7 @@ use anyhow::Error as AnyError;
 use grpcio::{Channel, ChannelBuilder, Environment};
 use skdb::{
     client::{ChangeResend, Created, HandShaked, TracingConnection},
-    com::{ring::SeqId, util::CalcSleepTime},
+    com::util::CalcSleepTime,
 };
 use skproto::tracing::{Meta, Meta_RequestType, SegmentData, SegmentRes, SkyTracingClient};
 use tokio::time::sleep;
@@ -15,18 +15,25 @@ pub(crate) fn init_grpc_chan(addr: &str) -> Channel {
     ChannelBuilder::new(Arc::new(env)).connect(addr)
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct WrapSegmentData(SegmentData);
-
-impl SeqId for WrapSegmentData {
-    fn seq_id(&self) -> usize {
-        self.0.get_meta().get_seqId() as usize
-    }
-}
 
 impl ChangeResend for WrapSegmentData {
     fn change_resend_meta(&mut self) {
         self.0.mut_meta().field_type = Meta_RequestType::NEED_RESEND;
+    }
+
+    fn fill_seq_id(&mut self, seq_id: i64) {
+        self.0.mut_meta().seqId = seq_id;
+    }
+
+    fn seq_id(&self) -> Option<i64> {
+        let s = self.0.get_meta().get_seqId();
+        if s == 0 {
+            return None;
+        } else {
+            return Some(s);
+        }
     }
 }
 

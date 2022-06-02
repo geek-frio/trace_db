@@ -7,7 +7,6 @@ pub mod index;
 pub mod mail;
 pub mod redis;
 pub mod ring;
-pub mod ring1;
 pub mod router;
 pub mod sched;
 pub mod tracing;

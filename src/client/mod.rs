@@ -25,8 +25,8 @@ use std::{marker::PhantomData, time::Duration};
 use tower::buffer::Buffer;
 use tower::{limit::RateLimit, Service, ServiceBuilder};
 
+use crate::com::ring::RingQueue;
 use crate::com::ring::RingQueueError;
-use crate::com::ring::{RingQueue, SeqId};
 
 pub struct TracingConnection<Status, WrapReq, Req, Resp> {
     sink: Option<StreamingCallSink<Req>>,
@@ -118,20 +118,6 @@ where
     }
 }
 
-impl<Req> SeqId for SinkEvent<Req>
-where
-    Req: SeqId,
-{
-    fn seq_id(&self) -> usize {
-        match self {
-            SinkEvent::PushMsg(o) => match o {
-                None => 0,
-                Some(r) => r.seq_id(),
-            },
-        }
-    }
-}
-
 impl Error for SinkErr {}
 
 impl Display for SinkErr {
@@ -199,8 +185,8 @@ where
 
 impl<WrapReq, Req> TracingSinker<WrapReq, Req>
 where
-    WrapReq: SeqId + Debug + Clone + Send + 'static + Default + ChangeResend,
-    Req: From<WrapReq> + Send + 'static,
+    WrapReq: Debug + Send + 'static + ChangeResend + Clone,
+    Req: From<WrapReq> + Send + 'static + Clone,
 {
     pub fn with_limit(
         self,
@@ -231,7 +217,7 @@ where
 
 pub struct RingService<S, Req>
 where
-    Req: Sized + Debug + Clone + Default,
+    Req: Debug + Clone,
 {
     inner: S,
     ring: RingQueue<Req>,
@@ -270,6 +256,8 @@ pub enum RingServiceReqEvent<Req: Debug> {
 
 pub trait ChangeResend {
     fn change_resend_meta(&mut self);
+    fn fill_seq_id(&mut self, seq_id: i64);
+    fn seq_id(&self) -> Option<i64>;
 }
 
 impl<S, Request> Service<RingServiceReqEvent<Request>> for RingService<S, Request>
@@ -278,7 +266,7 @@ where
     S::Response: Send + 'static,
     S::Error: Send + 'static,
     S::Future: Send + 'static,
-    Request: SeqId + Sized + Debug + Default + Clone + ChangeResend,
+    Request: Debug + Clone + ChangeResend,
 {
     type Response = Either<(), S::Response>;
 
@@ -299,14 +287,16 @@ where
     fn call(&mut self, req: RingServiceReqEvent<Request>) -> Self::Future {
         match req {
             RingServiceReqEvent::Ack(r) => {
-                todo!();
-                // self.ring.ack(r.seq_id());
+                if let Some(ack_seq_id) = r.seq_id() {
+                    let _ = self.ring.ack(ack_seq_id);
+                }
                 return Box::pin(futures::future::ready(Ok(Either::Left(()))));
             }
-            RingServiceReqEvent::Msg(req) => {
-                let res = self.ring.send(req.clone());
+            RingServiceReqEvent::Msg(mut req) => {
+                let res = self.ring.push(req.clone());
                 match res {
-                    Ok(_) => {
+                    Ok(seq_id) => {
+                        req.fill_seq_id(seq_id);
                         let inner_res = self.inner.call(SinkEvent::PushMsg(Some(req)));
                         return Box::pin(
                             inner_res
@@ -320,10 +310,11 @@ where
                 }
             }
             RingServiceReqEvent::NeedResend(_) => {
-                let ring_iter = self.ring.not_ack_iter();
-                let futs = ring_iter
-                    .map(|req| {
-                        let mut req = req.clone();
+                let reqs = self.ring.not_ack_iter().collect::<Vec<&Request>>();
+                let futs = reqs
+                    .into_iter()
+                    .map(|r| {
+                        let mut req = r.clone();
                         req.change_resend_meta();
                         self.inner.call(SinkEvent::PushMsg(Some(req)))
                     })
@@ -390,8 +381,8 @@ where
 
 impl<WrapReq, Req, Resp> TracingConnection<HandShaked, WrapReq, Req, Resp>
 where
-    WrapReq: SeqId + Sized + Debug + Default + Clone + ChangeResend + Send + 'static,
-    Req: Send + 'static + From<WrapReq>,
+    WrapReq: Debug + Clone + ChangeResend + Send + 'static,
+    Req: Send + 'static + From<WrapReq> + Clone,
 {
     // buf: Request buf size
     // (num, per): Ratelimit config
