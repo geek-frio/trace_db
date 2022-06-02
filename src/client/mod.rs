@@ -299,7 +299,8 @@ where
     fn call(&mut self, req: RingServiceReqEvent<Request>) -> Self::Future {
         match req {
             RingServiceReqEvent::Ack(r) => {
-                self.ring.ack(r.seq_id());
+                todo!();
+                // self.ring.ack(r.seq_id());
                 return Box::pin(futures::future::ready(Ok(Either::Left(()))));
             }
             RingServiceReqEvent::Msg(req) => {
