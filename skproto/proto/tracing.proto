@@ -3,10 +3,39 @@ syntax = "proto3";
 package tracing;
 
 service SkyTracing {
-    rpc PushMsgs(stream StreamReqData) returns (stream StreamResData) {}
     rpc PushSegments(stream SegmentData) returns (stream SegmentRes) {}
     rpc QuerySkySegments(SkyQueryParam) returns (SkySegmentRes) {}
     rpc DistQuerySkySegments(SkyQueryParam) returns (SkySegmentRes) {}
+
+    rpc BatchReqSegments(BatchSegmentData) returns (Stat) {}
+}
+
+message BatchSegmentData {
+    repeated SegmentData datas = 1;
+}
+
+message Stat {
+    bool ok = 1;
+    oneof return_stat {
+        Err err = 2;
+        Progress prog = 3;
+    }
+}
+
+message Progress {
+    int32 conn_id = 1; 
+    int64 max_seq_id = 2;
+    int64 cur_ack_id = 3;
+}
+
+message Err {
+    enum ErrCode {
+        RateLimit = 0;
+        InvalidData = 1;
+        Unexpected = 2;
+    }
+    ErrCode code = 1; 
+    string desc = 2;
 }
 
 message SkyQueryParam {
@@ -27,14 +56,6 @@ message SkySegmentRes {
 message ScoreDoc {
     float score = 1;
     bytes doc = 2;
-}
-
-message StreamReqData {
-    string data = 1;
-}
-
-message StreamResData {
-    string data = 1;
 }
 
 message SegmentData {
