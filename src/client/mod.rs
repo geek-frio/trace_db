@@ -151,9 +151,9 @@ pub struct TracingSinker<WrapReq, Req> {
 impl<WrapReq, Req> Service<SinkEvent<WrapReq>> for TracingSinker<WrapReq, Req>
 where
     Req: Send + 'static,
-    WrapReq: Into<Req>,
+    WrapReq: Into<Req> + ChangeResend,
 {
-    type Response = ();
+    type Response = Option<i64>;
 
     type Error = SinkErr;
 
@@ -168,12 +168,12 @@ where
         match req {
             SinkEvent::PushMsg(req) => {
                 if let Some(v) = req {
+                    let seq_id = v.seq_id();
                     let send_res = sink.start_send((v.into(), WriteFlags::default()));
                     let res = match send_res {
-                        Ok(_) => Ok(()),
+                        Ok(_) => Ok(seq_id),
                         Err(e) => Err(SinkErr::GrpcSinkErr(e.to_string())),
                     };
-
                     return Box::pin(futures::future::ready(res));
                 } else {
                     return Box::pin(futures::future::ready(Err(SinkErr::NoReq)));
@@ -334,25 +334,14 @@ pub struct TracingStreamer<Resp> {
     #[pin]
     recv: ClientDuplexReceiver<Resp>,
     wak_recv: Receiver<Waker>,
+    check_ack: Box<dyn Fn(&Resp) -> bool>,
 }
 
-pub trait Ack {
-    fn is_ack(&self) -> bool;
-}
+// pub trait Ack {
+//     fn is_ack(&self) -> bool;
+// }
 
-impl<T> Ack for T
-where
-    T: Fn(&T) -> bool,
-{
-    fn is_ack(&self) -> bool {
-        self(self)
-    }
-}
-
-impl<Resp> Stream for TracingStreamer<Resp>
-where
-    Resp: Ack,
-{
+impl<Resp> Stream for TracingStreamer<Resp> {
     type Item = Result<Resp, AnyError>;
 
     fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -365,7 +354,7 @@ where
             Some(res) => {
                 let res = res
                     .map(|v| {
-                        if v.is_ack() {
+                        if (*this.check_ack)(&v) {
                             if let Ok(waker) = wak.try_recv() {
                                 waker.wake();
                             }
@@ -384,13 +373,12 @@ where
     WrapReq: Debug + Clone + ChangeResend + Send + 'static,
     Req: Send + 'static + From<WrapReq> + Clone,
 {
-    // buf: Request buf size
-    // (num, per): Ratelimit config
     pub fn split(
         self,
         buf: usize,
         num: u64,
         per: Duration,
+        f: Box<dyn Fn(&Resp) -> bool>,
     ) -> (
         Buffer<
             RateLimit<RingService<TracingSinker<WrapReq, Req>, WrapReq>>,
@@ -406,6 +394,7 @@ where
         let streamer = TracingStreamer {
             recv: self.recv.unwrap(),
             wak_recv,
+            check_ack: f,
         };
         (service, streamer)
     }

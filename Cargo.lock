@@ -1288,6 +1288,7 @@ dependencies = [
  "futures-util",
  "grpcio",
  "lazy_static",
+ "rand 0.8.5",
  "skdb",
  "skproto",
  "tokio",

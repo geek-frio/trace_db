@@ -2,6 +2,7 @@ use grpc_cli::{handshake, WrapSegmentData};
 use skdb::client::{RingServiceErr, SinkErr};
 use skdb::com::ring::RingQueueError;
 use skdb::{client::RingServiceReqEvent, TOKIO_RUN};
+use skproto::tracing::{Meta_RequestType, SegmentRes};
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tower::{Service, ServiceExt};
@@ -18,7 +19,11 @@ fn main() {
     let (send, mut recv) = unbounded_channel::<WrapSegmentData>();
     let exec = async {
         let (tracing_conn, client) = handshake("127.0.0.1:9000").await;
-        let (mut service, client) = tracing_conn.split(20000, 10, Duration::from_secs(1));
+        let ack_fun = Box::new(|arg: &SegmentRes| {
+            let meta = arg.get_meta();
+            meta.get_field_type() == Meta_RequestType::TRANS_ACK
+        });
+        let (mut service, client) = tracing_conn.split(20000, 10, Duration::from_secs(1), ack_fun);
 
         loop {
             let wrap_segment = recv.recv().await;
@@ -35,7 +40,7 @@ fn main() {
                             match *e {
                                 RingServiceErr::Left(sink_err) => {
                                     if let SinkErr::GrpcSinkErr(e) = sink_err {
-                                        error!("Grpc sink has met serious problem, we should drop current connection ");
+                                        error!("Grpc sink has met serious problem, we should drop current connection,e:{}", e);
                                         break;
                                     }
                                 }

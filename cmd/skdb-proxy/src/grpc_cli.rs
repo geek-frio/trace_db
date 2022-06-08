@@ -73,7 +73,7 @@ pub(crate) fn gen_hand_pkt() -> SegmentData {
     segment
 }
 
-fn check_hand_resp(resp: SegmentRes, req: SegmentData) -> (bool, i32) {
+fn check_hand_resp(_: SegmentRes, req: SegmentData) -> (bool, i32) {
     (true, req.get_meta().connId)
 }
 
