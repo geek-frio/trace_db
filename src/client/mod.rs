@@ -337,10 +337,6 @@ pub struct TracingStreamer<Resp> {
     check_ack: Box<dyn Fn(&Resp) -> bool>,
 }
 
-// pub trait Ack {
-//     fn is_ack(&self) -> bool;
-// }
-
 impl<Resp> Stream for TracingStreamer<Resp> {
     type Item = Result<Resp, AnyError>;
 

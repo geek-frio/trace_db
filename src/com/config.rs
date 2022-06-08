@@ -15,6 +15,7 @@ pub struct GlobalConfig {
     pub env: String,
     pub log_path: String,
     pub app_name: String,
+    pub server_ip: String,
 }
 
 pub struct ConfigManager;

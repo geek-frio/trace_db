@@ -45,7 +45,7 @@ impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
         let ttl_set = RedisTTLSet { ttl: 5 };
         let mut conn = redis_client.get_connection()?;
         // TODO generate
-        ttl_set.push(&mut conn, config.redis_addr.clone())?;
+        ttl_set.push(&mut conn, config.server_ip.clone())?;
         let (s, r) = unbounded::<Vec<T>>();
         // Wait for client init connection ready
         watcher.watch(cb, s);
@@ -204,6 +204,7 @@ where
         let redis_client = self.redis_client.clone();
         let redis_ttl = RedisTTLSet { ttl: 5 };
         let redis_addr = self.config.redis_addr.clone();
+        let grpc_port = self.config.grpc_port;
         thread::spawn(move || {
             let mut last: Vec<String> = Vec::new();
             let mut conn = redis_client.get_connection();
@@ -215,7 +216,7 @@ where
                         Ok(records) => {
                             let addrs = records
                                 .into_iter()
-                                .map(|r| r.sub_key)
+                                .map(|r| format!("{}:{}", r.sub_key, grpc_port).to_string())
                                 .collect::<Vec<String>>();
 
                             if last != addrs {
