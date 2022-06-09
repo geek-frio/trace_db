@@ -25,6 +25,8 @@ use std::{marker::PhantomData, time::Duration};
 use tower::buffer::Buffer;
 use tower::{limit::RateLimit, Service, ServiceBuilder};
 
+pub mod cluster;
+
 use crate::com::ring::RingQueue;
 use crate::com::ring::RingQueueError;
 
@@ -334,7 +336,7 @@ pub struct TracingStreamer<Resp> {
     #[pin]
     recv: ClientDuplexReceiver<Resp>,
     wak_recv: Receiver<Waker>,
-    check_ack: Box<dyn Fn(&Resp) -> bool>,
+    check_ack: Box<dyn Fn(&Resp) -> bool + Send + 'static>,
 }
 
 impl<Resp> Stream for TracingStreamer<Resp> {
@@ -374,12 +376,9 @@ where
         buf: usize,
         num: u64,
         per: Duration,
-        f: Box<dyn Fn(&Resp) -> bool>,
+        f: Box<dyn Fn(&Resp) -> bool + Send + 'static>,
     ) -> (
-        Buffer<
-            RateLimit<RingService<TracingSinker<WrapReq, Req>, WrapReq>>,
-            RingServiceReqEvent<WrapReq>,
-        >,
+        impl Service<RingServiceReqEvent<WrapReq>>,
         TracingStreamer<Resp>,
     ) {
         let tracing_sinker = TracingSinker {

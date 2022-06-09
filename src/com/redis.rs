@@ -7,7 +7,7 @@ use regex::Regex;
 type Secs = i64;
 
 const KEY: &'static str = "SK_DB_SERVER_ADDR";
-const LEASE_TIME_OUT: i64 = 15;
+pub const LEASE_TIME_OUT: i64 = 15;
 
 pub struct RedisAddr {
     addr: String,
@@ -49,12 +49,12 @@ pub(crate) struct RedisTTLSet {
     pub(crate) ttl: Secs,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub(crate) struct MetaInfo {
     expire_time: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 pub(crate) struct Record {
     pub(crate) meta: MetaInfo,
     pub(crate) sub_key: String,
@@ -106,6 +106,10 @@ impl<'a> TryFrom<&'a Value> for WrapStr {
 }
 
 impl RedisTTLSet {
+    pub(crate) fn new(ttl: Secs) -> RedisTTLSet {
+        RedisTTLSet { ttl }
+    }
+
     pub(crate) fn query_all(&self, conn: &mut Connection) -> Result<Vec<Record>, AnyError> {
         let r = redis::cmd("HGETALL").arg(KEY).query::<Value>(conn)?;
         match r {

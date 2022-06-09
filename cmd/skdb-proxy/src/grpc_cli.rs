@@ -53,6 +53,18 @@ pub(crate) fn init_push_msg_conn(
     AnyError,
 > {
     let client = SkyTracingClient::new(chan);
+    split_client(client)
+}
+
+pub(crate) fn split_client(
+    client: SkyTracingClient,
+) -> Result<
+    (
+        TracingConnection<Created, WrapSegmentData, SegmentData, SegmentRes>,
+        SkyTracingClient,
+    ),
+    AnyError,
+> {
     match client.push_segments() {
         Ok((sink, recv)) => {
             trace!("Push segments called success! sink:(StreamingCallSink) and receiver:(ClientDuplexReceiver is created!");

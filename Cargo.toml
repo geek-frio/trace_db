@@ -41,6 +41,7 @@ async-trait = "0.1.53"
 regex = "1.5.5"
 pin-project = "1"
 tower = { version = "0.4.12", features = ["limit", "buffer", "util"] }
+chashmap = "2.2.2"
 
 [dev-dependencies]
 pretty_assertions = "1"

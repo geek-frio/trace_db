@@ -4,6 +4,7 @@ use futures::future::Either;
 use futures::stream::{Stream, StreamExt};
 use grpcio::{Environment, ServerBuilder};
 use rand::prelude::*;
+use skdb::client::cluster::ClusterManager;
 use skdb::{
     client::{
         RingService, RingServiceErr, RingServiceReqEvent, SinkErr, TracingSinker, TracingStreamer,
@@ -15,6 +16,7 @@ use skdb::{
     },
 };
 use skproto::tracing::{Meta_RequestType, SegmentData, SegmentRes};
+use skproto::tracing_grpc::SkyTracingClient;
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 use tower::{buffer::Buffer, Service};
 use tower::{limit::RateLimit, ServiceExt};
@@ -61,37 +63,42 @@ impl<T> IntoIterator for Batch<T> {
     }
 }
 
-struct ProxyService<S, Req, ST> {
+struct ProxyService<Req, C> {
     global_config: Arc<GlobalConfig>,
-    sinkers: Vec<S>,
-    streamers: Vec<ST>,
+    // sinkers: Vec<S>,
+    // streamers: Vec<ST>,
+    cluster_manager: ClusterManager<C>,
     marker: PhantomData<Req>,
 }
 
 impl
     ProxyService<
-        Buffer<
-            RateLimit<RingService<TracingSinker<WrapSegmentData, SegmentData>, WrapSegmentData>>,
-            RingServiceReqEvent<WrapSegmentData>,
-        >,
+        // Buffer<
+        //     RateLimit<RingService<TracingSinker<WrapSegmentData, SegmentData>, WrapSegmentData>>,
+        //     RingServiceReqEvent<WrapSegmentData>,
+        // >,
         WrapSegmentData,
-        TracingStreamer<SegmentRes>,
+        // TracingStreamer<SegmentRes>,
+        SkyTracingClient,
     >
 {
     fn new(
         config: Arc<GlobalConfig>,
+        cluster_manager: ClusterManager<SkyTracingClient>,
     ) -> ProxyService<
-        Buffer<
-            RateLimit<RingService<TracingSinker<WrapSegmentData, SegmentData>, WrapSegmentData>>,
-            RingServiceReqEvent<WrapSegmentData>,
-        >,
+        // Buffer<
+        //     RateLimit<RingService<TracingSinker<WrapSegmentData, SegmentData>, WrapSegmentData>>,
+        //     RingServiceReqEvent<WrapSegmentData>,
+        // >,
         WrapSegmentData,
-        TracingStreamer<SegmentRes>,
+        // TracingStreamer<SegmentRes>,
+        SkyTracingClient,
     > {
         ProxyService {
             global_config: config,
-            sinkers: Vec::new(),
-            streamers: Vec::new(),
+            // sinkers: Vec::new(),
+            // streamers: Vec::new(),
+            cluster_manager,
             marker: PhantomData,
         }
     }
@@ -118,68 +125,68 @@ impl
         todo!();
     }
 
-    async fn shuffle_call(
-        &mut self,
-        batch: Batch<RingServiceReqEvent<WrapSegmentData>>,
-    ) -> Result<(), AnyError> {
-        Self::check_is_msg_event(&batch)?;
-        let mut rng = rand::thread_rng();
-        let idx = rng.gen_range(0..self.sinkers.len());
-        let batch_iter = batch.into_iter();
+    // async fn shuffle_call(
+    //     &mut self,
+    //     batch: Batch<RingServiceReqEvent<WrapSegmentData>>,
+    // ) -> Result<(), AnyError> {
+    //     Self::check_is_msg_event(&batch)?;
+    //     let mut rng = rand::thread_rng();
+    //     let idx = rng.gen_range(0..self.sinkers.len());
+    //     let batch_iter = batch.into_iter();
 
-        // 1.first we sink these msgs to remote
-        let sink = &mut self.sinkers[idx];
-        let _ = sink.ready().await;
-        let mut success_ids = Vec::new();
-        for (_, req) in batch_iter {
-            let call_res = sink.call(req).await;
-            match call_res {
-                Ok(ei) => {
-                    if let Either::Right(id) = ei {
-                        if let Some(id) = id {
-                            success_ids.push(id);
-                        }
-                    }
-                }
-                Err(e) => {
-                    let err = e.downcast::<RingServiceErr<SinkErr, RingQueueError>>();
-                    if let Ok(e) = err {
-                        if let RingServiceErr::Left(sink_err) = *e {
-                            if let SinkErr::GrpcSinkErr(e) = sink_err {
-                                error!("Grpc sink has met serious problem, we should drop current connection,e:{}", e);
-                                return Err(AnyError::msg(
-                                    "Serious error, grpc sink has met serious problem",
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    //     // 1.first we sink these msgs to remote
+    //     let sink = &mut self.sinkers[idx];
+    //     let _ = sink.ready().await;
+    //     let mut success_ids = Vec::new();
+    //     for (_, req) in batch_iter {
+    //         let call_res = sink.call(req).await;
+    //         match call_res {
+    //             Ok(ei) => {
+    //                 if let Either::Right(id) = ei {
+    //                     if let Some(id) = id {
+    //                         success_ids.push(id);
+    //                     }
+    //                 }
+    //             }
+    //             Err(e) => {
+    //                 let err = e.downcast::<RingServiceErr<SinkErr, RingQueueError>>();
+    //                 if let Ok(e) = err {
+    //                     if let RingServiceErr::Left(sink_err) = *e {
+    //                         if let SinkErr::GrpcSinkErr(e) = sink_err {
+    //                             error!("Grpc sink has met serious problem, we should drop current connection,e:{}", e);
+    //                             return Err(AnyError::msg(
+    //                                 "Serious error, grpc sink has met serious problem",
+    //                             ));
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
 
-        // 2.then we start to listen msg ack msgs
-        let stream = &mut self.streamers[idx];
-        for s in stream.next().await {
-            match s {
-                Ok(seg_resp) => match seg_resp.get_meta().get_field_type() {
-                    Meta_RequestType::TRANS_ACK => {
-                        if seg_resp.get_meta().get_seqId() >= *success_ids.last().unwrap() {
-                            return Ok(());
-                        }
-                    }
-                    Meta_RequestType::NEED_RESEND => {
-                        self.resend(&seg_resp).await;
-                    }
-                    _ => {
-                        unreachable!("Remote gave a not permitted meta request type");
-                    }
-                },
-                Err(e) => {
-                    error!("Serious streaming problem, e:{:?}", e);
-                    return Err(e);
-                }
-            }
-        }
-        return Err(AnyError::msg("Remote streamer has dropped"));
-    }
+    //     // 2.then we start to listen msg ack msgs
+    //     let stream = &mut self.streamers[idx];
+    //     for s in stream.next().await {
+    //         match s {
+    //             Ok(seg_resp) => match seg_resp.get_meta().get_field_type() {
+    //                 Meta_RequestType::TRANS_ACK => {
+    //                     if seg_resp.get_meta().get_seqId() >= *success_ids.last().unwrap() {
+    //                         return Ok(());
+    //                     }
+    //                 }
+    //                 Meta_RequestType::NEED_RESEND => {
+    //                     self.resend(&seg_resp).await;
+    //                 }
+    //                 _ => {
+    //                     unreachable!("Remote gave a not permitted meta request type");
+    //                 }
+    //             },
+    //             Err(e) => {
+    //                 error!("Serious streaming problem, e:{:?}", e);
+    //                 return Err(e);
+    //             }
+    //         }
+    //     }
+    //     return Err(AnyError::msg("Remote streamer has dropped"));
+    // }
 }
