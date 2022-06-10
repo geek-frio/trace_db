@@ -26,6 +26,9 @@ use tower::buffer::Buffer;
 use tower::{limit::RateLimit, Service, ServiceBuilder};
 
 pub mod cluster;
+pub mod grpc_cli;
+pub mod serv;
+pub mod sinker;
 
 use crate::com::ring::RingQueue;
 use crate::com::ring::RingQueueError;
@@ -37,6 +40,8 @@ pub struct TracingConnection<Status, WrapReq, Req, Resp> {
     marker: PhantomData<Status>,
     wrap_marker: PhantomData<WrapReq>,
 }
+
+impl<Status, WrapReq, Req, Resp> Unpin for TracingConnection<Status, WrapReq, Req, Resp> {}
 
 pub struct Created;
 pub struct HandShaked;
@@ -132,6 +137,11 @@ impl Display for SinkErr {
 pub enum SinkErr {
     GrpcSinkErr(String),
     NoReq,
+    CreateConnFail,
+    HandshakedFail,
+    GetRespTimeOut,
+    ConnBroken,
+    NoSeqId,
 }
 
 pub trait TracingMsgSink<F> {

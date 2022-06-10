@@ -1345,6 +1345,7 @@ dependencies = [
  "crossbeam-channel",
  "futures 0.3.21",
  "futures-sink",
+ "futures-util",
  "grpcio",
  "lazy_static",
  "pin-project",

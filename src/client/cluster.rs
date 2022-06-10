@@ -1,88 +1,85 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::collections::HashMap;
+use std::task::Poll;
+use std::{collections::HashSet, marker::PhantomData, sync::Arc, time::Duration};
 
-use crate::com::redis::{Record, RedisTTLSet, LEASE_TIME_OUT};
+use crate::com::redis::Record;
 use chashmap::CHashMap;
+use futures::{pin_mut, ready, Stream};
+use futures_util::future::poll_fn;
 use grpcio::{ChannelBuilder, Environment};
 use redis::{Client as RedisClient, Connection};
 use skproto::tracing::SkyTracingClient;
 use std::fmt::Debug;
-use tower::{buffer::Buffer, limit::RateLimit};
+use tokio::sync::mpsc::Receiver;
+use tower::{
+    buffer::Buffer,
+    discover::{Change, Discover},
+    limit::RateLimit,
+    Service,
+};
 use tracing::error;
 
-use super::{ChangeResend, RingService, RingServiceReqEvent, TracingSinker, TracingStreamer};
+use super::grpc_cli::split_client;
+use super::RingService;
 
-pub struct ClusterManager<Cli, WrapReq, Req, Resp>
+pub struct ClusterManager<Req, S>
 where
-    WrapReq: std::fmt::Debug + Clone + ChangeResend + Send + 'static,
-    Req: Send + 'static + From<WrapReq> + Clone,
-    Cli: Send + 'static,
+    S: Service<Req>,
 {
-    clients: Arc<CHashMap<String, ClientStat<Cli, WrapReq, Req, Resp>>>,
+    recv: Receiver<Change<i32, SkyTracingClient>>,
+    srv_map: HashMap<i32, S>,
+    client_map: HashMap<i32, SkyTracingClient>,
+    wrap_req_marker: PhantomData<Req>,
 }
 
-pub enum ClientStat<Cli, WrapReq, Req, Resp>
-where
-    WrapReq: std::fmt::Debug + Clone + ChangeResend + Send + 'static,
-    Req: Send + 'static + From<WrapReq> + Clone,
-    Cli: Send + 'static,
-{
-    Created(Cli),
-    StreamCreated(
-        Cli,
-        Option<(
-            Buffer<
-                RateLimit<RingService<TracingSinker<WrapReq, Req>, WrapReq>>,
-                RingServiceReqEvent<WrapReq>,
-            >,
-            TracingStreamer<Resp>,
-        )>,
-    ),
-}
+impl<WrapReq, S> Unpin for ClusterManager<WrapReq, S> where S: Service<WrapReq> {}
 
-impl<WrapReq, Req, Resp> ClusterManager<SkyTracingClient, WrapReq, Req, Resp>
+impl<WrapReq, S> ClusterManager<WrapReq, S>
 where
-    WrapReq: Debug + Clone + ChangeResend + Send + 'static,
-    Req: Send + 'static + From<WrapReq> + Clone,
+    S: Service<WrapReq>,
 {
-    pub fn new() -> ClusterManager<SkyTracingClient, WrapReq, Req, Resp> {
+    pub fn new(recv: Receiver<Change<i32, SkyTracingClient>>) -> ClusterManager<WrapReq, S> {
         ClusterManager {
-            clients: Arc::new(CHashMap::new()),
+            recv,
+            srv_map: HashMap::new(),
+            client_map: HashMap::new(),
+            wrap_req_marker: PhantomData,
         }
     }
 
     pub fn init(&mut self, redis_client: RedisClient) {
         let redis_client = redis_client.clone();
-        let clients = self.clients.clone();
+        // let clients = self.clients.clone();
         let mut conn = Self::loop_retrive_conn(redis_client.clone());
-        std::thread::spawn(move || {
-            let mut old = HashSet::new();
-            loop {
-                let redis_ttlset = RedisTTLSet::new(LEASE_TIME_OUT);
-                let res = redis_ttlset.query_all(&mut conn);
-                match res {
-                    Ok(records) => {
-                        let new = HashSet::from_iter(records.into_iter());
-                        let diff = Self::diff_create(&old, &new);
-                        if diff.len() > 0 {
-                            let grpc_clients = Self::create_grpc_conns(diff);
-                            for (c, rec) in grpc_clients {
-                                clients.insert(
-                                    rec.sub_key.as_str().to_string(),
-                                    ClientStat::Created(c),
-                                );
-                            }
-                        } else {
-                            old = new;
-                        }
-                    }
-                    Err(e) => {
-                        conn = Self::loop_retrive_conn(redis_client.clone());
-                        error!("Query local active cluster grpc server failed!,e:{:?}; Start a new redis conn", e);
-                        std::thread::sleep(Duration::from_secs(1));
-                    }
-                }
-            }
-        });
+        // std::thread::spawn(move || {
+        //     let mut old = HashSet::new();
+        //     loop {
+        //         let redis_ttlset = RedisTTLSet::new(LEASE_TIME_OUT);
+        //         let res = redis_ttlset.query_all(&mut conn);
+        //         match res {
+        //             Ok(records) => {
+        //                 let new = HashSet::from_iter(records.into_iter());
+        //                 let diff = Self::diff_create(&old, &new);
+        //                 if diff.len() > 0 {
+        //                     let grpc_clients = Self::create_grpc_conns(diff);
+        //                     for (c, rec) in grpc_clients {
+        //                         clients.insert(
+        //                             rec.sub_key.as_str().to_string(),
+        //                             ClientStat::Created(c),
+        //                         );
+        //                     }
+        //                 } else {
+        //                     old = new;
+        //                 }
+        //             }
+        //             Err(e) => {
+        //                 conn = Self::loop_retrive_conn(redis_client.clone());
+        //                 error!("Query local active cluster grpc server failed!,e:{:?}; Start a new redis conn", e);
+        //                 std::thread::sleep(Duration::from_secs(1));
+        //             }
+        //         }
+        //     }
+        // });
     }
 
     pub fn loop_retrive_conn(redis_client: RedisClient) -> Connection {
@@ -117,6 +114,78 @@ where
     }
 }
 
+impl<WrapReq, S> Stream for ClusterManager<WrapReq, S>
+where
+    S: Service<WrapReq>,
+    WrapReq: Debug + Send + 'static + Clone,
+{
+    type Item = Change<i32, RingService<S, WrapReq>>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let chg_opt = ready!(self.recv.poll_recv(cx));
+        match chg_opt {
+            Some(chg) => match chg {
+                Change::Insert(id, client) => {
+                    let res = split_client(client);
+                    match res {
+                        Ok((conn, client)) => {}
+                        Err(e) => {
+                            self.srv_map.remove(&id);
+                            self.client_map.remove(&id);
+                            return Poll::Pending;
+                        }
+                    }
+                }
+                Change::Remove(id) => {}
+            },
+            None => return Poll::Pending,
+        }
+        todo!()
+    }
+}
+
+// impl<WrapReq, S> Stream for ClusterManager<WrapReq, RingService<S, WrapReq>>
+// where
+//     WrapReq: Clone + Send + 'static + Debug,
+//     S: Service<WrapReq>,
+// {
+//     type Item = Change<i32, RingService<WrapReq, Req>>;
+
+//     fn poll_next(
+//         mut self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<Option<Self::Item>> {
+//         let chg_opt = ready!(self.recv.poll_recv(cx));
+//         match chg_opt {
+//             Some(chg) => match chg {
+//                 Change::Insert(id, client) => {
+
+//                     // self.srv_map.insert(k, v);
+//                 }
+//                 Change::Remove(id) => {}
+//             },
+//             None => return Poll::Pending,
+//         }
+//         todo!()
+//     }
+// }
+
+async fn services_monitor<D: Discover>(services: D) {
+    pin_mut!(services);
+    while let Some(Ok(change)) = poll_fn(|cx| services.as_mut().poll_discover(cx)).await {
+        match change {
+            Change::Insert(key, svc) => {
+                // a new service with identifier `key` was discovered
+            }
+            Change::Remove(key) => {
+                // the service with identifier `key` has gone away
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

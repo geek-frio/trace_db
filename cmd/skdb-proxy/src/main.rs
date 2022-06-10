@@ -9,7 +9,7 @@ use tower::{Service, ServiceExt};
 use tracing::{error, info};
 use tracing_subscriber::fmt::Subscriber;
 
-mod grpc_cli;
+pub(crate) mod grpc_cli;
 mod serv;
 
 fn main() {

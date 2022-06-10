@@ -2,13 +2,17 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Error as AnyError;
 use grpcio::{Channel, ChannelBuilder, Environment};
-use skdb::{
-    client::{ChangeResend, Created, HandShaked, TracingConnection},
-    com::util::CalcSleepTime,
-};
+// use skdb::{
+//     client::{ChangeResend, Created, HandShaked, TracingConnection},
+//     com::util::CalcSleepTime,
+// };
 use skproto::tracing::{Meta, Meta_RequestType, SegmentData, SegmentRes, SkyTracingClient};
 use tokio::time::sleep;
 use tracing::{error, trace};
+
+use crate::com::util::CalcSleepTime;
+
+use super::{ChangeResend, Created, HandShaked, TracingConnection};
 
 pub(crate) fn init_grpc_chan(addr: &str) -> Channel {
     let env = Environment::new(3);

@@ -1,20 +1,15 @@
+use super::{cluster::ClusterManager, RingServiceReqEvent};
+use crate::com::{
+    config::GlobalConfig,
+    ring::RingQueueError,
+    util::{CountTracker, LruCache},
+};
 use anyhow::Error as AnyError;
 use crossbeam::channel::Sender;
 use futures::future::Either;
 use futures::stream::{Stream, StreamExt};
 use grpcio::{Environment, ServerBuilder};
 use rand::prelude::*;
-use skdb::client::cluster::ClusterManager;
-use skdb::{
-    client::{
-        RingService, RingServiceErr, RingServiceReqEvent, SinkErr, TracingSinker, TracingStreamer,
-    },
-    com::{
-        config::GlobalConfig,
-        ring::RingQueueError,
-        util::{CountTracker, LruCache},
-    },
-};
 use skproto::tracing::{Meta_RequestType, SegmentData, SegmentRes};
 use skproto::tracing_grpc::SkyTracingClient;
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
@@ -22,7 +17,7 @@ use tower::{buffer::Buffer, Service};
 use tower::{limit::RateLimit, ServiceExt};
 use tracing::error;
 
-use crate::grpc_cli::WrapSegmentData;
+use super::grpc_cli::WrapSegmentData;
 
 enum BatchStatus {
     Created,       // Batch received from remote client
@@ -63,45 +58,39 @@ impl<T> IntoIterator for Batch<T> {
     }
 }
 
-struct ProxyService<Req, C> {
+struct ProxyService<Req, S>
+where
+    S: Service<Req>,
+{
     global_config: Arc<GlobalConfig>,
-    // sinkers: Vec<S>,
-    // streamers: Vec<ST>,
-    cluster_manager: ClusterManager<C>,
+    cluster_manager: ClusterManager<Req, S>,
     marker: PhantomData<Req>,
 }
 
-impl
-    ProxyService<
-        // Buffer<
-        //     RateLimit<RingService<TracingSinker<WrapSegmentData, SegmentData>, WrapSegmentData>>,
-        //     RingServiceReqEvent<WrapSegmentData>,
-        // >,
-        WrapSegmentData,
-        // TracingStreamer<SegmentRes>,
-        SkyTracingClient,
-    >
+impl<S> ProxyService<RingServiceReqEvent<WrapSegmentData>, S>
+where
+    S: Service<RingServiceReqEvent<WrapSegmentData>>,
 {
-    fn new(
-        config: Arc<GlobalConfig>,
-        cluster_manager: ClusterManager<SkyTracingClient>,
-    ) -> ProxyService<
-        // Buffer<
-        //     RateLimit<RingService<TracingSinker<WrapSegmentData, SegmentData>, WrapSegmentData>>,
-        //     RingServiceReqEvent<WrapSegmentData>,
-        // >,
-        WrapSegmentData,
-        // TracingStreamer<SegmentRes>,
-        SkyTracingClient,
-    > {
-        ProxyService {
-            global_config: config,
-            // sinkers: Vec::new(),
-            // streamers: Vec::new(),
-            cluster_manager,
-            marker: PhantomData,
-        }
-    }
+    // fn new(
+    //     config: Arc<GlobalConfig>,
+    //     cluster_manager: ClusterManager<RingServiceReqEvent<WrapSegmentData>, S>,
+    // ) -> ProxyService<
+    //     // Buffer<
+    //     //     RateLimit<RingService<TracingSinker<WrapSegmentData, SegmentData>, WrapSegmentData>>,
+    //     //     RingServiceReqEvent<WrapSegmentData>,
+    //     // >,
+    //     WrapSegmentData,
+    //     // TracingStreamer<SegmentRes>,
+    //     SkyTracingClient,
+    // > {
+    //     ProxyService {
+    //         global_config: config,
+    //         // sinkers: Vec::new(),
+    //         // streamers: Vec::new(),
+    //         cluster_manager,
+    //         marker: PhantomData,
+    //     }
+    // }
 
     async fn init(&mut self) {
         todo!();
