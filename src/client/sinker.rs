@@ -12,7 +12,7 @@ use super::{
     grpc_cli::WrapSegmentData, ChangeResend, Created, SinkErr, SinkEvent, TracingConnection,
 };
 use grpcio::Error as GrpcErr;
-struct TracingSinker<WrapReq, Req, Resp, Svc> {
+struct TracingSinker<WrapReq, Req, Resp> {
     client: SkyTracingClient,
     conn: Option<TracingConnection<HandShaked, WrapReq, Req, Resp>>,
     marker: PhantomData<WrapReq>,
@@ -28,6 +28,7 @@ fn create_trace_conn(
         }
         Err(e) => {
             error!("Create conn failed:{:?}", e);
+
             Err(SinkErr::CreateConnFail)
         }
     }
@@ -73,7 +74,6 @@ impl Service<SinkEvent<WrapSegmentData>>
 
     fn call(&mut self, req: SinkEvent<WrapSegmentData>) -> Self::Future {
         let mut conn = self.conn.as_mut().unwrap();
-        let a = Pin::new(conn);
         let sink = Pin::new(conn.sink.as_mut().unwrap());
         let mut stream = Pin::new(conn.recv.as_mut().unwrap());
 
