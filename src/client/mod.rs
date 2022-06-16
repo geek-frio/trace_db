@@ -3,40 +3,50 @@ use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
 use futures::future::join_all;
 use futures::future::Either;
-use futures::ready;
 use futures::stream::StreamExt;
 use futures::Future;
 use futures::Sink;
 use futures::SinkExt;
-use futures::Stream;
 use futures::TryFutureExt;
 use grpcio::ClientDuplexReceiver;
 use grpcio::StreamingCallSink;
 use grpcio::WriteFlags;
-use pin_project::pin_project;
+use skproto::tracing::Meta_RequestType;
+use skproto::tracing::SegmentData;
+use skproto::tracing::SegmentRes;
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use std::{marker::PhantomData, time::Duration};
+use tokio::time::sleep;
 use tower::buffer::Buffer;
 use tower::{limit::RateLimit, Service, ServiceBuilder};
+use tracing::error;
+use tracing::warn;
 
 pub mod cluster;
 pub mod grpc_cli;
 pub mod serv;
 pub mod sinker;
+mod trans;
 
 use crate::com::ring::RingQueue;
 use crate::com::ring::RingQueueError;
+use crate::TOKIO_RUN;
+
+use self::grpc_cli::WrapSegmentData;
 
 pub struct TracingConnection<Status, WrapReq, Req, Resp> {
     sink: Option<StreamingCallSink<Req>>,
     recv: Option<ClientDuplexReceiver<Resp>>,
-    conn_id: Option<i32>,
+    rpc_shutdown: Arc<AtomicBool>,
     marker: PhantomData<Status>,
     wrap_marker: PhantomData<WrapReq>,
 }
@@ -57,7 +67,7 @@ where
         Self {
             sink: Some(sink),
             recv: Some(recv),
-            conn_id: None,
+            rpc_shutdown: Arc::new(AtomicBool::new(false)),
             marker: PhantomData,
             wrap_marker: PhantomData,
         }
@@ -86,7 +96,7 @@ where
                 match resp {
                     Some(r) => match r {
                         Ok(resp) => {
-                            let (stat, conn_id) = check_hand_resp(resp, pkt);
+                            let (stat, _) = check_hand_resp(resp, pkt);
                             if stat {
                                 Err(AnyError::msg(
                                     "Hanshake response check with request failed!",
@@ -95,7 +105,7 @@ where
                                 Ok(TracingConnection {
                                     sink: Some(sink),
                                     recv: Some(recv),
-                                    conn_id: Some(conn_id),
+                                    rpc_shutdown: Arc::new(AtomicBool::new(false)),
                                     marker: PhantomData,
                                     wrap_marker: PhantomData,
                                 })
@@ -147,12 +157,6 @@ pub enum SinkErr {
 pub trait TracingMsgSink<F> {
     type Item;
     fn sink(&mut self, event: SinkEvent<Self::Item>) -> Result<(), SinkErr>;
-}
-
-pub trait TracingMsgStream<T> {
-    type Item;
-    fn poll_remote(&mut self) -> Option<SinkEvent<Self::Item>>;
-    fn poll_local(&mut self) -> Option<SinkEvent<Self::Item>>;
 }
 
 pub struct TracingSinker<WrapReq, Req> {
@@ -340,67 +344,48 @@ where
     }
 }
 
-// keep polling msg from remote
-#[pin_project]
-pub struct TracingStreamer<Resp> {
-    #[pin]
-    recv: ClientDuplexReceiver<Resp>,
-    wak_recv: Receiver<Waker>,
-    check_ack: Box<dyn Fn(&Resp) -> bool + Send + 'static>,
-}
-
-impl<Resp> Stream for TracingStreamer<Resp> {
-    type Item = Result<Resp, AnyError>;
-
-    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.project();
-        let recv = this.recv;
-        let wak = this.wak_recv;
-        let msg = ready!(recv.poll_next(cx));
-        match msg {
-            None => return Poll::Ready(None),
-            Some(res) => {
-                let res = res
-                    .map(|v| {
-                        if (*this.check_ack)(&v) {
-                            if let Ok(waker) = wak.try_recv() {
-                                waker.wake();
-                            }
-                        }
-                        v
-                    })
-                    .map_err(|e| <AnyError as From<grpcio::Error>>::from(e.into()));
-                Poll::Ready(Some(res))
-            }
+impl TracingConnection<HandShaked, WrapSegmentData, SegmentData, SegmentRes> {
+    pub fn waiting_for_resp(
+        &mut self,
+        wak_recv: Receiver<Waker>,
+        sched: tokio::sync::mpsc::Sender<RingServiceReqEvent<WrapSegmentData>>,
+    ) -> Result<(), AnyError> {
+        let is_shutdown = self.rpc_shutdown.clone();
+        let recv = self.recv.take();
+        if recv.is_none() {
+            return Err(AnyError::msg(
+                "Not have receiver, maybe waiting task has already started!",
+            ));
         }
-    }
-}
-
-impl<WrapReq, Req, Resp> TracingConnection<HandShaked, WrapReq, Req, Resp>
-where
-    WrapReq: Debug + Clone + ChangeResend + Send + 'static,
-    Req: Send + 'static + From<WrapReq> + Clone,
-{
-    pub fn split(
-        self,
-        buf: usize,
-        num: u64,
-        per: Duration,
-        f: Box<dyn Fn(&Resp) -> bool + Send + 'static>,
-    ) -> (
-        impl Service<RingServiceReqEvent<WrapReq>>,
-        TracingStreamer<Resp>,
-    ) {
-        let tracing_sinker = TracingSinker {
-            sink: self.sink.unwrap(),
-            marker: PhantomData,
-        };
-        let (service, wak_recv) = TracingSinker::with_limit(tracing_sinker, buf, num, per);
-        let streamer = TracingStreamer {
-            recv: self.recv.unwrap(),
-            wak_recv,
-            check_ack: f,
-        };
-        (service, streamer)
+        TOKIO_RUN.spawn(async move {
+            let mut r = recv.unwrap();
+            while let Some(resp) = r.next().await {
+                match resp {
+                    Ok(resp) => {
+                        if resp.get_meta().get_field_type() == Meta_RequestType::TRANS_ACK {
+                            if let Ok(w) = wak_recv.try_recv() {
+                                w.wake();
+                            }
+                            let seqid = resp.get_meta().seqId;
+                            let mut seg = SegmentData::new();
+                            seg.mut_meta().set_seqId(seqid);
+                            let _ = sched.send(RingServiceReqEvent::Ack(WrapSegmentData(seg)));
+                        }
+                   }
+                    Err(e) => match e {
+                        grpcio::Error::RemoteStopped | grpcio::Error::QueueShutdown => {
+                            is_shutdown.store(true, Ordering::Relaxed);
+                            warn!("Stream has stopped!");
+                            return;
+                        }
+                        x => {
+                            error!("Basically should not come here, will retry after 1 second, x:{:?}", x);
+                            sleep(Duration::from_secs(1)).await;
+                        }
+                    },
+                }
+            }
+        });
+        Ok(())
     }
 }

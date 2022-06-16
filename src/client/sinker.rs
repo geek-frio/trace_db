@@ -1,20 +1,25 @@
-use futures::{ready, Future, SinkExt, StreamExt};
+use crossbeam_channel::Receiver;
+use futures::{ready, Future};
 use futures::{sink::Sink, FutureExt};
-use grpcio::{StreamingCallSink, WriteFlags};
+use grpcio::WriteFlags;
 use skproto::tracing::{Meta_RequestType, SegmentData, SegmentRes, SkyTracingClient};
+use std::sync::atomic::Ordering;
+use std::task::Waker;
 use std::{marker::PhantomData, pin::Pin, task::Poll};
+use tokio::sync::mpsc::Sender;
 use tower::Service;
-use tracing::warn;
 use tracing::{error, trace};
 
-use super::HandShaked;
 use super::{
     grpc_cli::WrapSegmentData, ChangeResend, Created, SinkErr, SinkEvent, TracingConnection,
 };
-use grpcio::Error as GrpcErr;
-struct TracingSinker<WrapReq, Req, Resp> {
+use super::{HandShaked, RingServiceReqEvent};
+struct TracingSinker<WrapReq: std::fmt::Debug, Req, Resp> {
     client: SkyTracingClient,
     conn: Option<TracingConnection<HandShaked, WrapReq, Req, Resp>>,
+
+    wak_recv: Receiver<Waker>,
+    sched: Sender<RingServiceReqEvent<WrapReq>>,
     marker: PhantomData<WrapReq>,
 }
 
@@ -44,7 +49,14 @@ impl Service<SinkEvent<WrapSegmentData>>
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if self.conn.is_none() {
+        if self.conn.is_none()
+            || self
+                .conn
+                .as_ref()
+                .unwrap()
+                .rpc_shutdown
+                .load(Ordering::Relaxed)
+        {
             let trace_conn = create_trace_conn(&mut self.client)?;
             let res = ready!(Box::pin(trace_conn.handshake(
                 |resp, _req| {
@@ -61,7 +73,9 @@ impl Service<SinkEvent<WrapSegmentData>>
             ))
             .poll_unpin(cx));
             match res {
-                Ok(conn) => {
+                Ok(mut conn) => {
+                    conn.rpc_shutdown.store(false, Ordering::Relaxed);
+                    let _ = conn.waiting_for_resp(self.wak_recv.clone(), self.sched.clone());
                     self.conn = Some(conn);
                     Poll::Ready(Ok(()))
                 }
@@ -73,14 +87,13 @@ impl Service<SinkEvent<WrapSegmentData>>
     }
 
     fn call(&mut self, req: SinkEvent<WrapSegmentData>) -> Self::Future {
-        let mut conn = self.conn.as_mut().unwrap();
+        let conn = self.conn.as_mut().unwrap();
         let sink = Pin::new(conn.sink.as_mut().unwrap());
-        let mut stream = Pin::new(conn.recv.as_mut().unwrap());
 
         match req {
-            SinkEvent::PushMsg(req) => Box::pin(async move {
+            SinkEvent::PushMsg(req) => {
                 if req.is_none() {
-                    return Err(SinkErr::NoSeqId);
+                    return Box::pin(futures::future::ready(Err(SinkErr::NoReq)));
                 }
                 let req = req.unwrap();
                 let seq_id = req.seq_id();
@@ -90,56 +103,11 @@ impl Service<SinkEvent<WrapSegmentData>>
                         Ok(_) => Ok(seq_id),
                         Err(e) => Err(SinkErr::GrpcSinkErr(e.to_string())),
                     };
-
-                    while let Some(segment_res) = stream.next().await {
-                        match segment_res {
-                            Ok(segment_resp) => {
-                                let r_seq_id = segment_resp.get_meta().get_seqId();
-                                if r_seq_id >= seq_id {
-                                    return Ok(segment_resp.get_meta().get_seqId());
-                                }
-                            }
-                            Err(e) => match e {
-                                GrpcErr::RemoteStopped | GrpcErr::QueueShutdown => {
-                                    return Err(SinkErr::ConnBroken);
-                                }
-                                _ => {
-                                    warn!("Unexpected exception process logic is reached!");
-                                }
-                            },
-                        }
-                    }
-                    Err(SinkErr::ConnBroken)
+                    Box::pin(futures::future::ready(res))
                 } else {
-                    Err(SinkErr::NoSeqId)
+                    Box::pin(futures::future::ready(Err(SinkErr::NoSeqId)))
                 }
-            }),
+            }
         }
     }
 }
-
-// impl<WrapReq, Req> TracingSinker<WrapReq, Req>
-// where
-//     WrapReq: Debug + Send + 'static + ChangeResend + Clone,
-//     Req: From<WrapReq> + Send + 'static + Clone,
-// {
-//     pub fn with_limit(
-//         self,
-//         buf: usize,
-//         num: u64,
-//         per: Duration,
-//     ) -> (impl Service<RingServiceReqEvent<WrapReq>>, Receiver<Waker>) {
-//         let service_builder = ServiceBuilder::new();
-//         let (wak_send, wak_recv) = crossbeam_channel::unbounded();
-//         let ring_service: RingService<TracingSinker<WrapReq, Req>, WrapReq> = RingService {
-//             inner: self,
-//             ring: Default::default(),
-//             wak_sender: wak_send,
-//         };
-//         let service = service_builder
-//             .buffer::<RingServiceReqEvent<WrapReq>>(buf)
-//             .rate_limit(num, per)
-//             .service(ring_service);
-//         (service, wak_recv)
-//     }
-// }

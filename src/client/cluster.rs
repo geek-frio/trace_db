@@ -3,7 +3,6 @@ use std::task::Poll;
 use std::{collections::HashSet, marker::PhantomData, sync::Arc, time::Duration};
 
 use crate::com::redis::Record;
-use chashmap::CHashMap;
 use futures::{pin_mut, ready, Stream};
 use futures_util::future::poll_fn;
 use grpcio::{ChannelBuilder, Environment};
@@ -12,9 +11,7 @@ use skproto::tracing::SkyTracingClient;
 use std::fmt::Debug;
 use tokio::sync::mpsc::Receiver;
 use tower::{
-    buffer::Buffer,
     discover::{Change, Discover},
-    limit::RateLimit,
     Service,
 };
 use tracing::error;

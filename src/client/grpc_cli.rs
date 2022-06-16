@@ -20,7 +20,7 @@ pub(crate) fn init_grpc_chan(addr: &str) -> Channel {
 }
 
 #[derive(Debug, Clone)]
-pub struct WrapSegmentData(SegmentData);
+pub struct WrapSegmentData(pub SegmentData);
 
 impl ChangeResend for WrapSegmentData {
     fn change_resend_meta(&mut self) {
