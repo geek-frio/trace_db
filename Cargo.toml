@@ -40,7 +40,7 @@ tokio-io = "0.1.13"
 async-trait = "0.1.53"
 regex = "1.5.5"
 pin-project = "1"
-tower = { version = "0.4.12", features = ["limit", "buffer", "util", "discover"] }
+tower = { version = "0.4.12", features = ["limit", "buffer", "util", "discover", "balance"] }
 chashmap = "2.2.2"
 futures-util = "0.3.21"
 

@@ -153,7 +153,7 @@ where
         let res = self.sink.send((segment, WriteFlags::default())).await;
         match res {
             Err(_e) => {
-                sender.send(Err(TransportErr::SinkChanErr));
+                let _ = sender.send(Err(TransportErr::SinkChanErr));
             }
             Ok(_) => {
                 self.callback_map.insert(seq_id, sender);

@@ -3,10 +3,13 @@ use std::{marker::PhantomData, sync::Arc};
 
 use crate::client::trans::Transport;
 use chashmap::CHashMap;
+use futures::never::Never;
 use futures::{ready, FutureExt, Stream};
 use skproto::tracing::{Meta_RequestType, SegmentData, SkyTracingClient};
 use std::fmt::Debug;
 use tokio::sync::mpsc::Receiver;
+use tower::balance::p2c::Balance;
+use tower::load::Load;
 use tower::{discover::Change, Service};
 
 use super::grpc_cli::split_client;
@@ -22,6 +25,21 @@ where
     service_marker: PhantomData<S>,
 }
 
+impl<Req, S> ClusterManager<Req, S>
+where
+    S: Service<Req> + Unpin + 'static,
+    Req: Debug + Send + 'static + Clone + Unpin,
+{
+    fn new(recv: Receiver<ClientEvent>) -> ClusterManager<Req, S> {
+        ClusterManager {
+            recv,
+            clients: Arc::new(CHashMap::new()),
+            req_marker: PhantomData,
+            service_marker: PhantomData,
+        }
+    }
+}
+
 enum ClientEvent {
     DropEvent(i32),
     NewClient((i32, SkyTracingClient)),
@@ -32,7 +50,7 @@ where
     S: Service<Req> + Unpin + 'static,
     Req: Debug + Send + 'static + Clone + Unpin,
 {
-    type Item = Change<i32, Endpoint>;
+    type Item = Result<Change<i32, Endpoint>, Never>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -69,7 +87,7 @@ where
 
                                     let sched = Transport::init(sink, stream);
                                     let service = Endpoint::new(sched);
-                                    return Some(Change::Insert(id, service));
+                                    return Some(Ok(Change::Insert(id, service)));
                                 }
                                 Err(_e) => {
                                     let _ = clients.remove(&id);
@@ -83,13 +101,30 @@ where
                 }
                 ClientEvent::DropEvent(id) => {
                     let _ = self.clients.remove(&id);
-                    return Poll::Ready(Some(Change::Remove(id)));
+                    return Poll::Ready(Some(Ok(Change::Remove(id))));
                 }
             },
             None => return Poll::Pending,
         }
     }
 }
+
+async fn make_service<S>(cluster: ClusterManager<SegmentData, S>) -> impl Service<SegmentData>
+where
+    S: Service<SegmentData> + Unpin + 'static,
+{
+    Balance::new(cluster)
+}
+
+// async fn req<S>(
+//     req: SegmentData,
+//     cluster: ClusterManager<SegmentData, S>,
+// ) -> impl Service<SegmentData>
+// where
+//     S: Service<SegmentData> + Load + Unpin + 'static,
+// {
+//     Balance::new(cluster)
+// }
 
 // impl<WrapReq, S> ClusterManager<WrapReq, S>
 // where

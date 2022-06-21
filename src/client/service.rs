@@ -2,12 +2,20 @@ use std::{pin::Pin, task::Poll};
 
 use futures::Future;
 use skproto::tracing::SegmentData;
-use tower::Service;
+use tower::{load::Load, Service};
 
 use super::trans::{RequestScheduler, TransportErr};
 
 pub struct Endpoint {
     sched: RequestScheduler,
+}
+
+impl Load for Endpoint {
+    type Metric = i32;
+
+    fn load(&self) -> Self::Metric {
+        0
+    }
 }
 
 impl Endpoint {
