@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::SendError;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tracing::error;

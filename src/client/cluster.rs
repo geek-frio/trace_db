@@ -1,15 +1,11 @@
-use std::collections::HashMap;
 use std::task::Poll;
-use std::{collections::HashSet, marker::PhantomData, sync::Arc, time::Duration};
+use std::{marker::PhantomData, sync::Arc};
 
 use crate::client::trans::Transport;
-use crate::com::redis::Record;
 use chashmap::CHashMap;
 use futures::{ready, FutureExt, Stream};
-use grpcio::{ChannelBuilder, Environment};
 use skproto::tracing::{Meta_RequestType, SegmentData, SkyTracingClient};
 use std::fmt::Debug;
-use tokio::io::split;
 use tokio::sync::mpsc::Receiver;
 use tower::{discover::Change, Service};
 
@@ -72,10 +68,10 @@ where
                                     let stream = conn.recv.unwrap();
 
                                     let sched = Transport::init(sink, stream);
-                                    let service = Endpoint { sched };
+                                    let service = Endpoint::new(sched);
                                     return Some(Change::Insert(id, service));
                                 }
-                                Err(e) => {
+                                Err(_e) => {
                                     let _ = clients.remove(&id);
                                     return None;
                                 }
@@ -86,14 +82,14 @@ where
                     p.poll_unpin(cx)
                 }
                 ClientEvent::DropEvent(id) => {
-                    todo!();
+                    let _ = self.clients.remove(&id);
+                    return Poll::Ready(Some(Change::Remove(id)));
                 }
             },
             None => return Poll::Pending,
         }
     }
 }
-async fn test() {}
 
 // impl<WrapReq, S> ClusterManager<WrapReq, S>
 // where

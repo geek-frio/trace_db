@@ -11,7 +11,7 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    fn new(sched: RequestScheduler) -> Endpoint {
+    pub fn new(sched: RequestScheduler) -> Endpoint {
         Endpoint { sched }
     }
 }
