@@ -89,7 +89,7 @@ where
                 loop {
                     let exec_rs =
                         <ExecutorStat<'a, S> as SegmentExecute>::exec(segment_processor).await;
-                    mail.clone();
+                    // mail.clone();
                     match exec_rs {
                         Ok(ExecutorStat::HandShake(o))
                         | Ok(ExecutorStat::NeedTrans(o))

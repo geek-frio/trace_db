@@ -1,4 +1,9 @@
-use std::collections::{linked_list::Iter, LinkedList};
+use std::{
+    collections::{linked_list::Iter, LinkedList},
+    sync::Arc,
+};
+
+use tokio::sync::Notify;
 
 use super::ack::DEFAULT_WIN_SIZE;
 
@@ -10,6 +15,7 @@ where
     start_id: i64,
     cur_id: i64,
     size: usize,
+    notify: Option<Arc<Notify>>,
     data: LinkedList<Element<T>>,
 }
 
@@ -57,6 +63,7 @@ where
             start_id: 1,
             cur_id: 0,
             size,
+            notify: None,
             data: LinkedList::new(),
         }
     }
@@ -75,16 +82,34 @@ where
         return Ok(id);
     }
 
-    pub fn ack(&mut self, ack_id: i64) -> Result<(), RingQueueError> {
+    pub async fn async_push(&mut self, el: T) -> Result<i64, RingQueueError> {
+        if self.is_full() {
+            let notify = Arc::new(Notify::new());
+            self.notify = Some(notify.clone());
+            notify.notified().await;
+        }
+        let id = self.allocate()?;
+        self.data.push_back(Element(id, el));
+        Ok(id)
+    }
+
+    pub fn ack(&mut self, ack_id: i64) -> Result<Vec<i64>, RingQueueError> {
         if ack_id > self.cur_id {
             return Err(RingQueueError::InvalidAckId(self.cur_id, self.start_id));
         }
         let poped_size = ack_id - self.start_id + 1;
+        let mut v = Vec::new();
         for _ in 0..poped_size {
-            let _ = self.data.pop_front();
+            let o = self.data.pop_front();
+            if let Some(e) = o {
+                v.push(e.0);
+            }
+        }
+        if v.len() > 0 && self.notify.is_some() {
+            self.notify.as_mut().unwrap().notify_one();
         }
         self.start_id = ack_id + 1;
-        Ok(())
+        Ok(v)
     }
 
     pub fn not_acked_len(&self) -> i64 {

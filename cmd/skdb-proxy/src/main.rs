@@ -1,4 +1,4 @@
-use grpc_cli::{handshake, WrapSegmentData};
+// use grpc_cli::{handshake, WrapSegmentData};
 use skdb::client::{RingServiceErr, SinkErr};
 use skdb::com::ring::RingQueueError;
 use skdb::{client::RingServiceReqEvent, TOKIO_RUN};
@@ -9,61 +9,61 @@ use tower::{Service, ServiceExt};
 use tracing::{error, info};
 use tracing_subscriber::fmt::Subscriber;
 
-pub(crate) mod grpc_cli;
-mod serv;
+// pub(crate) mod grpc_cli;
+// mod serv;
 
 fn main() {
     let fmt_scriber = Subscriber::new();
     tracing::subscriber::set_global_default(fmt_scriber).expect("Set global subscriber");
 
-    let (send, mut recv) = unbounded_channel::<WrapSegmentData>();
-    let exec = async {
-        let (tracing_conn, client) = handshake("127.0.0.1:9000").await;
-        let ack_fun = Box::new(|arg: &SegmentRes| {
-            let meta = arg.get_meta();
-            meta.get_field_type() == Meta_RequestType::TRANS_ACK
-        });
-        let (mut service, client) = tracing_conn.split(20000, 10, Duration::from_secs(1), ack_fun);
+    // let (send, mut recv) = unbounded_channel::<WrapSegmentData>();
+    // let exec = async {
+    //     let (tracing_conn, client) = handshake("127.0.0.1:9000").await;
+    //     let ack_fun = Box::new(|arg: &SegmentRes| {
+    //         let meta = arg.get_meta();
+    //         meta.get_field_type() == Meta_RequestType::TRANS_ACK
+    //     });
+    //     let (mut service, client) = tracing_conn.split(20000, 10, Duration::from_secs(1), ack_fun);
 
-        loop {
-            let wrap_segment = recv.recv().await;
-            match wrap_segment {
-                Some(seg) => {
-                    let event = RingServiceReqEvent::Msg(seg);
-                    // Currently our service poll ready don't throw Error
-                    let _ = service.ready().await;
+    //     loop {
+    //         let wrap_segment = recv.recv().await;
+    //         match wrap_segment {
+    //             Some(seg) => {
+    //                 let event = RingServiceReqEvent::Msg(seg);
+    //                 // Currently our service poll ready don't throw Error
+    //                 let _ = service.ready().await;
 
-                    let req_res = service.call(event).await;
-                    if let Err(e) = req_res {
-                        let err = e.downcast::<RingServiceErr<SinkErr, RingQueueError>>();
-                        if let Ok(e) = err {
-                            match *e {
-                                RingServiceErr::Left(sink_err) => {
-                                    if let SinkErr::GrpcSinkErr(e) = sink_err {
-                                        error!("Grpc sink has met serious problem, we should drop current connection,e:{}", e);
-                                        break;
-                                    }
-                                }
-                                RingServiceErr::Right(ring_queue_err) => match ring_queue_err {
-                                    RingQueueError::Full(_, _) => {
-                                        unreachable!("Every request will be called poll ready, poll ready will check the ringqueue's length");
-                                    }
-                                    RingQueueError::InvalidAckId(cur_id, seq_id) => {
-                                        error!("Invalid ackId, maybe we got a error response from remote peer, cur_id:{}, seq_id:{}", cur_id, seq_id);
-                                    }
-                                },
-                            }
-                        }
-                    }
-                }
-                None => {
-                    info!("Sender has been dropped..");
-                    break;
-                }
-            }
-        }
-    };
-    TOKIO_RUN.block_on(exec);
+    //                 let req_res = service.call(event).await;
+    //                 if let Err(e) = req_res {
+    //                     let err = e.downcast::<RingServiceErr<SinkErr, RingQueueError>>();
+    //                     if let Ok(e) = err {
+    //                         match *e {
+    //                             RingServiceErr::Left(sink_err) => {
+    //                                 if let SinkErr::GrpcSinkErr(e) = sink_err {
+    //                                     error!("Grpc sink has met serious problem, we should drop current connection,e:{}", e);
+    //                                     break;
+    //                                 }
+    //                             }
+    //                             RingServiceErr::Right(ring_queue_err) => match ring_queue_err {
+    //                                 RingQueueError::Full(_, _) => {
+    //                                     unreachable!("Every request will be called poll ready, poll ready will check the ringqueue's length");
+    //                                 }
+    //                                 RingQueueError::InvalidAckId(cur_id, seq_id) => {
+    //                                     error!("Invalid ackId, maybe we got a error response from remote peer, cur_id:{}, seq_id:{}", cur_id, seq_id);
+    //                                 }
+    //                             },
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //             None => {
+    //                 info!("Sender has been dropped..");
+    //                 break;
+    //             }
+    //         }
+    //     }
+    // };
+    // TOKIO_RUN.block_on(exec);
 }
 
 // // pub(crate) mod chan;

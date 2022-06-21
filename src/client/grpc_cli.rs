@@ -12,59 +12,30 @@ use tracing::{error, trace};
 
 use crate::com::util::CalcSleepTime;
 
-use super::{ChangeResend, Created, HandShaked, TracingConnection};
+use super::{Created, HandShaked, TracingConnection};
 
-pub(crate) fn init_grpc_chan(addr: &str) -> Channel {
-    let env = Environment::new(3);
-    ChannelBuilder::new(Arc::new(env)).connect(addr)
-}
-
-#[derive(Debug, Clone)]
-pub struct WrapSegmentData(pub SegmentData);
-
-impl ChangeResend for WrapSegmentData {
-    fn change_resend_meta(&mut self) {
-        self.0.mut_meta().field_type = Meta_RequestType::NEED_RESEND;
-    }
-
-    fn fill_seq_id(&mut self, seq_id: i64) {
-        self.0.mut_meta().seqId = seq_id;
-    }
-
-    fn seq_id(&self) -> Option<i64> {
-        let s = self.0.get_meta().get_seqId();
-        if s == 0 {
-            return None;
-        } else {
-            return Some(s);
-        }
-    }
-}
-
-impl From<WrapSegmentData> for SegmentData {
-    fn from(w: WrapSegmentData) -> Self {
-        w.0
-    }
-}
-
-pub(crate) fn init_push_msg_conn(
-    chan: Channel,
-) -> Result<
-    (
-        TracingConnection<Created, WrapSegmentData, SegmentData, SegmentRes>,
-        SkyTracingClient,
-    ),
-    AnyError,
-> {
-    let client = SkyTracingClient::new(chan);
-    split_client(client)
-}
+// pub(crate) fn init_grpc_chan(addr: &str) -> Channel {
+//     let env = Environment::new(3);
+//     ChannelBuilder::new(Arc::new(env)).connect(addr)
+// }
+// pub(crate) fn init_push_msg_conn(
+//     chan: Channel,
+// ) -> Result<
+//     (
+//         TracingConnection<Created, WrapSegmentData, SegmentData, SegmentRes>,
+//         SkyTracingClient,
+//     ),
+//     AnyError,
+// > {
+//     let client = SkyTracingClient::new(chan);
+//     split_client(client)
+// }
 
 pub(crate) fn split_client(
     client: SkyTracingClient,
 ) -> Result<
     (
-        TracingConnection<Created, WrapSegmentData, SegmentData, SegmentRes>,
+        TracingConnection<Created, SegmentData, SegmentRes>,
         SkyTracingClient,
     ),
     AnyError,
@@ -81,47 +52,47 @@ pub(crate) fn split_client(
     }
 }
 
-pub(crate) fn gen_hand_pkt() -> SegmentData {
-    let mut segment = SegmentData::default();
-    let mut meta = Meta::default();
-    meta.field_type = Meta_RequestType::HANDSHAKE;
-    segment.set_meta(meta);
-    segment
-}
+// pub(crate) fn gen_hand_pkt() -> SegmentData {
+//     let mut segment = SegmentData::default();
+//     let mut meta = Meta::default();
+//     meta.field_type = Meta_RequestType::HANDSHAKE;
+//     segment.set_meta(meta);
+//     segment
+// }
 
-fn check_hand_resp(_: SegmentRes, req: SegmentData) -> (bool, i32) {
-    (true, req.get_meta().connId)
-}
+// fn check_hand_resp(_: SegmentRes, req: SegmentData) -> (bool, i32) {
+//     (true, req.get_meta().connId)
+// }
 
-// It's a block function, this function will retry until we get a handshake successful result
-pub(crate) async fn handshake(
-    addr: &str,
-) -> (
-    TracingConnection<HandShaked, WrapSegmentData, SegmentData, SegmentRes>,
-    SkyTracingClient,
-) {
-    let mut counter = 0usize;
-    loop {
-        let chan = init_grpc_chan(addr);
-        let conn = init_push_msg_conn(chan);
-        match conn {
-            Ok((conn, client)) => {
-                let res = conn.handshake(check_hand_resp, gen_hand_pkt).await;
-                match res {
-                    Ok(conn) => return (conn, client),
-                    Err(e) => {
-                        error!("Hanshake failed, wait 1 second,and continue, e:{:?}", e);
-                        sleep(counter.caculate_sleep_time(Duration::from_secs(1))).await;
-                    }
-                }
-            }
-            Err(e) => {
-                error!(
-                    "Init connection failed! Wait 1 second and will try to reconnect again!e:{:?}",
-                    e
-                );
-                sleep(counter.caculate_sleep_time(Duration::from_secs(1))).await;
-            }
-        }
-    }
-}
+// // It's a block function, this function will retry until we get a handshake successful result
+// pub(crate) async fn handshake(
+//     addr: &str,
+// ) -> (
+//     TracingConnection<HandShaked, WrapSegmentData, SegmentData, SegmentRes>,
+//     SkyTracingClient,
+// ) {
+//     let mut counter = 0usize;
+//     loop {
+//         let chan = init_grpc_chan(addr);
+//         let conn = init_push_msg_conn(chan);
+//         match conn {
+//             Ok((conn, client)) => {
+//                 let res = conn.handshake(check_hand_resp, gen_hand_pkt).await;
+//                 match res {
+//                     Ok(conn) => return (conn, client),
+//                     Err(e) => {
+//                         error!("Hanshake failed, wait 1 second,and continue, e:{:?}", e);
+//                         sleep(counter.caculate_sleep_time(Duration::from_secs(1))).await;
+//                     }
+//                 }
+//             }
+//             Err(e) => {
+//                 error!(
+//                     "Init connection failed! Wait 1 second and will try to reconnect again!e:{:?}",
+//                     e
+//                 );
+//                 sleep(counter.caculate_sleep_time(Duration::from_secs(1))).await;
+//             }
+//         }
+//     }
+// }
