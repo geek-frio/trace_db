@@ -2,17 +2,29 @@ use grpcio::ChannelBuilder;
 use grpcio::Environment;
 use grpcio::ServerBuilder;
 use lazy_static::lazy_static;
+use redis::Client as RedisClient;
+use skdb::client::cluster::make_service;
+use skdb::client::cluster::ClientEvent;
+use skdb::client::cluster::ClusterActiveWatcher;
+use skdb::client::cluster::ClusterPassive;
+use skdb::client::cluster::Observe;
+use skdb::client::cluster::Observer;
+use skdb::client::cluster::Watch;
+use skdb::client::trans::TransportErr;
 use skdb::com::redis::RedisAddr;
 use skdb::com::tracing::RollingFileMaker;
 use skdb::tag::search::AddrsConfigWatcher;
 use skdb::tag::search::SearchBuilder;
+use std::error::Error;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::sync::Once;
 use std::time::Duration;
+use tower::util::BoxCloneService;
 use tracing_subscriber::{prelude::*, Registry};
 
+use crate::serv::route::LocalSegmentMsgConsumer;
 use clap::Parser;
 use crossbeam_channel::Receiver as ShutdownReceiver;
 use crossbeam_channel::Sender as ShutdownSender;
@@ -34,8 +46,6 @@ use tracing::info;
 use tracing::info_span;
 use tracing::trace;
 use tracing::Instrument;
-
-use crate::serv::route::LocalSegmentMsgConsumer;
 
 mod serv;
 /// Simple program to greet a person
@@ -85,6 +95,9 @@ impl MainServer {
     fn start(&mut self) {
         let _span = info_span!("main_server");
         info!("Start to init search builder...");
+        let (service, event_sender, conn_broken_receiver) = self.make_service();
+
+        self.create_cluster_watcher(conn_broken_receiver);
         let _search_builder = self.create_search_builder(self.global_config.clone());
         let (segment_sender, segment_receiver) = futures::channel::mpsc::channel(10000);
         let router = self.start_batch_system_for_segment();
@@ -155,7 +168,46 @@ impl MainServer {
         );
     }
 
-    fn create_external_proxy(&self) {}
+    fn make_service(
+        &self,
+    ) -> (
+        BoxCloneService<SegmentData, Result<(), TransportErr>, Box<dyn Error + Send + Sync>>,
+        tokio::sync::mpsc::Sender<ClientEvent>,
+        tokio::sync::mpsc::Receiver<i32>,
+    ) {
+        let (send, recv) = tokio::sync::mpsc::channel(1024);
+        let (broken_notify, broken_recv) = tokio::sync::mpsc::channel::<i32>(1024);
+        let passive = ClusterPassive::new(recv, broken_notify);
+        let s = make_service(passive);
+        (s, send, broken_recv)
+    }
+
+    fn create_cluster_watcher(&self, chg_notify: tokio::sync::mpsc::Receiver<i32>) {
+        let mut obj = Observer::new();
+        let service_recv = obj.subscribe();
+        let search_recv = obj.subscribe();
+
+        let redis_cli = self.gen_redis_cli();
+        let clt = ClusterActiveWatcher::new(redis_cli);
+
+        let config = self.global_config.clone();
+        TOKIO_RUN.spawn(async move {
+            let res = clt.block_watch(obj, chg_notify, config).await;
+            if let Err(e) = res {
+                error!(%e, "Unrecover exception, exit");
+            }
+        });
+    }
+
+    fn gen_redis_cli(&self) -> RedisClient {
+        let mut redis_addr: RedisAddr = (&self.global_config)
+            .redis_addr
+            .as_str()
+            .try_into()
+            .expect("Invalid redis addr config");
+
+        redis_addr.client().expect("Redis connect failed!")
+    }
 
     fn create_search_builder(&self, config: Arc<GlobalConfig>) -> SearchBuilder<SkyTracingClient> {
         let mut redis_addr: RedisAddr = self

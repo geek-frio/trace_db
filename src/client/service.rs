@@ -6,11 +6,13 @@ use tower::{load::Load, Service};
 
 use super::trans::{RequestScheduler, TransportErr};
 
-pub struct Endpoint {
+pub struct EndpointService {
     sched: RequestScheduler,
+    broken_notify: tokio::sync::mpsc::Sender<i32>,
+    id: i32,
 }
 
-impl Load for Endpoint {
+impl Load for EndpointService {
     type Metric = i32;
 
     fn load(&self) -> Self::Metric {
@@ -18,13 +20,21 @@ impl Load for Endpoint {
     }
 }
 
-impl Endpoint {
-    pub fn new(sched: RequestScheduler) -> Endpoint {
-        Endpoint { sched }
+impl EndpointService {
+    pub fn new(
+        sched: RequestScheduler,
+        broken_notify: tokio::sync::mpsc::Sender<i32>,
+        id: i32,
+    ) -> EndpointService {
+        EndpointService {
+            sched,
+            broken_notify,
+            id,
+        }
     }
 }
 
-impl Service<SegmentData> for Endpoint {
+impl Service<SegmentData> for EndpointService {
     type Response = Result<(), TransportErr>;
 
     type Error = String;
@@ -37,8 +47,22 @@ impl Service<SegmentData> for Endpoint {
 
     fn call(&mut self, req: SegmentData) -> Self::Future {
         let mut sched = self.sched.clone();
+        let broken_notify = self.broken_notify.clone();
+        let id = self.id;
         Box::pin(async move {
             let r = sched.request(req).await;
+            if let Err(e) = r.as_ref() {
+                match e {
+                    &TransportErr::ConnCreateFailed
+                    | &TransportErr::HandshakeFailed
+                    | &TransportErr::Shutdown
+                    | &TransportErr::ReceiverChanClosed
+                    | &TransportErr::RecvErr => {
+                        let _ = broken_notify.send(id).await;
+                    }
+                    _ => {}
+                }
+            }
             Ok(r)
         })
     }

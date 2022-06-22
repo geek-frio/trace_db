@@ -9,7 +9,7 @@ use std::marker::PhantomData;
 pub mod cluster;
 pub mod grpc_cli;
 mod service;
-mod trans;
+pub mod trans;
 
 pub struct TracingConnection<Status, Req, Resp> {
     sink: Option<StreamingCallSink<Req>>,

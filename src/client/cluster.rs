@@ -1,10 +1,12 @@
 use async_trait::async_trait;
 use redis::Client as RedisClient;
 use std::collections::{HashMap, HashSet};
+use std::error::Error;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
-use std::{marker::PhantomData, sync::Arc};
+use tower::util::BoxCloneService;
 use tracing::error;
 
 use crate::client::trans::Transport;
@@ -15,7 +17,6 @@ use futures::never::Never;
 use futures::{ready, FutureExt, Stream};
 use grpcio::{ChannelBuilder, Environment};
 use skproto::tracing::{Meta_RequestType, SegmentData, SkyTracingClient};
-use std::fmt::Debug;
 use tokio::select;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
@@ -24,44 +25,36 @@ use tower::ServiceBuilder;
 use tower::{discover::Change, Service};
 
 use super::grpc_cli::split_client;
-use super::service::Endpoint;
+use super::service::EndpointService;
+use super::trans::TransportErr;
 
-pub struct ClusterDiscover<Req, S>
-where
-    S: Service<Req>,
-{
+pub struct ClusterPassive {
     recv: Receiver<ClientEvent>,
     clients: Arc<CHashMap<i32, SkyTracingClient>>,
-    req_marker: PhantomData<Req>,
-    service_marker: PhantomData<S>,
+    conn_broken_notify: tokio::sync::mpsc::Sender<i32>,
 }
 
-impl<Req, S> ClusterDiscover<Req, S>
-where
-    S: Service<Req> + Unpin + 'static,
-    Req: Debug + Send + 'static + Clone + Unpin,
-{
-    fn new(recv: Receiver<ClientEvent>) -> ClusterDiscover<Req, S> {
-        ClusterDiscover {
+impl ClusterPassive {
+    pub fn new(
+        recv: Receiver<ClientEvent>,
+        conn_broken_notify: tokio::sync::mpsc::Sender<i32>,
+    ) -> ClusterPassive {
+        ClusterPassive {
             recv,
             clients: Arc::new(CHashMap::new()),
-            req_marker: PhantomData,
-            service_marker: PhantomData,
+            conn_broken_notify,
         }
     }
 }
 
+#[derive(Clone)]
 pub enum ClientEvent {
     DropEvent(i32),
     NewClient((i32, SkyTracingClient)),
 }
 
-impl<Req, S> Stream for ClusterDiscover<Req, S>
-where
-    S: Service<Req> + Unpin + 'static,
-    Req: Debug + Send + 'static + Clone + Unpin,
-{
-    type Item = Result<Change<i32, Endpoint>, Never>;
+impl Stream for ClusterPassive {
+    type Item = Result<Change<i32, EndpointService>, Never>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -97,7 +90,11 @@ where
                                     let stream = conn.recv.unwrap();
 
                                     let sched = Transport::init(sink, stream);
-                                    let service = Endpoint::new(sched);
+                                    let service = EndpointService::new(
+                                        sched,
+                                        self.conn_broken_notify.clone(),
+                                        id,
+                                    );
                                     return Some(Ok(Change::Insert(id, service)));
                                 }
                                 Err(_e) => {
@@ -120,22 +117,50 @@ where
     }
 }
 
-pub async fn make_service<S>(cluster: ClusterDiscover<SegmentData, S>) -> impl Service<SegmentData>
-where
-    S: Service<SegmentData> + Unpin + 'static + Send,
-{
+pub fn make_service(
+    cluster: ClusterPassive,
+) -> BoxCloneService<SegmentData, Result<(), TransportErr>, Box<dyn Error + Send + Sync>> {
     let s = ServiceBuilder::new()
         .buffer(100)
         .concurrency_limit(10)
         .service(Balance::new(cluster));
+    let s = BoxCloneService::new(s);
     s
 }
 
+pub trait Observe {
+    fn subscribe(&mut self) -> Receiver<ClientEvent>;
+}
+
+pub struct Observer {
+    vec: Vec<Sender<ClientEvent>>,
+}
+
+impl Observer {
+    pub fn new() -> Observer {
+        Observer { vec: Vec::new() }
+    }
+}
+
+impl Observe for Observer {
+    fn subscribe(&mut self) -> Receiver<ClientEvent> {
+        todo!()
+    }
+}
+
+impl Observer {
+    fn notify_all(&mut self, event: ClientEvent) {
+        for s in self.vec.iter_mut() {
+            let _ = s.try_send(event.clone());
+        }
+    }
+}
+
 #[async_trait]
-pub trait ClusterChangeWatcher {
+pub trait Watch {
     async fn block_watch(
         &self,
-        sender: Sender<ClientEvent>,
+        obj: Observer,
         chg_notify: Receiver<i32>,
         config: Arc<GlobalConfig>,
     ) -> Result<(), anyhow::Error>;
@@ -147,11 +172,21 @@ pub struct ClusterActiveWatcher {
     client: RedisClient,
 }
 
+impl ClusterActiveWatcher {
+    pub fn new(client: RedisClient) -> ClusterActiveWatcher {
+        ClusterActiveWatcher {
+            counter: AtomicI32::new(1),
+            watcher_started: Arc::new(AtomicBool::new(false)),
+            client: client,
+        }
+    }
+}
+
 #[async_trait]
-impl ClusterChangeWatcher for ClusterActiveWatcher {
+impl Watch for ClusterActiveWatcher {
     async fn block_watch(
         &self,
-        sender: Sender<ClientEvent>,
+        mut obj: Observer,
         mut chg_notify: Receiver<i32>,
         config: Arc<GlobalConfig>,
     ) -> Result<(), anyhow::Error> {
@@ -180,7 +215,7 @@ impl ClusterChangeWatcher for ClusterActiveWatcher {
                             Self::update_addrs(&mut old_addrs, add_addrs, del_addrs);
                             let events = del_events.into_iter().chain(add_events.into_iter());
                             events.for_each(|e| {
-                                let _ = sender.send(e);
+                                obj.notify_all(e);
                             });
                         }
                         Err(e) => {
@@ -190,7 +225,7 @@ impl ClusterChangeWatcher for ClusterActiveWatcher {
                 }
                 event = chg_notify.recv() => {
                     if let Some(id) = event {
-                        let _ = sender.send(ClientEvent::DropEvent(id)).await;
+                        obj.notify_all(ClientEvent::DropEvent(id));
                     }
                 }
             }

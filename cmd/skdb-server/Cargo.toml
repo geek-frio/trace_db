@@ -27,3 +27,5 @@ futures-sink = "0.3"
 ctrlc = "3.2.2"
 uuid = {version = "0.8", features = ["serde", "v4"]}
 pin-project = "1.0.10"
+redis = "0.21.5"
+tower = { version = "0.4.12", features = ["limit", "buffer", "util", "discover", "balance"] }
