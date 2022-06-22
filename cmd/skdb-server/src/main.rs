@@ -155,6 +155,8 @@ impl MainServer {
         );
     }
 
+    fn create_external_proxy(&self) {}
+
     fn create_search_builder(&self, config: Arc<GlobalConfig>) -> SearchBuilder<SkyTracingClient> {
         let mut redis_addr: RedisAddr = self
             .global_config

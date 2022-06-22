@@ -1,21 +1,36 @@
+use async_trait::async_trait;
+use redis::Client as RedisClient;
+use std::any;
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::task::Poll;
+use std::time::Duration;
 use std::{marker::PhantomData, sync::Arc};
+use tracing::error;
 
 use crate::client::trans::Transport;
+use crate::com::config::GlobalConfig;
+use crate::com::redis::{Record, RedisTTLSet};
+use crate::TOKIO_RUN;
 use chashmap::CHashMap;
 use futures::never::Never;
 use futures::{ready, FutureExt, Stream};
+use grpcio::{ChannelBuilder, Environment};
+use redis::Connection;
 use skproto::tracing::{Meta_RequestType, SegmentData, SkyTracingClient};
 use std::fmt::Debug;
-use tokio::sync::mpsc::Receiver;
+use tokio::select;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::time::sleep;
 use tower::balance::p2c::Balance;
-use tower::load::Load;
+use tower::ServiceBuilder;
 use tower::{discover::Change, Service};
 
 use super::grpc_cli::split_client;
 use super::service::Endpoint;
 
-pub struct ClusterManager<Req, S>
+pub struct ClusterPassive<Req, S>
 where
     S: Service<Req>,
 {
@@ -25,13 +40,13 @@ where
     service_marker: PhantomData<S>,
 }
 
-impl<Req, S> ClusterManager<Req, S>
+impl<Req, S> ClusterPassive<Req, S>
 where
     S: Service<Req> + Unpin + 'static,
     Req: Debug + Send + 'static + Clone + Unpin,
 {
-    fn new(recv: Receiver<ClientEvent>) -> ClusterManager<Req, S> {
-        ClusterManager {
+    fn new(recv: Receiver<ClientEvent>) -> ClusterPassive<Req, S> {
+        ClusterPassive {
             recv,
             clients: Arc::new(CHashMap::new()),
             req_marker: PhantomData,
@@ -45,7 +60,7 @@ enum ClientEvent {
     NewClient((i32, SkyTracingClient)),
 }
 
-impl<Req, S> Stream for ClusterManager<Req, S>
+impl<Req, S> Stream for ClusterPassive<Req, S>
 where
     S: Service<Req> + Unpin + 'static,
     Req: Debug + Send + 'static + Clone + Unpin,
@@ -109,70 +124,149 @@ where
     }
 }
 
-async fn make_service<S>(cluster: ClusterManager<SegmentData, S>) -> impl Service<SegmentData>
+async fn make_service<S>(cluster: ClusterPassive<SegmentData, S>) -> impl Service<SegmentData>
 where
-    S: Service<SegmentData> + Unpin + 'static,
+    S: Service<SegmentData> + Unpin + 'static + Send,
 {
-    Balance::new(cluster)
+    let s = ServiceBuilder::new()
+        .buffer(100)
+        .concurrency_limit(10)
+        .service(Balance::new(cluster));
+    s
 }
 
-// async fn req<S>(
-//     req: SegmentData,
-//     cluster: ClusterManager<SegmentData, S>,
-// ) -> impl Service<SegmentData>
-// where
-//     S: Service<SegmentData> + Load + Unpin + 'static,
-// {
-//     Balance::new(cluster)
-// }
+#[async_trait]
+trait ClusterChangeWatcher {
+    async fn block_watch(
+        &self,
+        sender: Sender<ClientEvent>,
+        chg_notify: Receiver<i32>,
+        config: Arc<GlobalConfig>,
+    ) -> Result<(), anyhow::Error>;
+}
 
-// impl<WrapReq, S> ClusterManager<WrapReq, S>
-// where
-//     S: Service<WrapReq>,
-// {
-//     pub fn new(recv: Receiver<Change<i32, SkyTracingClient>>) -> ClusterManager<WrapReq, S> {
-//         ClusterManager {
-//             recv,
-//             srv_map: HashMap::new(),
-//             client_map: HashMap::new(),
-//             wrap_req_marker: PhantomData,
-//         }
-//     }
+struct ClusterActiveWatcher {
+    counter: AtomicI32,
+    watcher_started: Arc<AtomicBool>,
+    client: RedisClient,
+}
 
-//     pub fn init(&mut self, redis_client: RedisClient) {
-//         let redis_client = redis_client.clone();
-//         // let clients = self.clients.clone();
-//         let mut conn = Self::loop_retrive_conn(redis_client.clone());
-//     }
+#[async_trait]
+impl ClusterChangeWatcher for ClusterActiveWatcher {
+    async fn block_watch(
+        &self,
+        sender: Sender<ClientEvent>,
+        mut chg_notify: Receiver<i32>,
+        config: Arc<GlobalConfig>,
+    ) -> Result<(), anyhow::Error> {
+        // Check if already started watch
+        let r = self.watcher_started.compare_exchange(
+            false,
+            true,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+        if r.is_err() || !r.unwrap() {
+            return Err(anyhow::Error::msg("Has already started!"));
+        }
 
-//     pub fn loop_retrive_conn(redis_client: RedisClient) -> Connection {
-//         loop {
-//             let conn = redis_client.get_connection();
-//             match conn {
-//                 Err(e) => {
-//                     error!("Get redis conn failed!Retry in one second!e:{:?}", e);
-//                     std::thread::sleep(Duration::from_secs(1));
-//                     continue;
-//                 }
-//                 Ok(conn) => return conn,
-//             }
-//         }
-//     }
+        let redis_client = self.client.clone();
+        let mut old_addrs = HashMap::<String, i32>::new();
+        loop {
+            select! {
+                _ = sleep(Duration::from_secs(5)) => {
+                    let current_addrs = Self::query_redis_cur_addrs(redis_client.clone(), &config);
+                    match current_addrs {
+                        Ok(current_addrs) => {
+                            let (del_addrs, add_addrs) = self.compare_diff_addrs(&old_addrs, &current_addrs);
+                            let del_events = Self::gen_del_events(&del_addrs, &old_addrs);
+                            let add_events = Self::gen_add_events(&add_addrs);
+                            Self::update_addrs(&mut old_addrs, add_addrs, del_addrs);
+                            let events = del_events.into_iter().chain(add_events.into_iter());
+                            events.for_each(|e| {
+                                let _ = sender.send(e);
+                            });
+                        }
+                        Err(e) => {
+                            error!(%e,"Query cluster info from redis failed!Wait to next retry.");
+                        }
+                    }
+                }
+                event = chg_notify.recv() => {
+                    if let Some(id) = event {
+                        let _ = sender.send(ClientEvent::DropEvent(id)).await;
+                    }
+                }
+            }
+        }
+    }
+}
 
-//     fn create_grpc_conns<'a>(addrs: Vec<&'a Record>) -> Vec<(SkyTracingClient, &'a Record)> {
-//         addrs
-//             .into_iter()
-//             .map(|addr| {
-//                 let ip_port = addr.sub_key.as_str();
-//                 let env = Environment::new(3);
-//                 // TODO: config change
-//                 let channel = ChannelBuilder::new(Arc::new(env)).connect(ip_port);
-//                 (SkyTracingClient::new(channel), addr)
-//             })
-//             .collect::<Vec<(SkyTracingClient, &'a Record)>>()
-//     }
+impl ClusterActiveWatcher {
+    fn create_grpc_conns<'a>(addrs: Vec<(&'a str, i32)>) -> Vec<(SkyTracingClient, i32)> {
+        addrs
+            .into_iter()
+            .map(|(addr, id)| {
+                let env = Environment::new(3);
+                let channel = ChannelBuilder::new(Arc::new(env)).connect(addr);
+                (SkyTracingClient::new(channel), id)
+            })
+            .collect::<Vec<(SkyTracingClient, i32)>>()
+    }
 
-//     fn diff_create<'a>(old: &'a HashSet<Record>, new: &'a HashSet<Record>) -> Vec<&'a Record> {
-//         old.difference(new).collect()
-//     }
-// }
+    fn query_redis_cur_addrs(
+        redis_cli: RedisClient,
+        config: &Arc<GlobalConfig>,
+    ) -> Result<HashSet<String>, anyhow::Error> {
+        let redis_ttl: RedisTTLSet = Default::default();
+        let mut conn = redis_cli.get_connection()?;
+        let addrs = redis_ttl.query_all(&mut conn)?;
+        let addrs: Vec<String> = addrs
+            .into_iter()
+            .map(|addr| format!("{}:{}", addr.sub_key, config.grpc_port))
+            .collect();
+        Ok(HashSet::from_iter(addrs.into_iter()))
+    }
+
+    fn compare_diff_addrs(
+        &self,
+        old: &HashMap<String, i32>,
+        addrs: &HashSet<String>,
+    ) -> (Vec<String>, Vec<(String, i32)>) {
+        let del: Vec<String> = old
+            .keys()
+            .filter(|key| !addrs.contains(*key))
+            .map(|s| s.to_string())
+            .collect();
+        let add: Vec<(String, i32)> = addrs
+            .iter()
+            .filter(|s| !old.contains_key(*s))
+            .map(|s| (s.to_string(), self.counter.fetch_add(1, Ordering::Relaxed)))
+            .collect();
+        (del, add)
+    }
+
+    fn gen_del_events(addrs: &Vec<String>, old: &HashMap<String, i32>) -> Vec<ClientEvent> {
+        addrs
+            .into_iter()
+            .filter(|addr| old.contains_key(*addr))
+            .map(|addr| *old.get(addr).unwrap())
+            .map(|id| ClientEvent::DropEvent(id))
+            .collect()
+    }
+
+    fn gen_add_events(addrs: &Vec<(String, i32)>) -> Vec<ClientEvent> {
+        let addrs: Vec<(&str, i32)> = addrs.into_iter().map(|(s, id)| (s.as_str(), *id)).collect();
+        Self::create_grpc_conns(addrs)
+            .into_iter()
+            .map(|(client, id)| ClientEvent::NewClient((id, client)))
+            .collect()
+    }
+
+    fn update_addrs(old: &mut HashMap<String, i32>, add: Vec<(String, i32)>, del: Vec<String>) {
+        for (addr, id) in add.into_iter() {
+            old.insert(addr, id);
+        }
+        old.retain(|k, _v| !del.contains(k));
+    }
+}

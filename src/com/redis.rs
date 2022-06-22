@@ -105,6 +105,12 @@ impl<'a> TryFrom<&'a Value> for WrapStr {
     }
 }
 
+impl Default for RedisTTLSet {
+    fn default() -> Self {
+        Self { ttl: 5 }
+    }
+}
+
 impl RedisTTLSet {
     pub(crate) fn new(ttl: Secs) -> RedisTTLSet {
         RedisTTLSet { ttl }

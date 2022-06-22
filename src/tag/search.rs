@@ -1,5 +1,6 @@
 use anyhow::Error as AnyError;
 use crossbeam_channel::unbounded;
+use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
 use redis::Client as RedisClient;
 use skproto::tracing::SegRange;
@@ -25,6 +26,7 @@ pub trait ConfigWatcher<T>: Send {
     where
         F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy;
 }
+
 // Global Single Instance
 #[derive(Clone)]
 pub struct SearchBuilder<T> {
@@ -65,6 +67,25 @@ impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
             }
         });
         return Ok(builder);
+    }
+
+    pub fn new(receiver: Receiver<Vec<T>>) -> SearchBuilder<T> {
+        let clients = Vec::<T>::new();
+        let searcher = Arc::new(Mutex::new(DistSearchManager::new(Arc::new(clients))));
+
+        let builder = SearchBuilder {
+            searcher: searcher.clone(),
+        };
+        // start watcher task to watch clients add/delete event
+        std::thread::spawn(move || {
+            let clients = receiver.recv();
+            if let Ok(clients) = clients {
+                if let Ok(mut s) = searcher.lock() {
+                    *s = DistSearchManager::new(Arc::new(clients));
+                }
+            }
+        });
+        builder
     }
 
     pub fn get_searcher(&self) -> Result<DistSearchManager<T>, ()> {
