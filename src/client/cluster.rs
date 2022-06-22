@@ -1,8 +1,6 @@
 use async_trait::async_trait;
 use redis::Client as RedisClient;
-use std::any;
 use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::task::Poll;
 use std::time::Duration;
@@ -11,13 +9,11 @@ use tracing::error;
 
 use crate::client::trans::Transport;
 use crate::com::config::GlobalConfig;
-use crate::com::redis::{Record, RedisTTLSet};
-use crate::TOKIO_RUN;
+use crate::com::redis::RedisTTLSet;
 use chashmap::CHashMap;
 use futures::never::Never;
 use futures::{ready, FutureExt, Stream};
 use grpcio::{ChannelBuilder, Environment};
-use redis::Connection;
 use skproto::tracing::{Meta_RequestType, SegmentData, SkyTracingClient};
 use std::fmt::Debug;
 use tokio::select;
@@ -30,7 +26,7 @@ use tower::{discover::Change, Service};
 use super::grpc_cli::split_client;
 use super::service::Endpoint;
 
-pub struct ClusterPassive<Req, S>
+pub struct ClusterDiscover<Req, S>
 where
     S: Service<Req>,
 {
@@ -40,13 +36,13 @@ where
     service_marker: PhantomData<S>,
 }
 
-impl<Req, S> ClusterPassive<Req, S>
+impl<Req, S> ClusterDiscover<Req, S>
 where
     S: Service<Req> + Unpin + 'static,
     Req: Debug + Send + 'static + Clone + Unpin,
 {
-    fn new(recv: Receiver<ClientEvent>) -> ClusterPassive<Req, S> {
-        ClusterPassive {
+    fn new(recv: Receiver<ClientEvent>) -> ClusterDiscover<Req, S> {
+        ClusterDiscover {
             recv,
             clients: Arc::new(CHashMap::new()),
             req_marker: PhantomData,
@@ -55,12 +51,12 @@ where
     }
 }
 
-enum ClientEvent {
+pub enum ClientEvent {
     DropEvent(i32),
     NewClient((i32, SkyTracingClient)),
 }
 
-impl<Req, S> Stream for ClusterPassive<Req, S>
+impl<Req, S> Stream for ClusterDiscover<Req, S>
 where
     S: Service<Req> + Unpin + 'static,
     Req: Debug + Send + 'static + Clone + Unpin,
@@ -124,7 +120,7 @@ where
     }
 }
 
-async fn make_service<S>(cluster: ClusterPassive<SegmentData, S>) -> impl Service<SegmentData>
+pub async fn make_service<S>(cluster: ClusterDiscover<SegmentData, S>) -> impl Service<SegmentData>
 where
     S: Service<SegmentData> + Unpin + 'static + Send,
 {
@@ -136,7 +132,7 @@ where
 }
 
 #[async_trait]
-trait ClusterChangeWatcher {
+pub trait ClusterChangeWatcher {
     async fn block_watch(
         &self,
         sender: Sender<ClientEvent>,
@@ -145,7 +141,7 @@ trait ClusterChangeWatcher {
     ) -> Result<(), anyhow::Error>;
 }
 
-struct ClusterActiveWatcher {
+pub struct ClusterActiveWatcher {
     counter: AtomicI32,
     watcher_started: Arc<AtomicBool>,
     client: RedisClient,
