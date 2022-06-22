@@ -16,23 +16,16 @@ message BatchSegmentData {
 
 message Stat {
     bool ok = 1;
-    oneof return_stat {
-        Err err = 2;
-        Progress prog = 3;
-    }
+    Err err = 2;
 }
 
-message Progress {
-    int32 conn_id = 1; 
-    int64 max_seq_id = 2;
-    int64 cur_ack_id = 3;
-}
 
 message Err {
     enum ErrCode {
-        RateLimit = 0;
-        InvalidData = 1;
-        Unexpected = 2;
+        Ok = 0;
+        RateLimit = 1;
+        InvalidData = 2;
+        Unexpected = 3;
     }
     ErrCode code = 1; 
     string desc = 2;

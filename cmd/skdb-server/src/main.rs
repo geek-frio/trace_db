@@ -96,13 +96,16 @@ impl MainServer {
         let _span = info_span!("main_server");
         info!("Start to init search builder...");
         let (service, event_sender, conn_broken_receiver) = self.make_service();
-
-        self.create_cluster_watcher(conn_broken_receiver);
+        self.create_cluster_watcher(conn_broken_receiver, event_sender);
         let _search_builder = self.create_search_builder(self.global_config.clone());
         let (segment_sender, segment_receiver) = futures::channel::mpsc::channel(10000);
         let router = self.start_batch_system_for_segment();
         self.start_bridge_channel(segment_receiver, router, self.shutdown_sender.clone());
-        self.start_grpc(segment_sender.clone(), self.shutdown_receiver.clone());
+        self.start_grpc(
+            segment_sender.clone(),
+            self.shutdown_receiver.clone(),
+            service,
+        );
         info!("Shut receiver has received.");
     }
 
@@ -110,8 +113,13 @@ impl MainServer {
         &mut self,
         sender: Sender<SegmentDataCallback>,
         receiver: ShutdownReceiver<ShutdownEvent>,
+        service: BoxCloneService<
+            SegmentData,
+            Result<(), TransportErr>,
+            Box<dyn Error + Send + Sync>,
+        >,
     ) {
-        let skytracing = SkyTracingService::new(self.global_config.clone(), sender);
+        let skytracing = SkyTracingService::new(self.global_config.clone(), sender, service);
         let service = create_sky_tracing(skytracing);
         let env = Environment::new(1);
         let mut server = ServerBuilder::new(Arc::new(env))
@@ -182,9 +190,13 @@ impl MainServer {
         (s, send, broken_recv)
     }
 
-    fn create_cluster_watcher(&self, chg_notify: tokio::sync::mpsc::Receiver<i32>) {
+    fn create_cluster_watcher(
+        &self,
+        chg_notify: tokio::sync::mpsc::Receiver<i32>,
+        sender: tokio::sync::mpsc::Sender<ClientEvent>,
+    ) {
         let mut obj = Observer::new();
-        let service_recv = obj.subscribe();
+        obj.regist(sender);
         let search_recv = obj.subscribe();
 
         let redis_cli = self.gen_redis_cli();

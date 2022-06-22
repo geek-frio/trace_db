@@ -130,6 +130,7 @@ pub fn make_service(
 
 pub trait Observe {
     fn subscribe(&mut self) -> Receiver<ClientEvent>;
+    fn regist(&mut self, sender: Sender<ClientEvent>);
 }
 
 pub struct Observer {
@@ -144,7 +145,13 @@ impl Observer {
 
 impl Observe for Observer {
     fn subscribe(&mut self) -> Receiver<ClientEvent> {
-        todo!()
+        let (send, recv) = tokio::sync::mpsc::channel(1024);
+        self.vec.push(send);
+        recv
+    }
+
+    fn regist(&mut self, sender: Sender<ClientEvent>) {
+        self.vec.push(sender);
     }
 }
 

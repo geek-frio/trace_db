@@ -4,6 +4,7 @@ use futures::channel::mpsc::Sender;
 use futures::StreamExt;
 use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
+use skdb::client::trans::TransportErr;
 use skdb::com::config::GlobalConfig;
 use skdb::com::index::ConvertIndexAddr;
 use skdb::com::index::IndexAddr;
@@ -15,6 +16,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
@@ -23,6 +25,10 @@ use tantivy::Index;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
+use tokio::select;
+use tokio::time::sleep;
+use tower::util::BoxCloneService;
+use tower::Service;
 use tracing::error;
 
 #[derive(Clone)]
@@ -32,6 +38,11 @@ pub struct SkyTracingService {
     // All the tag engine share the same index schema
     tracing_schema: Schema,
     index_map: Arc<Mutex<HashMap<IndexAddr, Index>>>,
+    service: BoxCloneService<
+        SegmentData,
+        Result<(), TransportErr>,
+        Box<dyn std::error::Error + Send + Sync>,
+    >,
 }
 
 impl SkyTracingService {
@@ -39,6 +50,11 @@ impl SkyTracingService {
     pub fn new(
         config: Arc<GlobalConfig>,
         data_sender: Sender<SegmentDataCallback>,
+        service: BoxCloneService<
+            SegmentData,
+            Result<(), TransportErr>,
+            Box<dyn std::error::Error + Send + Sync>,
+        >,
     ) -> SkyTracingService {
         let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
@@ -47,6 +63,7 @@ impl SkyTracingService {
             config,
             tracing_schema: schema.clone(),
             index_map: index_map.clone(),
+            service,
         };
         service
     }
@@ -152,6 +169,59 @@ impl SkyTracing for SkyTracingService {
             }
         }
     }
+
+    fn batch_req_segments(
+        &mut self,
+        ctx: ::grpcio::RpcContext,
+        req: BatchSegmentData,
+        sink: ::grpcio::UnarySink<Stat>,
+    ) {
+        let service = self.service.clone();
+        ctx.spawn(async move {
+            select! {
+                _ = sleep(Duration::from_secs(8)) => {
+                    sink.fail(RpcStatus::new(RpcStatusCode::ABORTED));
+                }
+                stat = batch_req(service, req) => {
+                    let _ = sink.success(stat).await;
+                }
+            }
+        });
+    }
+}
+
+async fn batch_req(
+    mut service: BoxCloneService<
+        SegmentData,
+        Result<(), TransportErr>,
+        Box<dyn std::error::Error + Send + Sync>,
+    >,
+    batch: BatchSegmentData,
+) -> Stat {
+    for segment in batch.datas.into_iter() {
+        let resp = service.call(segment).await;
+        if let Err(_e) = resp {
+            let stat = gen_err_stat();
+            return stat;
+        }
+    }
+    gen_ok_stat()
+}
+
+fn gen_ok_stat() -> Stat {
+    let mut stat = Stat::new();
+    let mut err = Err::new();
+    err.set_code(Err_ErrCode::Ok);
+    stat.set_err(err);
+    stat
+}
+
+fn gen_err_stat() -> Stat {
+    let mut stat = Stat::new();
+    let mut err = Err::new();
+    err.set_code(Err_ErrCode::Unexpected);
+    stat.set_err(err);
+    stat
 }
 
 fn search(
