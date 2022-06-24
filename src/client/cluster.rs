@@ -349,6 +349,9 @@ mod tests {
         });
 
         let main_server = MainServer::new(config, "127.0.0.1".to_string());
+        TOKIO_RUN.spawn(async move {
+            main_server.start();
+        })
     }
 
     #[tokio::test]

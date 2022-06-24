@@ -1,51 +1,18 @@
-use grpcio::ChannelBuilder;
-use grpcio::Environment;
-use grpcio::ServerBuilder;
 use lazy_static::lazy_static;
-use redis::Client as RedisClient;
-use skdb::client::cluster::make_service;
-use skdb::client::cluster::ClientEvent;
-use skdb::client::cluster::ClusterActiveWatcher;
-use skdb::client::cluster::Observe;
-use skdb::client::cluster::Observer;
-use skdb::client::cluster::Watch;
-use skdb::client::trans::TransportErr;
-use skdb::com::redis::RedisAddr;
+
 use skdb::com::tracing::RollingFileMaker;
-use skdb::serv::route::LocalSegmentMsgConsumer;
-use skdb::serv::service::SkyTracingService;
 use skdb::serv::MainServer;
-use skdb::tag::search::AddrsConfigWatcher;
-use skdb::tag::search::Searcher;
-use std::error::Error;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::sync::Once;
-use std::time::Duration;
-use tower::util::BoxCloneService;
+use tracing::info;
 use tracing_subscriber::{prelude::*, Registry};
 
 use clap::Parser;
-use crossbeam_channel::Receiver as ShutdownReceiver;
-use crossbeam_channel::Sender as ShutdownSender;
-use skdb::com::batch::BatchSystem;
-use skdb::com::batch::FsmTypes;
 use skdb::com::config::ConfigManager;
 use skdb::com::config::GlobalConfig;
-use skdb::com::router::Router;
-use skdb::com::sched::NormalScheduler;
-use skdb::tag::fsm::SegmentDataCallback;
-use skdb::tag::fsm::TagFsm;
 use skdb::TOKIO_RUN;
-use skproto::tracing::*;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::time::sleep;
-use tracing::error;
-use tracing::info;
 use tracing::info_span;
-use tracing::trace;
-use tracing::Instrument;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct Args {

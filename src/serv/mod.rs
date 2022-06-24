@@ -51,31 +51,27 @@ lazy_static! {
 }
 
 pub struct MainServer {
-    // shutdown_sender: OneshotSender<()>,
     global_config: Arc<GlobalConfig>,
     ip: String,
-    shutdown_sender: ShutdownSender<ShutdownEvent>,
-    shutdown_receiver: ShutdownReceiver<ShutdownEvent>,
 }
 
 impl MainServer {
     pub fn new(global_config: Arc<GlobalConfig>, ip: String) -> MainServer {
-        let (shutdown_sender, shutdown_receiver) = crossbeam_channel::bounded(256);
-        let shutdown_sender_clone = shutdown_sender.clone();
+        MainServer { global_config, ip }
+    }
+    pub async fn start(&mut self) {
+        let _span = info_span!("main_server");
+
+        let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
+        let mut once = Some(shutdown_sender);
         ctrlc::set_handler(move || {
-            let _ = shutdown_sender.send(ShutdownEvent::Normal);
+            if once.is_some() {
+                let s = once.take();
+                let _ = s.unwrap().send(ShutdownEvent::Normal);
+            }
         })
         .expect("Error setting ctrl+c handler");
-        MainServer {
-            // shutdown_sender,
-            global_config,
-            ip,
-            shutdown_sender: shutdown_sender_clone,
-            shutdown_receiver,
-        }
-    }
-    pub fn start(&mut self) {
-        let _span = info_span!("main_server");
+
         info!("Start to init search builder...");
         let (service, event_sender, conn_broken_receiver) = make_service();
         let grpc_clients_chg_receiver =
@@ -83,18 +79,14 @@ impl MainServer {
 
         self.start_periodical_keep_alive_addr();
         let clis_chg_recv = create_grpc_clients_watcher(grpc_clients_chg_receiver);
-
         let searcher = Searcher::new(clis_chg_recv);
-
         let (segment_sender, segment_receiver) = tokio::sync::mpsc::unbounded_channel();
+
         let router = self.start_batch_system_for_segment();
-        self.start_bridge_channel(segment_receiver, router, self.shutdown_sender.clone());
-        self.start_grpc(
-            segment_sender.clone(),
-            self.shutdown_receiver.clone(),
-            service,
-            searcher,
-        );
+        self.start_bridge_channel(segment_receiver, router);
+
+        self.start_grpc(segment_sender.clone(), shutdown_receiver, service, searcher)
+            .await;
         info!("Shut receiver has received.");
     }
 
@@ -121,10 +113,10 @@ impl MainServer {
         });
     }
 
-    pub fn start_grpc(
+    pub async fn start_grpc(
         &mut self,
         sender: UnboundedSender<SegmentDataCallback>,
-        receiver: ShutdownReceiver<ShutdownEvent>,
+        receiver: tokio::sync::oneshot::Receiver<ShutdownEvent>,
         service: BoxCloneService<
             SegmentData,
             Result<(), TransportErr>,
@@ -142,7 +134,7 @@ impl MainServer {
             .build()
             .unwrap();
         server.start();
-        let _ = receiver.recv();
+        let _ = receiver.await;
     }
 
     pub fn start_batch_system_for_segment(&self) -> Router<TagFsm, NormalScheduler<TagFsm>> {
@@ -169,7 +161,6 @@ impl MainServer {
         &self,
         receiver: UnboundedReceiver<SegmentDataCallback>,
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
-        shutdown_sender: ShutdownSender<ShutdownEvent>,
     ) {
         let mut local_consumer =
             LocalSegmentMsgConsumer::new(router, self.global_config.clone(), receiver);
@@ -182,7 +173,6 @@ impl MainServer {
                     }
                     Err(e) => {
                         error!("Serious problem, local segment msg consumer exit:{:?}", e);
-                        let _ = shutdown_sender.send(ShutdownEvent::Err(e));
                     }
                 }
             }
