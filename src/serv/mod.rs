@@ -14,7 +14,7 @@ use crate::client::cluster::{
 use crate::client::trans::TransportErr;
 use crate::com::batch::{BatchSystem, FsmTypes};
 use crate::com::config::GlobalConfig;
-use crate::com::redis::RedisAddr;
+use crate::com::redis::{RedisAddr, RedisTTLSet};
 use crate::com::router::Router;
 use crate::com::sched::NormalScheduler;
 use crate::tag::fsm::{SegmentDataCallback, TagFsm};
@@ -80,6 +80,8 @@ impl MainServer {
         let (service, event_sender, conn_broken_receiver) = make_service();
         let grpc_clients_chg_receiver =
             self.create_cluster_watcher(conn_broken_receiver, event_sender);
+
+        self.start_periodical_keep_alive_addr();
         let clis_chg_recv = create_grpc_clients_watcher(grpc_clients_chg_receiver);
 
         let searcher = Searcher::new(clis_chg_recv);
@@ -94,6 +96,29 @@ impl MainServer {
             searcher,
         );
         info!("Shut receiver has received.");
+    }
+
+    pub fn start_periodical_keep_alive_addr(&mut self) {
+        let redis_cli = self.create_redis_cli();
+        let grpc_port = self.global_config.grpc_port;
+        let ip = self.global_config.server_ip.clone();
+
+        TOKIO_RUN.spawn(async move {
+            loop {
+                let conn = redis_cli.get_connection();
+                match conn {
+                    Ok(mut conn) => {
+                        let s = format!("{}:{}", ip, grpc_port);
+                        let redis_ttl: RedisTTLSet = Default::default();
+                        let _ = redis_ttl.push(&mut conn, s.as_str());
+                    }
+                    Err(e) => {
+                        error!(%e, "Create redis connection failed!");
+                    }
+                }
+                sleep(Duration::from_secs(1)).await;
+            }
+        });
     }
 
     pub fn start_grpc(
@@ -206,7 +231,7 @@ impl MainServer {
 }
 
 // Every second check if the clients is changed
-fn create_grpc_clients_watcher(
+pub(crate) fn create_grpc_clients_watcher(
     mut grpc_clients_chg_receiver: Receiver<ClientEvent>,
 ) -> UnboundedReceiver<Vec<SkyTracingClient>> {
     let (send, recv) = tokio::sync::mpsc::unbounded_channel();

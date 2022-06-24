@@ -329,20 +329,15 @@ mod tests {
 
     use super::*;
     use crate::{
-        com::config::GlobalConfig, serv::service::SkyTracingService, tag::fsm::SegmentDataCallback,
+        com::config::GlobalConfig,
+        serv::{create_grpc_clients_watcher, service::SkyTracingService, MainServer},
+        tag::fsm::SegmentDataCallback,
         TOKIO_RUN,
     };
 
     const GRPC_TEST_PORT: u32 = 6666;
 
-    struct ChannelBus {
-        batch_system_callback_receiver: Option<UnboundedReceiver<SegmentDataCallback>>,
-        client_event_sender: Option<Sender<ClientEvent>>,
-        broken_receiver: Option<Receiver<i32>>,
-        server: Server,
-    }
-
-    fn create_mock_grpc_server() -> ChannelBus {
+    fn create_mock_grpc_server() {
         let config = Arc::new(GlobalConfig {
             grpc_port: GRPC_TEST_PORT,
             redis_addr: format!("127.0.0.1:{}", 6379),
@@ -353,25 +348,7 @@ mod tests {
             server_ip: String::from("127.0.0.1"),
         });
 
-        let (batch_system_sender, batch_system_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let (service, client_event_sender, broken_receiver) = make_service();
-        let skytracing = SkyTracingService::new(config.clone(), batch_system_sender, service);
-
-        let service = create_sky_tracing(skytracing);
-        let env = Environment::new(1);
-        let mut server = ServerBuilder::new(Arc::new(env))
-            .bind(config.server_ip.as_str(), config.grpc_port as u16)
-            .register_service(service)
-            .build()
-            .unwrap();
-        server.start();
-
-        ChannelBus {
-            batch_system_callback_receiver: Some(batch_system_receiver),
-            client_event_sender: Some(client_event_sender),
-            broken_receiver: Some(broken_receiver),
-            server,
-        }
+        let main_server = MainServer::new(config, "127.0.0.1".to_string());
     }
 
     #[tokio::test]
