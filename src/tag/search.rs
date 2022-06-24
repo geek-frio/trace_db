@@ -1,8 +1,3 @@
-use anyhow::Error as AnyError;
-use crossbeam_channel::unbounded;
-use crossbeam_channel::Receiver;
-use crossbeam_channel::Sender;
-use redis::Client as RedisClient;
 use skproto::tracing::SegRange;
 use skproto::tracing::SkyQueryParam;
 use skproto::tracing::SkyTracingClient;
@@ -10,76 +5,35 @@ use std::cmp::Ordering;
 use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread;
-use std::thread::sleep;
-use std::time::Duration;
 use tantivy::Document;
 use tantivy::Score;
 use tantivy_common::BinarySerializable;
+use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::com::config::GlobalConfig;
 use crate::com::index::IndexAddr;
-use crate::com::redis::RedisTTLSet;
-
-pub trait ConfigWatcher<T>: Send {
-    fn watch<F>(&self, cb: F, sender: Sender<Vec<T>>)
-    where
-        F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy;
-}
+use crate::TOKIO_RUN;
 
 // Global Single Instance
 #[derive(Clone)]
-pub struct SearchBuilder<T> {
+pub struct Searcher<T> {
     searcher: Arc<Mutex<DistSearchManager<T>>>,
 }
 
-impl<T: Sync + Send + Clone + 'static + RemoteClient> SearchBuilder<T> {
-    pub fn new_init<
-        F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy,
-        W: ConfigWatcher<T> + 'static,
-    >(
-        watcher: W,
-        cb: F,
-        redis_client: RedisClient,
-        config: Arc<GlobalConfig>,
-    ) -> Result<SearchBuilder<T>, AnyError> {
-        // Regist new address
-        let ttl_set = RedisTTLSet { ttl: 5 };
-        let mut conn = redis_client.get_connection()?;
-        // TODO generate
-        ttl_set.push(&mut conn, config.server_ip.clone())?;
-        let (s, r) = unbounded::<Vec<T>>();
-        // Wait for client init connection ready
-        watcher.watch(cb, s);
-        let clients = r.recv()?;
-        let mutex = Mutex::new(DistSearchManager::new(Arc::new(clients)));
-        let searcher = Arc::new(mutex);
-        let builder = SearchBuilder {
-            searcher: searcher.clone(),
-        };
-        // Task for receiving client change events
-        thread::spawn(move || loop {
-            let clients = r.recv();
-            if let Ok(clients) = clients {
-                if let Ok(mut s) = searcher.lock() {
-                    *s = DistSearchManager::new(Arc::new(clients));
-                }
-            }
-        });
-        return Ok(builder);
-    }
-
-    pub fn new(receiver: Receiver<Vec<T>>) -> SearchBuilder<T> {
+impl<T: Sync + Send + Clone + 'static + RemoteClient> Searcher<T> {
+    pub fn new(mut clients_chg: UnboundedReceiver<Vec<T>>) -> Searcher<T>
+    where
+        T: Send + 'static,
+    {
         let clients = Vec::<T>::new();
         let searcher = Arc::new(Mutex::new(DistSearchManager::new(Arc::new(clients))));
 
-        let builder = SearchBuilder {
+        let builder = Searcher {
             searcher: searcher.clone(),
         };
         // start watcher task to watch clients add/delete event
-        std::thread::spawn(move || {
-            let clients = receiver.recv();
-            if let Ok(clients) = clients {
+        TOKIO_RUN.spawn(async move {
+            let clients = clients_chg.recv().await;
+            if let Some(clients) = clients {
                 if let Ok(mut s) = searcher.lock() {
                     *s = DistSearchManager::new(Arc::new(clients));
                 }
@@ -199,96 +153,97 @@ impl<T: RemoteClient> DistSearchManager<T> {
     }
 }
 
-pub struct AddrsConfigWatcher {
-    redis_client: RedisClient,
-    config: Arc<GlobalConfig>,
-}
+// pub struct AddrsConfigWatcher {
+//     redis_client: RedisClient,
+//     config: Arc<GlobalConfig>,
+// }
 
-impl AddrsConfigWatcher {
-    pub fn new(client: RedisClient, config: Arc<GlobalConfig>) -> AddrsConfigWatcher {
-        AddrsConfigWatcher {
-            redis_client: client,
-            config,
-        }
-    }
-}
+// impl AddrsConfigWatcher {
+//     pub fn new(client: RedisClient, config: Arc<GlobalConfig>) -> AddrsConfigWatcher {
+//         AddrsConfigWatcher {
+//             redis_client: client,
+//             config,
+//         }
+//     }
+// }
 
-impl<T> ConfigWatcher<T> for AddrsConfigWatcher
-where
-    T: Sync + Send + 'static + Clone,
-{
-    fn watch<F>(&self, cb: F, sender: Sender<Vec<T>>)
-    where
-        F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy,
-    {
-        // Logic to pull addrs
-        let redis_client = self.redis_client.clone();
-        let redis_ttl = RedisTTLSet { ttl: 5 };
-        let redis_addr = self.config.redis_addr.clone();
-        let grpc_port = self.config.grpc_port;
-        thread::spawn(move || {
-            let mut last: Vec<String> = Vec::new();
-            let mut conn = redis_client.get_connection();
-            loop {
-                if let Ok(mut c) = conn.as_mut() {
-                    let _ = redis_ttl.push(&mut c, &redis_addr);
-                    let res = redis_ttl.query_all(&mut c);
-                    match res {
-                        Ok(records) => {
-                            let addrs = records
-                                .into_iter()
-                                .map(|r| format!("{}:{}", r.sub_key, grpc_port).to_string())
-                                .collect::<Vec<String>>();
+// impl<T> ConfigWatcher<T> for AddrsConfigWatcher
+// where
+//     T: Sync + Send + 'static + Clone,
+// {
+//     fn watch<F>(&self, cb: F, sender: Sender<Vec<T>>)
+//     where
+//         F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy,
+//     {
+//         // Logic to pull addrs
+//         let redis_client = self.redis_client.clone();
+//         let redis_ttl = RedisTTLSet { ttl: 5 };
+//         let redis_addr = self.config.redis_addr.clone();
+//         let grpc_port = self.config.grpc_port;
+//         thread::spawn(move || {
+//             let mut last: Vec<String> = Vec::new();
+//             let mut conn = redis_client.get_connection();
+//             loop {
+//                 if let Ok(mut c) = conn.as_mut() {
+//                     let _ = redis_ttl.push(&mut c, &redis_addr);
+//                     let res = redis_ttl.query_all(&mut c);
+//                     match res {
+//                         Ok(records) => {
+//                             let addrs = records
+//                                 .into_iter()
+//                                 .map(|r| format!("{}:{}", r.sub_key, grpc_port).to_string())
+//                                 .collect::<Vec<String>>();
 
-                            if last != addrs {
-                                last = addrs.clone();
-                                let clients = cb(addrs);
-                                let _ = sender.send(clients);
-                            }
-                            sleep(Duration::from_secs(5));
-                        }
-                        Err(_) => continue,
-                    }
-                } else {
-                    println!("Get connection failed!Continue to next loop");
-                    continue;
-                }
-            }
-        });
-    }
-}
+//                             if last != addrs {
+//                                 last = addrs.clone();
+//                                 let clients = cb(addrs);
+//                                 let _ = sender.send(clients);
+//                             }
+//                             sleep(Duration::from_secs(5));
+//                         }
+//                         Err(_) => continue,
+//                     }
+//                 } else {
+//                     println!("Get connection failed!Continue to next loop");
+//                     continue;
+//                 }
+//             }
+//         });
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::com::config::ConfigManager;
+    // use super::*;
+    // use crate::com::config::ConfigManager;
     use anyhow::Error as AnyError;
-    use grpcio::{ChannelBuilder, Environment};
+    // use grpcio::{ChannelBuilder, Environment};
 
     #[test]
     fn test_xxx() -> Result<(), AnyError> {
-        let client = redis::Client::open("redis://127.0.0.1:6379")?;
-        let config = Arc::new(ConfigManager::load("/tmp/skdb_test.yaml".into()));
-        let addrs_watcher = AddrsConfigWatcher {
-            redis_client: client.clone(),
-            config: config.clone(),
-        };
-        let _ = SearchBuilder::<SkyTracingClient>::new_init(
-            addrs_watcher,
-            |v: Vec<String>| {
-                let mut clients = Vec::new();
-                for addr in v {
-                    let env = Environment::new(3);
-                    // TODO: config change
-                    let channel = ChannelBuilder::new(Arc::new(env)).connect(addr.as_str());
-                    let client = SkyTracingClient::new(channel);
-                    clients.push(client);
-                }
-                clients
-            },
-            client,
-            config,
-        );
+        // let client = redis::Client::open("redis://127.0.0.1:6379")?;
+        // let config = Arc::new(ConfigManager::load("/tmp/skdb_test.yaml".into()));
+        // let addrs_watcher = AddrsConfigWatcher {
+        //     redis_client: client.clone(),
+        //     config: config.clone(),
+        // };
+        // let _ = SearchBuilder::<SkyTracingClient>::new_init(
+        //     addrs_watcher,
+        //     |v: Vec<String>| {
+        //         let mut clients = Vec::new();
+        //         for addr in v {
+        //             let env = Environment::new(3);
+        //             // TODO: config change
+        //             let channel = ChannelBuilder::new(Arc::new(env)).connect(addr.as_str());
+        //             let client = SkyTracingClient::new(channel);
+        //             clients.push(client);
+        //         }
+        //         clients
+        //     },
+        //     client,
+        //     config,
+        // );
+        // let search_builder = SearchBuilder::new();
         Ok(())
     }
 }

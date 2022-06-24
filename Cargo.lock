@@ -1343,6 +1343,7 @@ dependencies = [
  "clap",
  "crossbeam",
  "crossbeam-channel",
+ "ctrlc",
  "futures 0.3.21",
  "futures-sink",
  "futures-util",

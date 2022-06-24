@@ -5,6 +5,7 @@ use crate::com::index::ConvertIndexAddr;
 use crate::com::index::IndexAddr;
 use crate::tag::engine::*;
 use crate::tag::fsm::SegmentDataCallback;
+use crate::tag::search::Searcher;
 use crate::*;
 use anyhow::Error as AnyError;
 use futures::StreamExt;
@@ -43,6 +44,7 @@ pub struct SkyTracingService {
         Result<(), TransportErr>,
         Box<dyn std::error::Error + Send + Sync>,
     >,
+    searcher: Searcher<SkyTracingClient>,
 }
 
 impl SkyTracingService {
@@ -55,6 +57,7 @@ impl SkyTracingService {
             Result<(), TransportErr>,
             Box<dyn std::error::Error + Send + Sync>,
         >,
+        searcher: Searcher<SkyTracingClient>,
     ) -> SkyTracingService {
         let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
@@ -64,6 +67,7 @@ impl SkyTracingService {
             tracing_schema: schema.clone(),
             index_map: index_map.clone(),
             service,
+            searcher,
         };
         service
     }
@@ -187,6 +191,26 @@ impl SkyTracing for SkyTracingService {
                 }
             }
         });
+    }
+
+    fn dist_query_sky_segments(
+        &mut self,
+        _ctx: ::grpcio::RpcContext,
+        _req: SkyQueryParam,
+        sink: ::grpcio::UnarySink<SkySegmentRes>,
+    ) {
+        let searcher = self.searcher.get_searcher();
+        match searcher {
+            Ok(_searcher) => {
+                todo!();
+                // searcher.search(req.query.as_str(), addr, offset, limit);
+                // searcher.dist_
+            }
+            Err(_e) => {
+                sink.fail(RpcStatus::new(RpcStatusCode::INTERNAL));
+            }
+        }
+        // grpcio::unimplemented_call!(ctx, sink)
     }
 }
 
