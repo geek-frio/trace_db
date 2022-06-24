@@ -21,8 +21,6 @@ use crate::tag::fsm::{SegmentDataCallback, TagFsm};
 use crate::tag::search::Searcher;
 use crate::TOKIO_RUN;
 use conn::*;
-use crossbeam_channel::Receiver as ShutdownReceiver;
-use crossbeam_channel::Sender as ShutdownSender;
 use grpcio::{Environment, ServerBuilder};
 use lazy_static::*;
 use skproto::tracing::{create_sky_tracing, SegmentData, SkyTracingClient};
