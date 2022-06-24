@@ -112,10 +112,6 @@ impl Default for RedisTTLSet {
 }
 
 impl RedisTTLSet {
-    pub(crate) fn new(ttl: Secs) -> RedisTTLSet {
-        RedisTTLSet { ttl }
-    }
-
     pub(crate) fn query_all(&self, conn: &mut Connection) -> Result<Vec<Record>, AnyError> {
         let r = redis::cmd("HGETALL").arg(KEY).query::<Value>(conn)?;
         match r {

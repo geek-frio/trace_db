@@ -6,10 +6,11 @@ extern crate uuid;
 
 pub mod client;
 pub mod com;
-pub mod kv;
-mod serv;
+mod kv;
+pub mod serv;
 pub mod tag;
-pub mod test;
+mod test;
+
 use lazy_static::lazy_static;
 use tokio::runtime::Builder;
 use tokio::runtime::Runtime;

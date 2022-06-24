@@ -49,7 +49,7 @@ impl SkyTracingService {
     // do new and spawn two things
     pub fn new(
         config: Arc<GlobalConfig>,
-        data_sender: UnboundedSender<SegmentDataCallback>,
+        batch_system_sender: UnboundedSender<SegmentDataCallback>,
         service: BoxCloneService<
             SegmentData,
             Result<(), TransportErr>,
@@ -59,7 +59,7 @@ impl SkyTracingService {
         let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
         let service = SkyTracingService {
-            sender: data_sender,
+            sender: batch_system_sender,
             config,
             tracing_schema: schema.clone(),
             index_map: index_map.clone(),

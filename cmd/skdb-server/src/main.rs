@@ -13,6 +13,8 @@ use skdb::client::cluster::Watch;
 use skdb::client::trans::TransportErr;
 use skdb::com::redis::RedisAddr;
 use skdb::com::tracing::RollingFileMaker;
+use skdb::serv::route::LocalSegmentMsgConsumer;
+use skdb::serv::service::SkyTracingService;
 use skdb::tag::search::AddrsConfigWatcher;
 use skdb::tag::search::SearchBuilder;
 use std::error::Error;
@@ -24,12 +26,10 @@ use std::time::Duration;
 use tower::util::BoxCloneService;
 use tracing_subscriber::{prelude::*, Registry};
 
-use crate::serv::route::LocalSegmentMsgConsumer;
 use clap::Parser;
 use crossbeam_channel::Receiver as ShutdownReceiver;
 use crossbeam_channel::Sender as ShutdownSender;
-use futures::channel::mpsc::{Receiver, Sender};
-use serv::service::*;
+// use futures::channel::mpsc::{Receiver, Sender};
 use skdb::com::batch::BatchSystem;
 use skdb::com::batch::FsmTypes;
 use skdb::com::config::ConfigManager;
@@ -40,13 +40,13 @@ use skdb::tag::fsm::SegmentDataCallback;
 use skdb::tag::fsm::TagFsm;
 use skdb::TOKIO_RUN;
 use skproto::tracing::*;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::sleep;
 use tracing::error;
 use tracing::info;
 use tracing::info_span;
 use tracing::trace;
 use tracing::Instrument;
-
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -97,7 +97,7 @@ impl MainServer {
         let (service, event_sender, conn_broken_receiver) = self.make_service();
         self.create_cluster_watcher(conn_broken_receiver, event_sender);
         let _search_builder = self.create_search_builder(self.global_config.clone());
-        let (segment_sender, segment_receiver) = futures::channel::mpsc::channel(10000);
+        let (segment_sender, segment_receiver) = tokio::sync::mpsc::unbounded_channel();
         let router = self.start_batch_system_for_segment();
         self.start_bridge_channel(segment_receiver, router, self.shutdown_sender.clone());
         self.start_grpc(
@@ -110,7 +110,7 @@ impl MainServer {
 
     fn start_grpc(
         &mut self,
-        sender: Sender<SegmentDataCallback>,
+        sender: UnboundedSender<SegmentDataCallback>,
         receiver: ShutdownReceiver<ShutdownEvent>,
         service: BoxCloneService<
             SegmentData,
@@ -152,7 +152,7 @@ impl MainServer {
 
     fn start_bridge_channel(
         &self,
-        receiver: Receiver<SegmentDataCallback>,
+        receiver: UnboundedReceiver<SegmentDataCallback>,
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
         shutdown_sender: ShutdownSender<ShutdownEvent>,
     ) {
@@ -196,7 +196,7 @@ impl MainServer {
     ) {
         let mut obj = Observer::new();
         obj.regist(sender);
-        let search_recv = obj.subscribe();
+        let _search_recv = obj.subscribe();
 
         let redis_cli = self.gen_redis_cli();
         let clt = ClusterActiveWatcher::new(redis_cli);
@@ -208,6 +208,7 @@ impl MainServer {
                 error!(%e, "Unrecover exception, exit");
             }
         });
+        todo!("search builder should use watcher logic");
     }
 
     fn gen_redis_cli(&self) -> RedisClient {

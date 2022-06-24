@@ -1,6 +1,5 @@
 use anyhow::Error as AnyError;
-use futures::channel::mpsc::Receiver ;
-use futures::stream::StreamExt;
+use tokio::sync::mpsc::UnboundedReceiver;
 use std::{
     collections::HashMap,
     sync::{atomic::AtomicUsize, Arc, Mutex}, marker::PhantomData, borrow::Cow,
@@ -17,20 +16,20 @@ use crate::tag::engine::*;
 use crate::tag::fsm::TagFsm;
 use crate::{com::{config::GlobalConfig, router::RouteMsg}, tag::{fsm::SegmentDataCallback, engine::TracingTagEngine}};
 
-pub(crate) struct LocalSegmentMsgConsumer<Router, Err> {
+pub struct LocalSegmentMsgConsumer<Router, Err> {
     router: Router,
     config: Arc<GlobalConfig>,
     index_map: Arc<Mutex<HashMap<i64, Index>>>,
     schema: Schema,
-    receiver: Receiver<SegmentDataCallback>,
+    receiver: UnboundedReceiver<SegmentDataCallback>,
     _err: PhantomData<Err>,
 }
 
 impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Result<(), Err>, TagFsm, Addr = MailKeyAddress> {
-    pub(crate) fn new(
+    pub fn new(
         router: Router,
         config: Arc<GlobalConfig>,
-        receiver: Receiver<SegmentDataCallback>,
+        receiver: UnboundedReceiver<SegmentDataCallback>,
     ) -> LocalSegmentMsgConsumer<Router, Err> {
         let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
@@ -100,9 +99,9 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
         Ok(())
     }
 
-    pub(crate) async fn loop_poll(&mut self) -> Result<(), AnyError> {
+    pub async fn loop_poll(&mut self) -> Result<(), AnyError> {
         loop {
-            let segment_callback = self.receiver.next().await;
+            let segment_callback = self.receiver.recv().await;
 
             match segment_callback {
                 Some(segment_callback) => {

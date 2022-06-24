@@ -59,7 +59,7 @@ impl RequestScheduler {
         }
         let (s, r) = tokio::sync::oneshot::channel();
         let res = self.sender.send((s, seg)).await;
-        if let Err(e) = res {
+        if let Err(_) = res {
             return Err(TransportErr::LocalChanFullOrClosed);
         }
         let r = r.await;

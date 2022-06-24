@@ -327,6 +327,7 @@ mod tests {
             server_ip: String::from("127.0.0.1"),
         });
 
-        // let skytracing = SkyTracingService::new(config);
+        // let (batch_system_sender, batch_system_receiver) = tokio::sync::mpsc::unbounded_channel();
+        // let skytracing = SkyTracingService::new(config, batch_system_sender, s);
     }
 }
