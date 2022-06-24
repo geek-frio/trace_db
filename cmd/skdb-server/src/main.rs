@@ -47,7 +47,6 @@ use tracing::info_span;
 use tracing::trace;
 use tracing::Instrument;
 
-mod serv;
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]

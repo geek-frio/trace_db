@@ -21,8 +21,8 @@ use tokio::select;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
 use tower::balance::p2c::Balance;
+use tower::discover::Change;
 use tower::ServiceBuilder;
-use tower::{discover::Change, Service};
 
 use super::grpc_cli::split_client;
 use super::service::EndpointService;
@@ -306,5 +306,27 @@ impl ClusterActiveWatcher {
             old.insert(addr, id);
         }
         old.retain(|k, _v| !del.contains(k));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{com::config::GlobalConfig, serv::service::SkyTracingService};
+
+    const GRPC_TEST_PORT: u32 = 6666;
+
+    fn create_mock_grpc_server() {
+        let config = Arc::new(GlobalConfig {
+            grpc_port: GRPC_TEST_PORT,
+            redis_addr: format!("{}", 6379),
+            index_dir: String::from(""),
+            env: String::from(""),
+            log_path: String::from(""),
+            app_name: String::from("test"),
+            server_ip: String::from("127.0.0.1"),
+        });
+
+        // let skytracing = SkyTracingService::new(config);
     }
 }

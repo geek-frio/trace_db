@@ -7,6 +7,7 @@ extern crate uuid;
 pub mod client;
 pub mod com;
 pub mod kv;
+mod serv;
 pub mod tag;
 pub mod test;
 use lazy_static::lazy_static;

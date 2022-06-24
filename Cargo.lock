@@ -1359,6 +1359,7 @@ dependencies = [
  "skproto",
  "tantivy",
  "tantivy-common",
+ "tantivy-query-grammar",
  "tokio",
  "tokio-io",
  "tower",

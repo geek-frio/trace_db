@@ -43,6 +43,7 @@ pin-project = "1"
 tower = { version = "0.4.12", features = ["limit", "buffer", "util", "discover", "balance"] }
 chashmap = "2.2.2"
 futures-util = "0.3.21"
+tantivy-query-grammar = "0.15.0"
 
 [dev-dependencies]
 pretty_assertions = "1"

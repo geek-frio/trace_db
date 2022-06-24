@@ -1,5 +1,5 @@
 use anyhow::Error as AnyError;
-use futures::channel::mpsc::UnboundedSender;
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::instrument;
 
 pub(crate) const DEFAULT_WIN_SIZE: u32 = 64 * 100;
@@ -135,7 +135,7 @@ impl AckCallback {
 
     pub fn callback(&self, seq_id: i64) {
         if let Some(sender) = &self.sender {
-            let _ = sender.unbounded_send(seq_id);
+            let _ = sender.send(seq_id);
         }
     }
 }

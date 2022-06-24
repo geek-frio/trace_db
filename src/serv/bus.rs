@@ -1,7 +1,9 @@
+use crate::com::ack::{AckCallback, AckWindow, WindowErr};
 use crate::serv::CONN_MANAGER;
+use crate::tag::fsm::SegmentDataCallback;
 use anyhow::Error as AnyError;
 use async_trait::async_trait;
-use futures::channel::mpsc::{unbounded as funbounded, Sender, UnboundedSender};
+// use futures::channel::mpsc::{unbounded as funbounded, Sender, UnboundedSender};
 use futures::future::FutureExt;
 use futures::{select, SinkExt};
 use futures::{Stream, StreamExt};
@@ -9,11 +11,10 @@ use futures_sink::Sink;
 use grpcio::Error as GrpcError;
 use grpcio::{Result as GrpcResult, WriteFlags};
 use pin_project::pin_project;
-use skdb::com::ack::{AckCallback, AckWindow, WindowErr};
-use skdb::tag::fsm::SegmentDataCallback;
 use skproto::tracing::{Meta, Meta_RequestType, SegmentData, SegmentRes};
 use std::fmt::{Debug, Display};
 use std::pin::Pin;
+use tokio::sync::mpsc::{unbounded_channel as funbounded, UnboundedSender};
 use tokio::sync::oneshot::Receiver;
 use tracing::{error, info, span, trace, trace_span, warn, Level};
 
@@ -23,7 +24,7 @@ pub struct RemoteMsgPoller<L, S> {
     source_stream: L,
     sink: S,
     ack_win: AckWindow,
-    local_sender: Sender<SegmentDataCallback>,
+    local_sender: UnboundedSender<SegmentDataCallback>,
     shut_recv: Receiver<()>,
 }
 
@@ -62,7 +63,7 @@ where
                         }
                     };
                 },
-                ack_data = ack_stream.next() => {
+                ack_data = ack_stream.recv().fuse() => {
                     let _ = Self::remote_msg_callback(&mut sink, &mut ack_win, ack_data).await;
                 }
                 _ = shut_recv => {
@@ -77,7 +78,7 @@ where
     async fn remote_msg_exec<'a>(
         data: GrpcResult<SegmentData>,
         ack_win: &'a mut AckWindow,
-        mail: &'a mut Sender<SegmentDataCallback>,
+        mail: &'a mut UnboundedSender<SegmentDataCallback>,
         sink: &'a mut S,
         callback: UnboundedSender<i64>,
     ) -> Result<(), AnyError> {
@@ -172,7 +173,7 @@ trait SegmentProcess<S> {
     fn with_process<'a>(
         self,
         ack_win: &'a mut AckWindow,
-        mail: &'a mut Sender<SegmentDataCallback>,
+        mail: &'a mut UnboundedSender<SegmentDataCallback>,
         sink: &'a mut S,
         callback: UnboundedSender<i64>,
     ) -> SegmentProcessor<'a, S>;
@@ -181,7 +182,7 @@ trait SegmentProcess<S> {
 struct SegmentProcessor<'a, S> {
     data: SegmentData,
     ack_win: &'a mut AckWindow,
-    mail: &'a mut Sender<SegmentDataCallback>,
+    mail: &'a mut UnboundedSender<SegmentDataCallback>,
     sink: &'a mut S,
     callback: UnboundedSender<i64>,
 }
@@ -203,7 +204,7 @@ impl<S: Sync + Send> SegmentProcess<S> for SegmentData {
     fn with_process<'a>(
         self,
         ack_win: &'a mut AckWindow,
-        mail: &'a mut Sender<SegmentDataCallback>,
+        mail: &'a mut UnboundedSender<SegmentDataCallback>,
         sink: &'a mut S,
         callback: UnboundedSender<i64>,
     ) -> SegmentProcessor<'a, S> {
@@ -265,7 +266,7 @@ where
                             span,
                         };
                         // Unbounded sender, ignore
-                        let _ = s.mail.send(data).await;
+                        let _ = s.mail.send(data);
                         trace!("Has sent segment to local channel(Waiting for storage operation and callback)");
                     }
                     Err(w) => match w {
@@ -295,7 +296,7 @@ where
                     callback: AckCallback::new(Some(s.callback)),
                     span,
                 };
-                let _ = s.mail.try_send(data);
+                let _ = s.mail.send(data);
                 trace!("NEED_RESEND: Has sent segment to local channel(Waiting for storage operation and callback)");
                 return Ok(ExecutorStat::Last);
             }
@@ -339,7 +340,7 @@ where
     pub fn new(
         source: L,
         sink: S,
-        local_sender: Sender<SegmentDataCallback>,
+        local_sender: UnboundedSender<SegmentDataCallback>,
         shut_recv: Receiver<()>,
     ) -> RemoteMsgPoller<L, S> {
         RemoteMsgPoller {
@@ -354,9 +355,10 @@ where
 
 #[cfg(test)]
 mod test_remote_msg_poller {
+    use crate::test::gen::{_gen_data_binary, _gen_tag};
+
     use super::*;
     use chrono::Local;
-    use skdb::test::gen::*;
     use skproto::tracing::{Meta, Meta_RequestType};
     use std::task::Poll;
 

@@ -9,7 +9,6 @@ const SK_DB_CONFIG_PATH: &'static str = "SK_DB_CONFIG_PATH";
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct GlobalConfig {
     pub grpc_port: u32,
-    pub proxy_port: u32,
     pub redis_addr: String,
     pub index_dir: String,
     pub env: String,

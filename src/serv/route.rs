@@ -1,18 +1,6 @@
 use anyhow::Error as AnyError;
-use futures::channel::mpsc::Receiver;
+use futures::channel::mpsc::Receiver ;
 use futures::stream::StreamExt;
-use skdb::{
-    com::{
-        config::GlobalConfig,
-        index::{ConvertIndexAddr, MailKeyAddress},
-        mail::BasicMailbox,
-        router::{Either,  RouteMsg}, fsm::Fsm,
-    },
-    tag::{
-        engine::*,
-        fsm::{SegmentDataCallback, TagFsm},
-    },
-};
 use std::{
     collections::HashMap,
     sync::{atomic::AtomicUsize, Arc, Mutex}, marker::PhantomData, borrow::Cow,
@@ -22,6 +10,12 @@ use tantivy::{
     Index,
 };
 use tracing::{error, info, trace, trace_span};
+
+use crate::com::{index::{ConvertIndexAddr, MailKeyAddress}, router::Either, fsm::Fsm};
+use crate::com::mail::BasicMailbox;
+use crate::tag::engine::*;
+use crate::tag::fsm::TagFsm;
+use crate::{com::{config::GlobalConfig, router::RouteMsg}, tag::{fsm::SegmentDataCallback, engine::TracingTagEngine}};
 
 pub(crate) struct LocalSegmentMsgConsumer<Router, Err> {
     router: Router,

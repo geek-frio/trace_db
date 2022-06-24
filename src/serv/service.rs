@@ -1,16 +1,15 @@
 use super::bus::RemoteMsgPoller;
+use crate::client::trans::TransportErr;
+use crate::com::config::GlobalConfig;
+use crate::com::index::ConvertIndexAddr;
+use crate::com::index::IndexAddr;
+use crate::tag::engine::*;
+use crate::tag::fsm::SegmentDataCallback;
+use crate::*;
 use anyhow::Error as AnyError;
-use futures::channel::mpsc::Sender;
 use futures::StreamExt;
 use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
-use skdb::client::trans::TransportErr;
-use skdb::com::config::GlobalConfig;
-use skdb::com::index::ConvertIndexAddr;
-use skdb::com::index::IndexAddr;
-use skdb::tag::engine::*;
-use skdb::tag::fsm::SegmentDataCallback;
-use skdb::*;
 use skproto::tracing::*;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -26,6 +25,7 @@ use tantivy::Score;
 use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
 use tokio::select;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::sleep;
 use tower::util::BoxCloneService;
 use tower::Service;
@@ -33,7 +33,7 @@ use tracing::error;
 
 #[derive(Clone)]
 pub struct SkyTracingService {
-    sender: Sender<SegmentDataCallback>,
+    sender: UnboundedSender<SegmentDataCallback>,
     config: Arc<GlobalConfig>,
     // All the tag engine share the same index schema
     tracing_schema: Schema,
@@ -49,7 +49,7 @@ impl SkyTracingService {
     // do new and spawn two things
     pub fn new(
         config: Arc<GlobalConfig>,
-        data_sender: Sender<SegmentDataCallback>,
+        data_sender: UnboundedSender<SegmentDataCallback>,
         service: BoxCloneService<
             SegmentData,
             Result<(), TransportErr>,
