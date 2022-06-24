@@ -10,8 +10,8 @@ use tower::util::BoxCloneService;
 use tracing::error;
 
 use crate::client::trans::Transport;
-use crate::com::config::GlobalConfig;
 use crate::com::redis::RedisTTLSet;
+use crate::conf::GlobalConfig;
 use chashmap::CHashMap;
 use futures::never::Never;
 use futures::{ready, FutureExt, Stream};
@@ -324,7 +324,7 @@ impl ClusterActiveWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{com::config::GlobalConfig, serv::MainServer, TOKIO_RUN};
+    use crate::{serv::MainServer, TOKIO_RUN};
 
     const GRPC_TEST_PORT: u32 = 6666;
 

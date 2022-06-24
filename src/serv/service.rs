@@ -1,8 +1,8 @@
 use super::bus::RemoteMsgPoller;
 use crate::client::trans::TransportErr;
-use crate::com::config::GlobalConfig;
 use crate::com::index::ConvertIndexAddr;
 use crate::com::index::IndexAddr;
+use crate::conf::GlobalConfig;
 use crate::tag::engine::*;
 use crate::tag::fsm::SegmentDataCallback;
 use crate::tag::search::Searcher;

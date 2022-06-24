@@ -1,6 +1,5 @@
 pub mod ack;
 pub mod batch;
-pub mod config;
 pub mod ctl;
 pub mod fsm;
 pub mod index;

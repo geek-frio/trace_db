@@ -13,10 +13,10 @@ use crate::client::cluster::{
 };
 use crate::client::trans::TransportErr;
 use crate::com::batch::{BatchSystem, FsmTypes};
-use crate::com::config::GlobalConfig;
 use crate::com::redis::{RedisAddr, RedisTTLSet};
 use crate::com::router::Router;
 use crate::com::sched::NormalScheduler;
+use crate::conf::GlobalConfig;
 use crate::tag::fsm::{SegmentDataCallback, TagFsm};
 use crate::tag::search::Searcher;
 use crate::TOKIO_RUN;

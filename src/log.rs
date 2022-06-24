@@ -6,10 +6,7 @@ use std::{
 use lazy_static::lazy_static;
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, Registry};
 
-use crate::{
-    com::{config::GlobalConfig, tracing::RollingFileMaker},
-    TOKIO_RUN,
-};
+use crate::{com::tracing::RollingFileMaker, conf::GlobalConfig, TOKIO_RUN};
 
 lazy_static! {
     pub static ref INIT_LOGGER: Once = Once::new();

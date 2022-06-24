@@ -10,11 +10,11 @@ use tantivy::{
 };
 use tracing::{error, info, trace, trace_span};
 
-use crate::com::{index::{ConvertIndexAddr, MailKeyAddress}, router::Either, fsm::Fsm};
+use crate::{com::{index::{ConvertIndexAddr, MailKeyAddress}, router::Either, fsm::Fsm}, conf::GlobalConfig};
 use crate::com::mail::BasicMailbox;
 use crate::tag::engine::*;
 use crate::tag::fsm::TagFsm;
-use crate::{com::{config::GlobalConfig, router::RouteMsg}, tag::{fsm::SegmentDataCallback, engine::TracingTagEngine}};
+use crate::{com::router::RouteMsg, tag::{fsm::SegmentDataCallback, engine::TracingTagEngine}};
 
 pub struct LocalSegmentMsgConsumer<Router, Err> {
     router: Router,
