@@ -323,17 +323,8 @@ impl ClusterActiveWatcher {
 
 #[cfg(test)]
 mod tests {
-    use grpcio::{Server, ServerBuilder};
-    use skproto::tracing::create_sky_tracing;
-    use tokio::sync::mpsc::UnboundedReceiver;
-
     use super::*;
-    use crate::{
-        com::config::GlobalConfig,
-        serv::{create_grpc_clients_watcher, service::SkyTracingService, MainServer},
-        tag::fsm::SegmentDataCallback,
-        TOKIO_RUN,
-    };
+    use crate::{com::config::GlobalConfig, serv::MainServer, TOKIO_RUN};
 
     const GRPC_TEST_PORT: u32 = 6666;
 
@@ -348,14 +339,15 @@ mod tests {
             server_ip: String::from("127.0.0.1"),
         });
 
-        let main_server = MainServer::new(config, "127.0.0.1".to_string());
+        let mut main_server = MainServer::new(config, "127.0.0.1".to_string());
         TOKIO_RUN.spawn(async move {
-            main_server.start();
-        })
+            main_server.start().await;
+        });
     }
 
     #[tokio::test]
     async fn test_basic_func() {
-        let channe_bus = create_mock_grpc_server();
+        create_mock_grpc_server();
+        sleep(Duration::from_secs(100)).await;
     }
 }

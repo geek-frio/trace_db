@@ -5,10 +5,11 @@ extern crate tantivy;
 extern crate uuid;
 
 pub mod client;
-pub mod com;
+mod com;
 mod kv;
+pub mod log;
 pub mod serv;
-pub mod tag;
+mod tag;
 mod test;
 
 use lazy_static::lazy_static;
