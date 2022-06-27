@@ -7,11 +7,12 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use tower::util::BoxCloneService;
-use tracing::error;
+use tracing::{error, info};
 
 use crate::client::trans::Transport;
 use crate::com::redis::RedisTTLSet;
 use crate::conf::GlobalConfig;
+use crate::serv::ShutdownSignal;
 use chashmap::CHashMap;
 use futures::never::Never;
 use futures::{ready, FutureExt, Stream};
@@ -182,6 +183,7 @@ pub trait Watch {
         obj: Observer,
         chg_notify: Receiver<i32>,
         config: Arc<GlobalConfig>,
+        shutdown_signal: ShutdownSignal,
     ) -> Result<(), anyhow::Error>;
 }
 
@@ -208,20 +210,22 @@ impl Watch for ClusterActiveWatcher {
         mut obj: Observer,
         mut chg_notify: Receiver<i32>,
         config: Arc<GlobalConfig>,
+        shutdown_signal: ShutdownSignal,
     ) -> Result<(), anyhow::Error> {
-        // Check if already started watch
         let r = self.watcher_started.compare_exchange(
             false,
             true,
             Ordering::Relaxed,
             Ordering::Relaxed,
         );
-        if r.is_err() || !r.unwrap() {
+        if r.is_err() || r.unwrap() {
             return Err(anyhow::Error::msg("Has already started!"));
         }
 
         let redis_client = self.client.clone();
         let mut old_addrs = HashMap::<String, i32>::new();
+        let mut b_recv = shutdown_signal.recv;
+        let drop_notify = shutdown_signal.drop_notify;
         loop {
             select! {
                 _ = sleep(Duration::from_secs(5)) => {
@@ -247,8 +251,14 @@ impl Watch for ClusterActiveWatcher {
                         obj.notify_all(ClientEvent::DropEvent(id));
                     }
                 }
+                _ =  b_recv.recv() => {
+                    info!("Has received shutdown event, clusterActiveWatcher is stopping!");
+                    break;
+                }
             }
         }
+        drop(drop_notify);
+        Ok(())
     }
 }
 
@@ -324,30 +334,40 @@ impl ClusterActiveWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{serv::MainServer, TOKIO_RUN};
+    use crate::log::*;
+    use crate::serv::MainServer;
+    use crate::serv::ShutdownEvent;
+    use crate::TOKIO_RUN;
 
     const GRPC_TEST_PORT: u32 = 6666;
 
-    fn create_mock_grpc_server() {
-        let config = Arc::new(GlobalConfig {
-            grpc_port: GRPC_TEST_PORT,
-            redis_addr: format!("127.0.0.1:{}", 6379),
-            index_dir: String::from(""),
-            env: String::from(""),
-            log_path: String::from(""),
-            app_name: String::from("test"),
-            server_ip: String::from("127.0.0.1"),
-        });
-
-        let mut main_server = MainServer::new(config, "127.0.0.1".to_string());
-        TOKIO_RUN.spawn(async move {
-            main_server.start().await;
-        });
+    async fn block_create_mock_grpc_server(
+        cfg: Arc<GlobalConfig>,
+        sender: tokio::sync::broadcast::Sender<ShutdownEvent>,
+    ) {
+        let mut main_server = MainServer::new(cfg, "127.0.0.1".to_string());
+        main_server.block_start(sender).await;
     }
 
     #[tokio::test]
     async fn test_basic_func() {
-        create_mock_grpc_server();
-        sleep(Duration::from_secs(100)).await;
+        let config = Arc::new(GlobalConfig {
+            grpc_port: GRPC_TEST_PORT,
+            redis_addr: format!("127.0.0.1:{}", 6379),
+            index_dir: String::from("/tmp/skdb_test_use"),
+            env: String::from("local"),
+            log_path: String::from("./"),
+            app_name: String::from("test"),
+            server_ip: String::from("127.0.0.1"),
+        });
+        let (shutdown_sender, _) = tokio::sync::broadcast::channel(1);
+        init_tracing_logger(config.clone());
+
+        let s = shutdown_sender.clone();
+        TOKIO_RUN.spawn(async move {
+            sleep(Duration::from_secs(1)).await;
+            let _ = s.send(ShutdownEvent::ForceStop);
+        });
+        block_create_mock_grpc_server(config, shutdown_sender).await;
     }
 }

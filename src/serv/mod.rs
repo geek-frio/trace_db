@@ -25,7 +25,8 @@ use grpcio::{Environment, ServerBuilder};
 use lazy_static::*;
 use skproto::tracing::{create_sky_tracing, SegmentData, SkyTracingClient};
 use tokio::select;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::broadcast::{Receiver as BroadReceiver, Sender as BroadSenderHandle};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::sleep;
 use tower::util::BoxCloneService;
@@ -39,9 +40,34 @@ lazy_static! {
     pub static ref CONN_MANAGER: ConnManager = ConnManager::new();
 }
 
+pub struct ShutdownSignal {
+    pub recv: BroadReceiver<ShutdownEvent>,
+    pub drop_notify: Sender<()>,
+}
+
+impl ShutdownSignal {
+    fn chan(broad_sender: BroadSenderHandle<ShutdownEvent>) -> (ShutdownSignal, Receiver<()>) {
+        let (d_send, d_recv) = tokio::sync::mpsc::channel(1);
+        let b_recv = broad_sender.subscribe();
+        let shut = ShutdownSignal {
+            recv: b_recv,
+            drop_notify: d_send,
+        };
+        (shut, d_recv)
+    }
+
+    fn subscribe(&self, sender: BroadSenderHandle<ShutdownEvent>) -> ShutdownSignal {
+        ShutdownSignal {
+            recv: sender.subscribe(),
+            drop_notify: self.drop_notify.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub enum ShutdownEvent {
-    Err(anyhow::Error),
-    Normal,
+    GracefulStop,
+    ForceStop,
 }
 
 lazy_static! {
@@ -57,56 +83,68 @@ impl MainServer {
     pub fn new(global_config: Arc<GlobalConfig>, ip: String) -> MainServer {
         MainServer { global_config, ip }
     }
-    pub async fn start(&mut self) {
+    pub async fn block_start(&mut self, broad_sender: BroadSenderHandle<ShutdownEvent>) {
         let _span = info_span!("main_server");
 
-        let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
-        let mut once = Some(shutdown_sender);
+        let (shutdown_signal, wait_recv) = ShutdownSignal::chan(broad_sender.clone());
+
+        let ctrl_broad = broad_sender.clone();
         ctrlc::set_handler(move || {
-            if once.is_some() {
-                let s = once.take();
-                let _ = s.unwrap().send(ShutdownEvent::Normal);
-            }
+            info!("Received shutdown event, broadcast shutdown event to all the spawned task!");
+            let _ = ctrl_broad.send(ShutdownEvent::GracefulStop);
         })
         .expect("Error setting ctrl+c handler");
-
         info!("Start to init search builder...");
         let (service, event_sender, conn_broken_receiver) = make_service();
-        let grpc_clients_chg_receiver =
-            self.create_cluster_watcher(conn_broken_receiver, event_sender);
-
-        self.start_periodical_keep_alive_addr();
+        let grpc_clients_chg_receiver = self.create_cluster_watcher(
+            conn_broken_receiver,
+            event_sender,
+            shutdown_signal.subscribe(broad_sender.clone()),
+        );
+        self.start_periodical_keep_alive_addr(shutdown_signal.subscribe(broad_sender.clone()));
         let clis_chg_recv = create_grpc_clients_watcher(grpc_clients_chg_receiver);
         let searcher = Searcher::new(clis_chg_recv);
         let (segment_sender, segment_receiver) = tokio::sync::mpsc::unbounded_channel();
 
-        let router = self.start_batch_system_for_segment();
-        self.start_bridge_channel(segment_receiver, router);
-
-        self.start_grpc(segment_sender.clone(), shutdown_receiver, service, searcher)
+        let router =
+            self.start_batch_system_for_segment(shutdown_signal.subscribe(broad_sender.clone()));
+        self.start_bridge_channel(segment_receiver, router, shutdown_signal);
+        self.start_grpc(segment_sender.clone(), wait_recv, service, searcher)
             .await;
         info!("Shut receiver has received.");
     }
 
-    pub fn start_periodical_keep_alive_addr(&mut self) {
+    pub fn start_periodical_keep_alive_addr(&mut self, shutdown_signal: ShutdownSignal) {
         let redis_cli = self.create_redis_cli();
         let grpc_port = self.global_config.grpc_port;
         let ip = self.global_config.server_ip.clone();
 
         TOKIO_RUN.spawn(async move {
+            let mut recv = shutdown_signal.recv;
             loop {
-                let conn = redis_cli.get_connection();
-                match conn {
-                    Ok(mut conn) => {
-                        let s = format!("{}:{}", ip, grpc_port);
-                        let redis_ttl: RedisTTLSet = Default::default();
-                        let _ = redis_ttl.push(&mut conn, s.as_str());
+                tokio::select! {
+                    _ = sleep(Duration::from_secs(1)) => {
+                        trace!(
+                                "Periodically update ip:{}, grpc_port:{} in redis",
+                                ip, grpc_port
+                            );
+                        let conn = redis_cli.get_connection();
+                        match conn {
+                            Ok(mut conn) => {
+                                let s = format!("{}:{}", ip, grpc_port);
+                                let redis_ttl: RedisTTLSet = Default::default();
+                                let _ = redis_ttl.push(&mut conn, s.as_str());
+                            }
+                            Err(e) => {
+                                error!(%e, "Create redis connection failed!");
+                            }
+                        }
                     }
-                    Err(e) => {
-                        error!(%e, "Create redis connection failed!");
+                    _ = recv.recv() => {
+                        info!("Keep alive task is stopping!");
+                        break;
                     }
                 }
-                sleep(Duration::from_secs(1)).await;
             }
         });
     }
@@ -114,7 +152,7 @@ impl MainServer {
     pub async fn start_grpc(
         &mut self,
         sender: UnboundedSender<SegmentDataCallback>,
-        receiver: tokio::sync::oneshot::Receiver<ShutdownEvent>,
+        mut wait_shutdown: Receiver<()>,
         service: BoxCloneService<
             SegmentData,
             Result<(), TransportErr>,
@@ -132,10 +170,13 @@ impl MainServer {
             .build()
             .unwrap();
         server.start();
-        let _ = receiver.await;
+        wait_shutdown.recv().await;
     }
 
-    pub fn start_batch_system_for_segment(&self) -> Router<TagFsm, NormalScheduler<TagFsm>> {
+    pub fn start_batch_system_for_segment(
+        &self,
+        shutdown_signal: ShutdownSignal,
+    ) -> Router<TagFsm, NormalScheduler<TagFsm>> {
         let (s, r) = crossbeam_channel::unbounded::<FsmTypes<TagFsm>>();
         let fsm_sche = NormalScheduler { sender: s };
         let atomic = AtomicUsize::new(1);
@@ -144,11 +185,23 @@ impl MainServer {
         let mut batch_system = BatchSystem::new(router.clone(), r, 1, 500);
         batch_system.spawn("Tag Poller".to_string());
         let router_tick = router.clone();
+        let mut recv = shutdown_signal.recv;
+        let send = shutdown_signal.drop_notify;
         TOKIO_RUN.spawn(
             async move {
-                trace!("Sent tick event to TagPollHandler");
-                let _ = router_tick.notify_all_idle_mailbox();
-                sleep(Duration::from_secs(10))
+                loop {
+                    tokio::select! {
+                        _ = sleep(Duration::from_secs(10)) => {
+                            trace!("Sent tick event to TagPollHandler");
+                            let _ = router_tick.notify_all_idle_mailbox();
+                        }
+                        _ = recv.recv() => {
+                            info!("Tick task received shutdown event, shutdown!");
+                            drop(send);
+                            return;
+                        }
+                    }
+                }
             }
             .instrument(info_span!("tick_event")),
         );
@@ -159,12 +212,13 @@ impl MainServer {
         &self,
         receiver: UnboundedReceiver<SegmentDataCallback>,
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
+        shutdown_signal: ShutdownSignal,
     ) {
         let mut local_consumer =
             LocalSegmentMsgConsumer::new(router, self.global_config.clone(), receiver);
         TOKIO_RUN.spawn(
             async move {
-                let r = local_consumer.loop_poll().await;
+                let r = local_consumer.loop_poll(shutdown_signal).await;
                 match r {
                     Ok(_) => {
                         info!("Local segment consumer exit success!");
@@ -182,6 +236,7 @@ impl MainServer {
         &self,
         chg_notify: tokio::sync::mpsc::Receiver<i32>,
         sender: tokio::sync::mpsc::Sender<ClientEvent>,
+        shutdown_signal: ShutdownSignal,
     ) -> Receiver<ClientEvent> {
         let mut obj = Observer::new();
         obj.regist(sender);
@@ -192,7 +247,9 @@ impl MainServer {
 
         let config = self.global_config.clone();
         TOKIO_RUN.spawn(async move {
-            let res = clt.block_watch(obj, chg_notify, config).await;
+            let res = clt
+                .block_watch(obj, chg_notify, config, shutdown_signal)
+                .await;
             if let Err(e) = res {
                 error!(%e, "Unrecover exception, exit");
             }

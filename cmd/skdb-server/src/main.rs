@@ -29,5 +29,4 @@ fn main() {
     init_tracing_logger(global_config.clone());
     info!(global_config = ?global_config, "Server load global config");
     let mut main_server = MainServer::new(global_config, args.ip);
-    main_server.start();
 }
