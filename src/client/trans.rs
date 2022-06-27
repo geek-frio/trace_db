@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use tracing::error;
 
@@ -30,16 +31,19 @@ pub struct Transport<Si, St> {
     callback_map: HashMap<i64, OneSender<Result<(), TransportErr>>>,
 }
 
+#[derive(Error, Debug)]
 pub enum TransportErr {
-    ConnCreateFailed,
-    ClientNotReady,
+    #[error("Grpc service sink channel closed")]
     SinkChanErr,
+    #[error("Client request service request transport, callback sender is dropped")]
     RecvErr,
-    Timeout,
+    #[error(
+        "Client request service transport layer response stream channel is closed, pending request should be cleared"
+    )]
     ReceiverChanClosed,
-    RingQueueFull,
-    HandshakeFailed,
+    #[error("When calling service, underground transport has been shutdown")]
     Shutdown,
+    #[error("Client request service transport layer underground channel is full")]
     LocalChanFullOrClosed,
 }
 

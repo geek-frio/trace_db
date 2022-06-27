@@ -1,4 +1,4 @@
-use crate::com::ack::{AckCallback, AckWindow, WindowErr};
+use crate::com::ack::AckCallback;
 use crate::serv::CONN_MANAGER;
 use crate::tag::fsm::SegmentDataCallback;
 use anyhow::Error as AnyError;
@@ -23,7 +23,6 @@ pub struct RemoteMsgPoller<L, S> {
     #[pin]
     source_stream: L,
     sink: S,
-    ack_win: AckWindow,
     local_sender: UnboundedSender<SegmentDataCallback>,
     shut_recv: Receiver<()>,
 }
@@ -47,7 +46,6 @@ where
         let mut ack_stream = Pin::new(&mut ack_r);
         let mut shut_recv = this.shut_recv.fuse();
 
-        let mut ack_win = this.ack_win;
         let mut sink = this.sink;
         let mut local_sender = this.local_sender;
 
@@ -56,7 +54,7 @@ where
             select! {
                 remote_data = source_stream.next() => {
                     if let Some(remote_data) = remote_data{
-                        let r = Self::remote_msg_exec(remote_data, &mut ack_win, &mut local_sender, &mut sink, ack_s.clone()).await;
+                        let r = Self::redirect_batch_exec(remote_data, &mut local_sender, &mut sink, ack_s.clone()).await;
                         if let Err(e) = r {
                             error!("Serious error:{:?}", e);
                             return Err(e);
@@ -64,7 +62,9 @@ where
                     };
                 },
                 ack_data = ack_stream.recv().fuse() => {
-                    let _ = Self::remote_msg_callback(&mut sink, &mut ack_win, ack_data).await;
+                    if let Some(id) = ack_data {
+                        Self::ack_seg(&mut sink, id).await?;
+                    }
                 }
                 _ = shut_recv => {
                     info!("Received shutdown signal, quit");
@@ -75,18 +75,16 @@ where
         Ok(())
     }
 
-    async fn remote_msg_exec<'a>(
+    async fn redirect_batch_exec<'a>(
         data: GrpcResult<SegmentData>,
-        ack_win: &'a mut AckWindow,
         mail: &'a mut UnboundedSender<SegmentDataCallback>,
         sink: &'a mut S,
         callback: UnboundedSender<i64>,
     ) -> Result<(), AnyError> {
         match data {
             Ok(segment_data) => {
-                let mut segment_processor: ExecutorStat<'a, S> = segment_data
-                    .with_process(ack_win, mail, sink, callback)
-                    .into();
+                let mut segment_processor: ExecutorStat<'a, S> =
+                    segment_data.with_process(mail, sink, callback).into();
                 loop {
                     let exec_rs =
                         <ExecutorStat<'a, S> as SegmentExecute>::exec(segment_processor).await;
@@ -102,9 +100,6 @@ where
                             match e {
                                 ExecuteErr::SinkErr(e) => {
                                     error!("Segment process execute failed, e:{:?}", e);
-                                }
-                                ExecuteErr::WindowFullErr => {
-                                    error!("Server Window is full!");
                                 }
                             }
                             break;
@@ -125,45 +120,17 @@ where
         Ok(())
     }
 
-    pub async fn remote_msg_callback(
-        sink: &mut S,
-        ack_win: &mut AckWindow,
-        seq_id: Option<i64>,
-    ) -> Result<(), AnyError> {
+    pub async fn ack_seg(sink: &mut S, seq_id: i64) -> Result<(), AnyError> {
         trace!(seq_id = seq_id, "Has received ack callback");
-        match seq_id {
-            Some(seq_id) if seq_id > 0 => {
-                let r = ack_win.ack(seq_id);
-                match r {
-                    Ok(_) => {
-                        if ack_win.is_ready() {
-                            ack_win.clear();
-                        }
-                        let seg = {
-                            let mut s = SegmentRes::default();
-                            let mut meta = Meta::new();
-                            meta.set_field_type(Meta_RequestType::TRANS_ACK);
-                            meta.set_seqId(ack_win.curr_ack_id());
-                            s.set_meta(meta);
-                            (s, WriteFlags::default())
-                        };
-                        let r = sink.send(seg).await;
-
-                        if let Err(e) = r {
-                            error!("Send trans ack failed!e:{:?}", e);
-                        } else {
-                            trace!(seq_id = ack_win.curr_ack_id(), "Sending ack to client");
-                        }
-                    }
-                    Err(e) => {
-                        error!(%seq_id, "Have got an unexpeced seqid to ack; e:{:?}, just ignore this segment", e);
-                    }
-                }
-            }
-            _ => {
-                return Err(AnyError::msg("Invalid seqid"));
-            }
-        }
+        let seg = {
+            let mut s = SegmentRes::default();
+            let mut meta = Meta::new();
+            meta.set_field_type(Meta_RequestType::TRANS_ACK);
+            meta.set_seqId(seq_id);
+            s.set_meta(meta);
+            (s, WriteFlags::default())
+        };
+        sink.send(seg).await?;
         Ok(())
     }
 }
@@ -172,7 +139,6 @@ where
 trait SegmentProcess<S> {
     fn with_process<'a>(
         self,
-        ack_win: &'a mut AckWindow,
         mail: &'a mut UnboundedSender<SegmentDataCallback>,
         sink: &'a mut S,
         callback: UnboundedSender<i64>,
@@ -181,7 +147,6 @@ trait SegmentProcess<S> {
 
 struct SegmentProcessor<'a, S> {
     data: SegmentData,
-    ack_win: &'a mut AckWindow,
     mail: &'a mut UnboundedSender<SegmentDataCallback>,
     sink: &'a mut S,
     callback: UnboundedSender<i64>,
@@ -203,14 +168,12 @@ impl<'a, S> From<SegmentProcessor<'a, S>> for ExecutorStat<'a, S> {
 impl<S: Sync + Send> SegmentProcess<S> for SegmentData {
     fn with_process<'a>(
         self,
-        ack_win: &'a mut AckWindow,
         mail: &'a mut UnboundedSender<SegmentDataCallback>,
         sink: &'a mut S,
         callback: UnboundedSender<i64>,
     ) -> SegmentProcessor<'a, S> {
         SegmentProcessor {
             data: self,
-            ack_win,
             mail,
             sink,
             callback,
@@ -255,37 +218,14 @@ where
                 return Ok(ExecutorStat::Last);
             }
             ExecutorStat::Trans(s) => {
-                let r = s.ack_win.send(s.data.get_meta().get_seqId());
-                // trace!(seq_id = data.get_meta().get_seqId(), meta = ?data.get_meta(), "Has received handshake packet meta");
-                match r {
-                    Ok(_) => {
-                        let span = span!(Level::TRACE, "trans_receiver_consume", data = ?s.data);
-                        let data = SegmentDataCallback {
-                            data: s.data,
-                            callback: AckCallback::new(Some(s.callback)),
-                            span,
-                        };
-                        // Unbounded sender, ignore
-                        let _ = s.mail.send(data);
-                        trace!("Has sent segment to local channel(Waiting for storage operation and callback)");
-                    }
-                    Err(w) => match w {
-                        // Hang on, send current ack back
-                        WindowErr::Full => {
-                            let segment_resp = SegmentRes::new();
-                            let mut meta = Meta::new();
-                            meta.set_field_type(Meta_RequestType::TRANS_ACK);
-                            meta.set_seqId(s.ack_win.curr_ack_id());
-                            warn!(conn_id = meta.get_connId(), meta = ?meta, "Receiver window is full, send full signal to remote sender");
-                            let r = s.sink.send((segment_resp, WriteFlags::default())).await;
-                            if let Err(e) = r {
-                                error!("Send full signal failed!e:{:?}", e);
-                                return Err(ExecuteErr::SinkErr(e));
-                            }
-                            return Err(ExecuteErr::WindowFullErr);
-                        }
-                    },
-                }
+                let span = span!(Level::TRACE, "trans_receiver_consume", data = ?s.data);
+                let data = SegmentDataCallback {
+                    data: s.data,
+                    callback: AckCallback::new(Some(s.callback)),
+                    span,
+                };
+                // Unbounded sender, ignore
+                let _ = s.mail.send(data);
                 return Ok(ExecutorStat::Last);
             }
             ExecutorStat::NeedTrans(s) => {
@@ -310,7 +250,6 @@ where
 #[derive(Debug)]
 enum ExecuteErr<SinkErr: Debug> {
     SinkErr(SinkErr),
-    WindowFullErr,
 }
 
 impl<SinkErr: Debug> Display for ExecuteErr<SinkErr> {
@@ -345,7 +284,6 @@ where
     ) -> RemoteMsgPoller<L, S> {
         RemoteMsgPoller {
             source_stream: source,
-            ack_win: Default::default(),
             sink,
             local_sender,
             shut_recv,

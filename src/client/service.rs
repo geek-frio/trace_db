@@ -53,9 +53,7 @@ impl Service<SegmentData> for EndpointService {
             let r = sched.request(req).await;
             if let Err(e) = r.as_ref() {
                 match e {
-                    &TransportErr::ConnCreateFailed
-                    | &TransportErr::HandshakeFailed
-                    | &TransportErr::Shutdown
+                    &TransportErr::Shutdown
                     | &TransportErr::ReceiverChanClosed
                     | &TransportErr::RecvErr => {
                         let _ = broken_notify.send(id).await;

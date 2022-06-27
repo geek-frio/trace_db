@@ -98,7 +98,7 @@ impl SkyTracing for SkyTracingService {
             let p = Pin::new(&mut msg_poller);
             let poll_res = p.loop_poll().await;
             if let Err(e) = poll_res {
-                error!("Serious problem, loop poll failed!, e:{:?}", e);
+                error!("Serious problem, loop poll failed!, sink will be dropped, client will reconnect e:{:?}", e);
             }
         });
     }

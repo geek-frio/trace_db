@@ -43,7 +43,6 @@ impl<N: Fsm> Batch<N> {
 
     fn release(&mut self, mut fsm: NormalFsm<N>, checked_len: usize) -> Option<NormalFsm<N>> {
         let mailbox = fsm.as_mut().take_mailbox().unwrap();
-        // 交换回NormalFsm手中的fsm到mailbox之中
         mailbox.release(fsm.fsm);
         if mailbox.len() == checked_len {
             None
@@ -256,13 +255,6 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
         !batch.is_empty()
     }
 
-    pub fn poll_new(&mut self) {
-        // fetch_fsm
-        //  handle fsm
-        //  check execute statue
-        //    if time is long, try to reschedule
-    }
-
     pub fn poll(&mut self) {
         let _poll_span = info_span!("poll").entered();
         let mut batch: Batch<N> = Batch::with_capacity(self.max_batch_size);
@@ -289,8 +281,6 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                     warn!(policy = ?p.policy, "Fsm is stopped!Set fsm policy");
                     reschedule_fsms.push(i);
                 } else {
-                    // 判断这个fsm的处理时间，如果过长，需要重点关注
-                    // 将batch发生了处理时间过长的fsm其中的一半进行重新调度处理
                     if p.timer.elapsed() >= self.reschedule_duration {
                         hot_fsm_count += 1;
                         if hot_fsm_count % 2 == 0 {
@@ -300,7 +290,6 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                             reschedule_fsms.push(i);
                         }
                     }
-                    // 正常的fsm执行完毕以后都会进入这里
                     if let HandleResult::StopAt { progress, skip_end } = res {
                         p.policy = Some(ReschedulePolicy::Release(progress));
                         reschedule_fsms.push(i);
@@ -310,19 +299,13 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                     }
                 }
             }
-            // 后续while循环的逻辑是尝试不断fetch新的fsm并进行执行，并一直到把batch的长度
-            //  打满（小于等于batch max_batch_size), 所以后面的处理逻辑是从fsm cnt开始,
-            //  fsm cnt之前的fsm都是已经执行过handle的
 
-            // 记录batch中的fsm已经处理到哪一个
             let mut fsm_cnt = batch.normals.len();
             trace!("Start to fill new received fsm into batch");
             while batch.normals.len() < max_batch_size {
                 if let Ok(fsm) = self.fsm_receiver.try_recv() {
-                    // 如果收到了终止信号, 终止
                     run = batch.push(fsm);
                 }
-                // 没有获取到新第fsm,就break掉
                 if !run || fsm_cnt == batch.normals.len() {
                     info!(%run, batch_size = batch.normals.len(), "break fill operation");
                     break;

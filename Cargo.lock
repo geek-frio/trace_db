@@ -1361,6 +1361,7 @@ dependencies = [
  "tantivy",
  "tantivy-common",
  "tantivy-query-grammar",
+ "thiserror",
  "tokio",
  "tokio-io",
  "tower",
