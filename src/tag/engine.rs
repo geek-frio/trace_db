@@ -1,5 +1,4 @@
 use skproto::tracing::SegmentData;
-use std::fmt::Display;
 use tantivy::directory::MmapDirectory;
 use tantivy::error::TantivyError;
 use tantivy::schema::*;
@@ -24,34 +23,18 @@ pub struct TracingTagEngine {
     schema: Schema,
 }
 
-#[derive(PartialEq, Eq, Hash)]
-pub enum TagField {
-    Zone,
-    ApiId,
-    Service,
-    Biztime,
-    TraceId,
-    SegId,
-    Payload,
-}
-
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum TagEngineError {
-    DirOpenFailed,
-    WriterCreateFailed,
+    #[error("Tantivy commit error, e: {0:?}")]
     RecordsCommitError(TantivyError),
+    #[error("Tantivy writer is not init, tracing tag engine should be called init first")]
     WriterNotInit,
+    #[error("Tantivy reader is not init, tracing tag engine should be called init first")]
     IndexNotExist,
+    #[error("tanivy read error, {0:?}")]
     Other(TantivyError),
+    #[error("Tracing tag engine init failed, create index dir failed!")]
     IndexDirCreateFailed,
-}
-
-impl std::error::Error for TagEngineError {}
-
-impl Display for TagEngineError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("EngineError:{:?}", self))
-    }
 }
 
 impl TracingTagEngine {

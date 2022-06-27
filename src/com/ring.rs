@@ -5,8 +5,7 @@ use std::{
 
 use tokio::sync::Notify;
 
-use super::ack::DEFAULT_WIN_SIZE;
-
+pub(crate) const DEFAULT_WIN_SIZE: u32 = 64 * 100;
 #[derive(Debug)]
 pub struct RingQueue<T>
 where
@@ -37,23 +36,20 @@ where
     end_id: i64,
 }
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum RingQueueError {
     // cur_id, start_id
+    #[error("ring queue is full, cur id is: {0:?}, start_id is:{1:?}")]
     Full(i64, i64),
     // cur_id, start_id
+    #[error("Invalid ack id for this ringqueue: {0:?}, start_id is:{1:?}")]
     InvalidAckId(i64, i64),
-}
-
-impl std::fmt::Display for RingQueueError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{:?}", self))
-    }
 }
 
 #[derive(Debug)]
 struct Element<T: std::fmt::Debug>(i64, T);
 
+#[allow(dead_code)]
 impl<T> RingQueue<T>
 where
     T: std::fmt::Debug,
