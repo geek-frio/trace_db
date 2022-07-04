@@ -9,7 +9,7 @@ use futures::future::FutureExt;
 use futures::{select, SinkExt};
 use futures::{Stream, StreamExt};
 use futures_sink::Sink;
-use grpcio::Error as GrpcError;
+use grpcio::{DuplexSink, Error as GrpcError};
 use grpcio::{Result as GrpcResult, WriteFlags};
 use pin_project::pin_project;
 use skproto::tracing::{Meta, Meta_RequestType, SegmentData, SegmentRes};
@@ -28,12 +28,9 @@ pub struct RemoteMsgPoller<L, S> {
     shut_recv: tokio::sync::broadcast::Receiver<()>,
 }
 
-impl<L, S> RemoteMsgPoller<L, S>
+impl<L> RemoteMsgPoller<L, DuplexSink<SegmentRes>>
 where
     L: Stream<Item = GrpcResult<SegmentData>> + Unpin,
-    S: Sink<(SegmentRes, WriteFlags)> + Unpin + Sync + Send,
-    AnyError: From<S::Error>,
-    S::Error: Send + std::error::Error + Sync,
 {
     // Loop poll remote from grpc stream, until:
     // 1. Have met serious grpc transport problem;
@@ -42,18 +39,34 @@ where
         let mut stream = self.source_stream.fuse();
         let mut shut_recv = self.shut_recv;
         let sender = &mut self.local_sender;
-        let sink = &mut self.sink;
+
+        let (handler, actor) = SinkActor::spawn(self.sink);
 
         loop {
             tokio::select! {
                 seg = stream.next() => {
                     if let Some(seg) = seg {
-                        // let (send, recv) = tokio::sync::oneshot::channel();
+                        let (callback_sender, callback_receiver) = tokio::sync::oneshot::channel();
+                        Self::redirect_batch_exec(seg, sender, handler.clone(), callback_sender).await;
 
-                        // Self::redirect_batch_exec(seg, sender, sink, send).await;
-                        // TOKIO_RUN.spawn(async {
-                        //     recv.
-                        // });
+                        TOKIO_RUN.spawn(async move{
+                            let call_state = callback_receiver.await.unwrap();
+
+                            match call_state {
+                                CallbackStat::Ok(seq_id) => {
+
+                                },
+                                CallbackStat::IOErr(e, seq_id) => {
+
+                                },
+                                CallbackStat::ExpiredData(seq_id) => {
+
+                                }
+                                CallbackStat::ShuttingDown => {
+
+                                }
+                            }
+                        });
                     }
                 },
                 shut_recv = shut_recv.recv() => {
@@ -65,23 +78,6 @@ where
                 },
             }
         }
-        // let mut source_stream = this.source_stream.fuse();
-        // // let mut ack_stream = Pin::new(&mut ack_r);
-        // let mut shut_recv = this.shut_recv.fuse();
-
-        // let mut sink = this.sink;
-        // let mut local_sender = this.local_sender;
-
-        // TOKIO_RUN.spawn(async move {
-        //     let ack_data = callback_recv.await;
-        //     match ack_data {
-        //         Ok(data) => match data {
-        //             CallbackStat::Ok(id) => {}
-        //             CallbackStat::IOErr(e, id) => {}
-        //         },
-        //         Err(_) => {}
-        //     }
-        // });
         Ok(())
     }
 
@@ -121,7 +117,7 @@ where
         Ok(())
     }
 
-    pub async fn ack_seg(sink: &mut S, seq_id: i64) -> Result<(), AnyError> {
+    pub async fn ack_seg(sink: &mut DuplexSink<SegmentRes>, seq_id: i64) -> Result<(), AnyError> {
         trace!(seq_id = seq_id, "Has received ack callback");
         let seg = {
             let mut s = SegmentRes::default();
@@ -154,14 +150,25 @@ pub struct SinkHandler {
 }
 
 pub struct SinkActor {
-    sink: grpcio::DuplexSink<(SegmentRes, WriteFlags)>,
+    sink: grpcio::DuplexSink<SegmentRes>,
     receiver: tokio::sync::mpsc::UnboundedReceiver<SinkEvent>,
 }
 
 impl SinkActor {
     async fn run(self) {
         let mut recv = self.receiver;
-        while let Some(event) = recv.recv().await {}
+        let sink = self.sink;
+
+        while let Some(event) = recv.recv().await {
+            match event {}
+        }
+        warn!("grpc duplex sink is shutted down");
+    }
+
+    fn spawn(sink: grpcio::DuplexSink<SegmentRes>) -> (SinkHandler, SinkActor) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        (SinkHandler { sender }, SinkActor { sink, receiver })
     }
 }
 
@@ -223,14 +230,6 @@ impl<'a> SegmentExecute for ExecutorStat<'a> {
                 info!(meta = ?meta, %conn_id, resp = ?resp, "Send handshake resp");
                 resp.set_meta(meta);
                 let mut sink = Pin::new(&mut s.sink);
-                // We don't care handshake is success or not, client should retry for this
-                // let send_res = sink.send((resp, WriteFlags::default())).await;
-                // if let Err(e) = send_res {
-                //     error!(conn_id, "Handshake send response failed!");
-                //     return Err(ExecuteErr::SinkErr(e));
-                // }
-                // info!("Send handshake resp success");
-                // let _ = sink.flush().await;
                 return ExecutorStat::Last;
             }
             ExecutorStat::Trans(s) => {
