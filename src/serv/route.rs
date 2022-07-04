@@ -10,7 +10,7 @@ use tantivy::{
 };
 use tracing::{error, info, trace, trace_span};
 
-use crate::{com::{index::{ConvertIndexAddr, MailKeyAddress}, router::Either, fsm::Fsm}, conf::GlobalConfig, serv::ShutdownEvent, TOKIO_RUN};
+use crate::{com::{index::{ConvertIndexAddr, MailKeyAddress}, router::Either, fsm::Fsm, ack::CallbackStat}, conf::GlobalConfig, serv::ShutdownEvent, TOKIO_RUN};
 use crate::com::mail::BasicMailbox;
 use crate::tag::engine::*;
 use crate::tag::fsm::TagFsm;
@@ -51,6 +51,7 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
             Ok(path) => path,
             Err(_) => return Err(seg),
         };
+
         let trace_id = seg.data.get_trace_id();
         trace!(
             index_addr = ?mail_key_addr,
@@ -61,14 +62,18 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
 
         let index_path = Box::new(self.config.index_dir.clone());
         let send_stat = self.router.route_msg(mail_key_addr.into(), seg);
+
         match send_stat {
             Either::Right(msg) => {
                 info!(
                     "Can't find addr's mailbox, create a new one"
                 );
+
                 let (s, r) = crossbeam_channel::unbounded();
+
                 let mut engine =
                     TracingTagEngine::new(mail_key_addr, index_path.clone(), self.schema.clone());
+
                 let res = engine.init();
                 match res {
                     Ok(index) => {
@@ -76,11 +81,13 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                         let fsm = Box::new(TagFsm::new(r, None, engine));
                         let state_cnt = Arc::new(AtomicUsize::new(0));
                         let mailbox = BasicMailbox::new(s, fsm, state_cnt); 
+
                         let fsm = mailbox.take_fsm();
                         if let Some(mut f) = fsm {
                             f.set_mailbox(Cow::Borrowed(&mailbox));
                             mailbox.release(f);
                         }
+
                         self.router.register(mail_key_addr.into(), mailbox);
                         self.router.route_msg(mail_key_addr.into(), msg);
                     }
@@ -89,7 +96,7 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                     Err(e) => {
                         error!("This error can not fix by retry, so we just ack this msg Maybe we should store this msg anywhere!");
                         error!(seq_id = msg.data.get_meta().get_seqId(), trace_id = ?msg.data.trace_id, "Init addr's TagEngine failed!Just callback this data.e:{:?}", e);
-                        msg.callback.callback(msg.data.get_meta().get_seqId());
+                        msg.callback.callback(CallbackStat::IOErr(e, msg.data.get_meta().get_seqId())); 
                     }
                 }
             }
@@ -116,7 +123,7 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                             .entered();
                             trace!(parent: &segment_callback.span, "Has received the segment, try to route to mailbox.");
                             if let Err(seg) = self.route_msg(segment_callback) {
-                                seg.callback.callback(seg.data.get_meta().get_seqId());
+                                seg.callback.callback(CallbackStat::ExpiredData(seg.data.get_meta().get_seqId()));
                             }
                         }
                         None => return Err(AnyError::msg("LocalSegmentMsgConsumer's sender has closed")),
@@ -128,7 +135,7 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                             while let Ok(segment_callback) = self.receiver.try_recv() {
                                 info!("loop consume all the segments waiting in the channel");
                                 if let Err(seg) = self.route_msg(segment_callback) {
-                                    seg.callback.callback(seg.data.get_meta().get_seqId());
+                                    seg.callback.callback(CallbackStat::ShuttingDown);
                                 }
                             }
                             info!("Wait more 10 seconds of consuming operation..");

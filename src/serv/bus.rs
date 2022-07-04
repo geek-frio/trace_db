@@ -1,6 +1,7 @@
-use crate::com::ack::AckCallback;
+use crate::com::ack::{AckCallback, CallbackStat};
 use crate::serv::CONN_MANAGER;
 use crate::tag::fsm::SegmentDataCallback;
+use crate::TOKIO_RUN;
 use anyhow::Error as AnyError;
 use async_trait::async_trait;
 // use futures::channel::mpsc::{unbounded as funbounded, Sender, UnboundedSender};
@@ -15,7 +16,7 @@ use skproto::tracing::{Meta, Meta_RequestType, SegmentData, SegmentRes};
 use std::fmt::{Debug, Display};
 use std::pin::Pin;
 use tokio::sync::mpsc::{unbounded_channel as funbounded, UnboundedSender};
-use tokio::sync::oneshot::Receiver;
+// use tokio::sync::oneshot::Receiver;
 use tracing::{error, info, span, trace, trace_span, warn, Level};
 
 #[pin_project]
@@ -24,7 +25,7 @@ pub struct RemoteMsgPoller<L, S> {
     source_stream: L,
     sink: S,
     local_sender: UnboundedSender<SegmentDataCallback>,
-    shut_recv: Receiver<()>,
+    shut_recv: tokio::sync::broadcast::Receiver<()>,
 }
 
 impl<L, S> RemoteMsgPoller<L, S>
@@ -37,75 +38,75 @@ where
     // Loop poll remote from grpc stream, until:
     // 1. Have met serious grpc transport problem;
     // 2. Have received shutdown signal;
-    pub(crate) async fn loop_poll(self: Pin<&mut Self>) -> Result<(), AnyError> {
-        let this = self.project();
-
-        let (ack_s, mut ack_r) = funbounded::<i64>();
-
-        let mut source_stream = this.source_stream.fuse();
-        let mut ack_stream = Pin::new(&mut ack_r);
-        let mut shut_recv = this.shut_recv.fuse();
-
-        let mut sink = this.sink;
-        let mut local_sender = this.local_sender;
+    pub(crate) async fn loop_poll(mut self) -> Result<(), AnyError> {
+        let mut stream = self.source_stream.fuse();
+        let mut shut_recv = self.shut_recv;
+        let sender = &mut self.local_sender;
+        let sink = &mut self.sink;
 
         loop {
-            let _one_msg = trace_span!("recv_msg_one_loop");
-            select! {
-                remote_data = source_stream.next() => {
-                    if let Some(remote_data) = remote_data{
-                        let r = Self::redirect_batch_exec(remote_data, &mut local_sender, &mut sink, ack_s.clone()).await;
-                        if let Err(e) = r {
-                            error!("Serious error:{:?}", e);
-                            return Err(e);
-                        }
-                    };
-                },
-                ack_data = ack_stream.recv().fuse() => {
-                    if let Some(id) = ack_data {
-                        Self::ack_seg(&mut sink, id).await?;
+            tokio::select! {
+                seg = stream.next() => {
+                    if let Some(seg) = seg {
+                        // let (send, recv) = tokio::sync::oneshot::channel();
+
+                        // Self::redirect_batch_exec(seg, sender, sink, send).await;
+                        // TOKIO_RUN.spawn(async {
+                        //     recv.
+                        // });
                     }
-                }
-                _ = shut_recv => {
-                    info!("Received shutdown signal, quit");
+                },
+                shut_recv = shut_recv.recv() => {
+                    info!("Received shutdown signal, ignore all the data in the stream");
                     break;
-                }
+                },
+                else => {
+                    break;
+                },
             }
         }
+        // let mut source_stream = this.source_stream.fuse();
+        // // let mut ack_stream = Pin::new(&mut ack_r);
+        // let mut shut_recv = this.shut_recv.fuse();
+
+        // let mut sink = this.sink;
+        // let mut local_sender = this.local_sender;
+
+        // TOKIO_RUN.spawn(async move {
+        //     let ack_data = callback_recv.await;
+        //     match ack_data {
+        //         Ok(data) => match data {
+        //             CallbackStat::Ok(id) => {}
+        //             CallbackStat::IOErr(e, id) => {}
+        //         },
+        //         Err(_) => {}
+        //     }
+        // });
         Ok(())
     }
 
     async fn redirect_batch_exec<'a>(
         data: GrpcResult<SegmentData>,
         mail: &'a mut UnboundedSender<SegmentDataCallback>,
-        sink: &'a mut S,
-        callback: UnboundedSender<i64>,
+        sink: SinkHandler,
+        callback: tokio::sync::oneshot::Sender<CallbackStat>,
     ) -> Result<(), AnyError> {
         match data {
             Ok(segment_data) => {
-                let mut segment_processor: ExecutorStat<'a, S> =
+                let mut segment_processor: ExecutorStat<'a> =
                     segment_data.with_process(mail, sink, callback).into();
                 loop {
                     let exec_rs =
-                        <ExecutorStat<'a, S> as SegmentExecute>::exec(segment_processor).await;
-                    // mail.clone();
+                        <ExecutorStat<'a> as SegmentExecute>::exec(segment_processor).await;
+
                     match exec_rs {
-                        Ok(ExecutorStat::HandShake(o))
-                        | Ok(ExecutorStat::NeedTrans(o))
-                        | Ok(ExecutorStat::Trans(o)) => {
+                        ExecutorStat::HandShake(o)
+                        | ExecutorStat::NeedTrans(o)
+                        | ExecutorStat::Trans(o) => {
                             segment_processor = o.into();
                             continue;
                         }
-                        Err(e) => {
-                            match e {
-                                ExecuteErr::SinkErr(e) => {
-                                    error!("Segment process execute failed, e:{:?}", e);
-                                }
-                            }
-                            break;
-                        }
-
-                        Ok(ExecutorStat::Last) => break,
+                        ExecutorStat::Last => break,
                     }
                 }
             }
@@ -136,24 +137,43 @@ where
 }
 
 #[async_trait]
-trait SegmentProcess<S> {
+trait SegmentProcess {
     fn with_process<'a>(
         self,
         mail: &'a mut UnboundedSender<SegmentDataCallback>,
-        sink: &'a mut S,
-        callback: UnboundedSender<i64>,
-    ) -> SegmentProcessor<'a, S>;
+        sink: SinkHandler,
+        callback: tokio::sync::oneshot::Sender<CallbackStat>,
+    ) -> SegmentProcessor<'a>;
 }
 
-struct SegmentProcessor<'a, S> {
+pub enum SinkEvent {}
+
+#[derive(Clone)]
+pub struct SinkHandler {
+    sender: tokio::sync::mpsc::UnboundedSender<SinkEvent>,
+}
+
+pub struct SinkActor {
+    sink: grpcio::DuplexSink<(SegmentRes, WriteFlags)>,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<SinkEvent>,
+}
+
+impl SinkActor {
+    async fn run(self) {
+        let mut recv = self.receiver;
+        while let Some(event) = recv.recv().await {}
+    }
+}
+
+struct SegmentProcessor<'a> {
     data: SegmentData,
     mail: &'a mut UnboundedSender<SegmentDataCallback>,
-    sink: &'a mut S,
-    callback: UnboundedSender<i64>,
+    sink: SinkHandler,
+    callback: tokio::sync::oneshot::Sender<CallbackStat>,
 }
 
-impl<'a, S> From<SegmentProcessor<'a, S>> for ExecutorStat<'a, S> {
-    fn from(s: SegmentProcessor<'a, S>) -> Self {
+impl<'a> From<SegmentProcessor<'a>> for ExecutorStat<'a> {
+    fn from(s: SegmentProcessor<'a>) -> Self {
         let meta_type = s.data.get_meta().field_type;
         match meta_type {
             Meta_RequestType::HANDSHAKE => ExecutorStat::HandShake(s),
@@ -165,13 +185,13 @@ impl<'a, S> From<SegmentProcessor<'a, S>> for ExecutorStat<'a, S> {
 }
 
 #[async_trait]
-impl<S: Sync + Send> SegmentProcess<S> for SegmentData {
+impl SegmentProcess for SegmentData {
     fn with_process<'a>(
         self,
         mail: &'a mut UnboundedSender<SegmentDataCallback>,
-        sink: &'a mut S,
-        callback: UnboundedSender<i64>,
-    ) -> SegmentProcessor<'a, S> {
+        sink: SinkHandler,
+        callback: tokio::sync::oneshot::Sender<CallbackStat>,
+    ) -> SegmentProcessor<'a> {
         SegmentProcessor {
             data: self,
             mail,
@@ -181,22 +201,18 @@ impl<S: Sync + Send> SegmentProcess<S> for SegmentData {
     }
 }
 
-enum ExecutorStat<'a, S> {
-    HandShake(SegmentProcessor<'a, S>),
-    Trans(SegmentProcessor<'a, S>),
-    NeedTrans(SegmentProcessor<'a, S>),
+enum ExecutorStat<'a> {
+    HandShake(SegmentProcessor<'a>),
+    Trans(SegmentProcessor<'a>),
+    NeedTrans(SegmentProcessor<'a>),
     Last,
 }
 
 #[async_trait]
-impl<'a, S: Send + Sink<(SegmentRes, WriteFlags)> + Unpin> SegmentExecute for ExecutorStat<'a, S>
-where
-    S::Error: Send + std::error::Error,
-{
-    type Next = ExecutorStat<'a, S>;
-    type Error = ExecuteErr<S::Error>;
+impl<'a> SegmentExecute for ExecutorStat<'a> {
+    type Next = ExecutorStat<'a>;
 
-    async fn exec(self) -> Result<Self::Next, Self::Error> {
+    async fn exec(self) -> Self::Next {
         match self {
             ExecutorStat::HandShake(mut s) => {
                 let conn_id = CONN_MANAGER.gen_new_conn_id();
@@ -208,14 +224,14 @@ where
                 resp.set_meta(meta);
                 let mut sink = Pin::new(&mut s.sink);
                 // We don't care handshake is success or not, client should retry for this
-                let send_res = sink.send((resp, WriteFlags::default())).await;
-                if let Err(e) = send_res {
-                    error!(conn_id, "Handshake send response failed!");
-                    return Err(ExecuteErr::SinkErr(e));
-                }
-                info!("Send handshake resp success");
-                let _ = sink.flush().await;
-                return Ok(ExecutorStat::Last);
+                // let send_res = sink.send((resp, WriteFlags::default())).await;
+                // if let Err(e) = send_res {
+                //     error!(conn_id, "Handshake send response failed!");
+                //     return Err(ExecuteErr::SinkErr(e));
+                // }
+                // info!("Send handshake resp success");
+                // let _ = sink.flush().await;
+                return ExecutorStat::Last;
             }
             ExecutorStat::Trans(s) => {
                 let span = span!(Level::TRACE, "trans_receiver_consume", data = ?s.data);
@@ -226,7 +242,7 @@ where
                 };
                 // Unbounded sender, ignore
                 let _ = s.mail.send(data);
-                return Ok(ExecutorStat::Last);
+                return ExecutorStat::Last;
             }
             ExecutorStat::NeedTrans(s) => {
                 trace!(meta = ?s.data.get_meta(), conn_id = s.data.get_meta().get_connId(), "Has received need send data!");
@@ -238,10 +254,10 @@ where
                 };
                 let _ = s.mail.send(data);
                 trace!("NEED_RESEND: Has sent segment to local channel(Waiting for storage operation and callback)");
-                return Ok(ExecutorStat::Last);
+                return ExecutorStat::Last;
             }
             ExecutorStat::Last => {
-                return Ok(ExecutorStat::Last);
+                return ExecutorStat::Last;
             }
         }
     }
@@ -264,9 +280,8 @@ impl<SinkErr: Debug> std::error::Error for ExecuteErr<SinkErr> {}
 #[async_trait]
 pub trait SegmentExecute {
     type Next: SegmentExecute;
-    type Error: std::error::Error;
 
-    async fn exec(self) -> Result<Self::Next, Self::Error>;
+    async fn exec(self) -> Self::Next;
 }
 
 impl<L, S> RemoteMsgPoller<L, S>
@@ -280,7 +295,7 @@ where
         source: L,
         sink: S,
         local_sender: UnboundedSender<SegmentDataCallback>,
-        shut_recv: Receiver<()>,
+        shut_recv: tokio::sync::broadcast::Receiver<()>,
     ) -> RemoteMsgPoller<L, S> {
         RemoteMsgPoller {
             source_stream: source,

@@ -8,6 +8,7 @@ use crate::tag::fsm::SegmentDataCallback;
 use crate::tag::search::Searcher;
 use crate::*;
 use anyhow::Error as AnyError;
+use futures::pin_mut;
 use futures::StreamExt;
 use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
@@ -92,11 +93,9 @@ impl SkyTracing for SkyTracingService {
         stream: ::grpcio::RequestStream<SegmentData>,
         sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
-        let (_sender, recv) = tokio::sync::oneshot::channel();
         let mut msg_poller = RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone(), recv);
         TOKIO_RUN.spawn(async move {
-            let p = Pin::new(&mut msg_poller);
-            let poll_res = p.loop_poll().await;
+            let poll_res = msg_poller.loop_poll().await;
             if let Err(e) = poll_res {
                 error!("Serious problem, loop poll failed!, sink will be dropped, client will reconnect e:{:?}", e);
             }
