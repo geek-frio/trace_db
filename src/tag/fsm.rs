@@ -1,6 +1,10 @@
 use std::borrow::Cow;
 
-use crate::com::{ack::AckCallback, fsm::Fsm, mail::BasicMailbox};
+use crate::com::{
+    ack::{AckCallback, CallbackStat},
+    fsm::Fsm,
+    mail::BasicMailbox,
+};
 use crossbeam_channel::Receiver;
 use skproto::tracing::SegmentData;
 use tracing::{error, trace, Span};
@@ -14,6 +18,16 @@ pub struct SegmentDataCallback {
     pub data: SegmentData,
     pub callback: AckCallback,
     pub span: Span,
+}
+
+impl SegmentDataCallback {
+    pub fn new(data: SegmentData, callback: AckCallback, span: Span) -> SegmentDataCallback {
+        SegmentDataCallback {
+            data,
+            callback,
+            span,
+        }
+    }
 }
 
 pub struct TagFsm {
@@ -45,7 +59,7 @@ pub(crate) trait FsmExecutor {
 
     fn handle_tasks(&mut self, msg_buf: &mut Vec<Self::Msg>, msg_cnt: &mut usize);
 
-    fn commit(&mut self, msg_buf: &Vec<Self::Msg>);
+    fn commit(&mut self, msg_buf: &mut Vec<Self::Msg>);
 
     fn remain_msgs(&self) -> usize;
 }
@@ -83,34 +97,52 @@ impl FsmExecutor for TagFsm {
             if i < *msg_cnt {
                 continue;
             }
+
             let msg = &slice[i];
             let span = &msg.span;
             let _entered = span.enter();
+
             self.engine.add_record(&msg.data);
             trace!(
                 trace_id = msg.data.get_trace_id(),
                 seq_id = msg.data.get_meta().get_seqId(),
                 "Segment has added to Tag Engine, but not be flushed!"
             );
+
             *msg_cnt += 1;
         }
     }
 
-    fn commit(&mut self, msgs: &Vec<Self::Msg>) {
+    fn commit(&mut self, msgs: &mut Vec<Self::Msg>) {
         let res = self.engine.flush();
-        for msg in msgs {
-            let span = &msg.span;
-            let _entered = span.enter();
-            msg.callback.callback(msg.data.get_meta().get_seqId());
-            trace!(
-                trace_id = msg.data.get_trace_id(),
-                seq_id = msg.data.get_meta().get_seqId(),
-                "segment has been callback"
-            );
-        }
-        if let Err(e) = res {
-            error!("We should do something to backup these data, it's a CAN'T RETRY ERROR so currently we do nothing;");
-            error!("Serious problem, backup data!:{:?}", e);
+        match res {
+            Err(e) => {
+                error!(%e, "Flush data failed!");
+                while let Some(msg) = msgs.pop() {
+                    let span = &msg.span;
+                    let _entered = span.enter();
+
+                    msg.callback
+                        .callback(CallbackStat::IOErr(e.clone(), msg.data.clone().into()));
+
+                    error!("call back error to client");
+                }
+            }
+            Ok(_tantivy_id) => {
+                while let Some(msg) = msgs.pop() {
+                    let span = &msg.span;
+                    let _entered = span.enter();
+
+                    msg.callback
+                        .callback(CallbackStat::Ok(msg.data.clone().into()));
+
+                    trace!(
+                        trace_id = msg.data.get_trace_id(),
+                        seq_id = msg.data.get_meta().get_seqId(),
+                        "segment has been callback notify success"
+                    );
+                }
+            }
         }
     }
 

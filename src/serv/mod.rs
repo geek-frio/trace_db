@@ -42,23 +42,36 @@ lazy_static! {
 
 pub struct ShutdownSignal {
     pub recv: BroadReceiver<ShutdownEvent>,
+    pub sender: BroadSenderHandle<ShutdownEvent>,
     pub drop_notify: Sender<()>,
+}
+
+impl Clone for ShutdownSignal {
+    fn clone(&self) -> Self {
+        Self {
+            recv: self.sender.subscribe(),
+            sender: self.sender.clone(),
+            drop_notify: self.drop_notify.clone(),
+        }
+    }
 }
 
 impl ShutdownSignal {
     fn chan(broad_sender: BroadSenderHandle<ShutdownEvent>) -> (ShutdownSignal, Receiver<()>) {
         let (d_send, d_recv) = tokio::sync::mpsc::channel(1);
-        let b_recv = broad_sender.subscribe();
+        let b_recv = broad_sender.clone().subscribe();
         let shut = ShutdownSignal {
             recv: b_recv,
             drop_notify: d_send,
+            sender: broad_sender,
         };
         (shut, d_recv)
     }
 
-    fn subscribe(&self, sender: BroadSenderHandle<ShutdownEvent>) -> ShutdownSignal {
+    fn subscribe(&self) -> ShutdownSignal {
         ShutdownSignal {
-            recv: sender.subscribe(),
+            sender: self.sender.clone(),
+            recv: self.sender.subscribe(),
             drop_notify: self.drop_notify.clone(),
         }
     }
@@ -83,34 +96,46 @@ impl MainServer {
     pub fn new(global_config: Arc<GlobalConfig>, ip: String) -> MainServer {
         MainServer { global_config, ip }
     }
+
     pub async fn block_start(&mut self, broad_sender: BroadSenderHandle<ShutdownEvent>) {
         let _span = info_span!("main_server");
 
         let (shutdown_signal, wait_recv) = ShutdownSignal::chan(broad_sender.clone());
 
-        let ctrl_broad = broad_sender.clone();
+        let ctrl_broad = broad_sender;
         ctrlc::set_handler(move || {
             info!("Received shutdown event, broadcast shutdown event to all the spawned task!");
             let _ = ctrl_broad.send(ShutdownEvent::GracefulStop);
         })
         .expect("Error setting ctrl+c handler");
+
         info!("Start to init search builder...");
         let (service, event_sender, conn_broken_receiver) = make_service();
         let grpc_clients_chg_receiver = self.create_cluster_watcher(
             conn_broken_receiver,
             event_sender,
-            shutdown_signal.subscribe(broad_sender.clone()),
+            shutdown_signal.subscribe(),
         );
-        self.start_periodical_keep_alive_addr(shutdown_signal.subscribe(broad_sender.clone()));
         let clis_chg_recv = create_grpc_clients_watcher(grpc_clients_chg_receiver);
+
+        self.start_periodical_keep_alive_addr(shutdown_signal.subscribe());
+
         let searcher = Searcher::new(clis_chg_recv);
         let (segment_sender, segment_receiver) = tokio::sync::mpsc::unbounded_channel();
 
-        let router =
-            self.start_batch_system_for_segment(shutdown_signal.subscribe(broad_sender.clone()));
-        self.start_bridge_channel(segment_receiver, router, shutdown_signal);
-        self.start_grpc(segment_sender.clone(), wait_recv, service, searcher)
-            .await;
+        let router = self.start_batch_system_for_segment(shutdown_signal.subscribe());
+
+        self.start_bridge_channel(segment_receiver, router, shutdown_signal.subscribe());
+
+        self.start_grpc(
+            segment_sender.clone(),
+            wait_recv,
+            service,
+            searcher,
+            shutdown_signal,
+        )
+        .await;
+
         info!("Shut receiver has received.");
     }
 
@@ -159,17 +184,27 @@ impl MainServer {
             Box<dyn Error + Send + Sync>,
         >,
         searcher: Searcher<SkyTracingClient>,
+        shutdown_signal: ShutdownSignal,
     ) {
-        let skytracing =
-            SkyTracingService::new(self.global_config.clone(), sender, service, searcher);
+        let skytracing = SkyTracingService::new(
+            self.global_config.clone(),
+            sender,
+            service,
+            searcher,
+            shutdown_signal,
+        );
+
         let service = create_sky_tracing(skytracing);
         let env = Environment::new(1);
+
         let mut server = ServerBuilder::new(Arc::new(env))
             .bind(self.ip.as_str(), self.global_config.grpc_port as u16)
             .register_service(service)
             .build()
             .unwrap();
+
         server.start();
+
         wait_shutdown.recv().await;
     }
 
@@ -199,6 +234,9 @@ impl MainServer {
                             info!("Tick task received shutdown event, shutdown!");
                             drop(send);
                             return;
+                        }
+                        else => {
+                            break;
                         }
                     }
                 }

@@ -4,6 +4,7 @@ pub mod ctl;
 pub mod fsm;
 pub mod index;
 pub mod mail;
+pub(crate) mod pkt;
 pub mod redis;
 pub mod ring;
 pub mod router;

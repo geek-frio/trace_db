@@ -64,9 +64,7 @@ message SegmentData {
 
 message SegmentRes {
     Meta meta = 1;
-    enum Code {
-        ACK = 0;
-    }
+    SegmentData org_data = 2;
 }
 
 message Meta {
@@ -83,4 +81,5 @@ message Meta {
     }
     uint64 send_timestamp= 4;
     RequestType type = 5;
+    int32 resend_count = 6;
 }

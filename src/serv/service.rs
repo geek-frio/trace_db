@@ -1,4 +1,5 @@
 use super::bus::RemoteMsgPoller;
+use super::ShutdownSignal;
 use crate::client::trans::TransportErr;
 use crate::com::index::ConvertIndexAddr;
 use crate::com::index::IndexAddr;
@@ -13,7 +14,6 @@ use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
 use skproto::tracing::*;
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -36,7 +36,6 @@ use tracing::error;
 pub struct SkyTracingService {
     sender: UnboundedSender<SegmentDataCallback>,
     config: Arc<GlobalConfig>,
-    // All the tag engine share the same index schema
     tracing_schema: Schema,
     index_map: Arc<Mutex<HashMap<IndexAddr, Index>>>,
     service: BoxCloneService<
@@ -45,10 +44,10 @@ pub struct SkyTracingService {
         Box<dyn std::error::Error + Send + Sync>,
     >,
     searcher: Searcher<SkyTracingClient>,
+    shutdown_signal: ShutdownSignal,
 }
 
 impl SkyTracingService {
-    // do new and spawn two things
     pub fn new(
         config: Arc<GlobalConfig>,
         batch_system_sender: UnboundedSender<SegmentDataCallback>,
@@ -58,6 +57,7 @@ impl SkyTracingService {
             Box<dyn std::error::Error + Send + Sync>,
         >,
         searcher: Searcher<SkyTracingClient>,
+        shutdown_signal: ShutdownSignal,
     ) -> SkyTracingService {
         let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
@@ -68,6 +68,7 @@ impl SkyTracingService {
             index_map: index_map.clone(),
             service,
             searcher,
+            shutdown_signal: shutdown_signal,
         };
         service
     }
@@ -88,17 +89,18 @@ impl SkyTracingService {
 impl SkyTracing for SkyTracingService {
     fn push_segments(
         &mut self,
-        _: ::grpcio::RpcContext,
+        _ctx: ::grpcio::RpcContext,
         stream: ::grpcio::RequestStream<SegmentData>,
         sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
-        let (_sender, recv) = tokio::sync::oneshot::channel();
-        let mut msg_poller = RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone(), recv);
+        let shutdown_signal = self.shutdown_signal.clone();
+        let msg_poller =
+            RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone(), shutdown_signal);
+
         TOKIO_RUN.spawn(async move {
-            let p = Pin::new(&mut msg_poller);
-            let poll_res = p.loop_poll().await;
+            let poll_res = msg_poller.loop_poll().await;
             if let Err(e) = poll_res {
-                error!("Serious problem, loop poll failed!, sink will be dropped, client will reconnect e:{:?}", e);
+                error!("Serious problem, loop poll failed!, sink will be dropped, client should reconnect e:{:?}", e);
             }
         });
     }

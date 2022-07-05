@@ -1,6 +1,5 @@
 use skproto::tracing::SegmentData;
 use tantivy::directory::MmapDirectory;
-use tantivy::error::TantivyError;
 use tantivy::schema::*;
 use tantivy::{Document, Index, IndexReader, IndexWriter};
 
@@ -23,16 +22,16 @@ pub struct TracingTagEngine {
     schema: Schema,
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum TagEngineError {
     #[error("Tantivy commit error, e: {0:?}")]
-    RecordsCommitError(TantivyError),
+    RecordsCommitError(String),
     #[error("Tantivy writer is not init, tracing tag engine should be called init first")]
     WriterNotInit,
     #[error("Tantivy reader is not init, tracing tag engine should be called init first")]
     IndexNotExist,
     #[error("tanivy read error, {0:?}")]
-    Other(TantivyError),
+    Other(String),
     #[error("Tracing tag engine init failed, create index dir failed!")]
     IndexDirCreateFailed,
 }
@@ -111,7 +110,7 @@ impl TracingTagEngine {
         if let Some(writer) = &mut self.index_writer {
             match writer.commit() {
                 Ok(commit_idx) => return Ok(commit_idx),
-                Err(e) => return Err(TagEngineError::RecordsCommitError(e)),
+                Err(e) => return Err(TagEngineError::RecordsCommitError(e.to_string())),
             }
         }
         return Err(TagEngineError::WriterNotInit);
@@ -122,7 +121,7 @@ impl TracingTagEngine {
             Some(i) => i
                 .reader()
                 .map(|r| (r, i))
-                .map_err(|e| TagEngineError::Other(e)),
+                .map_err(|e| TagEngineError::Other(e.to_string())),
             None => Err(TagEngineError::IndexNotExist),
         }
     }

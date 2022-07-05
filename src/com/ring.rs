@@ -1,5 +1,6 @@
 use std::{
-    collections::{linked_list::Iter, LinkedList},
+    cmp::Reverse,
+    collections::{linked_list::Iter, linked_list::IterMut, BinaryHeap, LinkedList},
     sync::Arc,
 };
 
@@ -16,6 +17,8 @@ where
     size: usize,
     notify: Option<Arc<Notify>>,
     data: LinkedList<Element<T>>,
+
+    ack_queue: BinaryHeap<Reverse<i64>>,
 }
 
 impl<T> Default for RingQueue<T>
@@ -32,6 +35,16 @@ where
     T: std::fmt::Debug,
 {
     data: Iter<'a, Element<T>>,
+    start_id: i64,
+    end_id: i64,
+}
+
+#[allow(dead_code)]
+pub struct RangeIterMut<'a, T>
+where
+    T: std::fmt::Debug,
+{
+    data: IterMut<'a, Element<T>>,
     start_id: i64,
     end_id: i64,
 }
@@ -61,6 +74,7 @@ where
             size,
             notify: None,
             data: LinkedList::new(),
+            ack_queue: BinaryHeap::new(),
         }
     }
 
@@ -93,6 +107,18 @@ where
         if ack_id > self.cur_id {
             return Err(RingQueueError::InvalidAckId(self.cur_id, self.start_id));
         }
+        self.ack_queue.push(Reverse(ack_id));
+
+        let mut ack_id = self.start_id;
+        while let Some(&id) = self.ack_queue.peek() {
+            if id.0 - ack_id == 1 {
+                ack_id = id.0;
+                self.ack_queue.pop();
+            } else {
+                break;
+            }
+        }
+
         let poped_size = ack_id - self.start_id + 1;
         let mut v = Vec::new();
         for _ in 0..poped_size {
@@ -125,8 +151,21 @@ where
         }
     }
 
+    pub fn range_iter_mut(&mut self, range_start: i64) -> RangeIterMut<T> {
+        let data = self.data.iter_mut();
+        RangeIterMut {
+            data,
+            start_id: range_start,
+            end_id: self.cur_id,
+        }
+    }
+
     pub fn not_ack_iter(&self) -> RangeIter<T> {
         self.range_iter(self.start_id)
+    }
+
+    pub fn not_ack_iter_mut(&mut self) -> RangeIterMut<T> {
+        self.range_iter_mut(self.start_id)
     }
 
     pub fn size(&self) -> usize {
@@ -155,6 +194,26 @@ where
                 break;
             } else {
                 return Some(&el.1);
+            }
+        }
+        None
+    }
+}
+
+impl<'a, T> Iterator for RangeIterMut<'a, T>
+where
+    T: std::fmt::Debug,
+{
+    type Item = &'a mut T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(el) = self.data.next() {
+            if el.0 < self.start_id {
+                continue;
+            } else if el.0 > self.end_id {
+                break;
+            } else {
+                return Some(&mut el.1);
             }
         }
         None
