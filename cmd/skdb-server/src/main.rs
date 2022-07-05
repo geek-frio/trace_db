@@ -1,9 +1,9 @@
+use clap::Parser;
 use skdb::{conf::ConfigManager, log::init_tracing_logger, serv::MainServer, TOKIO_RUN};
 use std::sync::Arc;
 use tracing::info;
-
-use clap::Parser;
 use tracing::info_span;
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct Args {

@@ -36,7 +36,6 @@ use tracing::error;
 pub struct SkyTracingService {
     sender: UnboundedSender<SegmentDataCallback>,
     config: Arc<GlobalConfig>,
-    // All the tag engine share the same index schema
     tracing_schema: Schema,
     index_map: Arc<Mutex<HashMap<IndexAddr, Index>>>,
     service: BoxCloneService<
@@ -45,9 +44,7 @@ pub struct SkyTracingService {
         Box<dyn std::error::Error + Send + Sync>,
     >,
     searcher: Searcher<SkyTracingClient>,
-
     shutdown_signal: ShutdownSignal,
-    // broad_sender: tokio::sync::broadcast::Sender<ShutdownEvent>,
 }
 
 impl SkyTracingService {
@@ -73,7 +70,6 @@ impl SkyTracingService {
             service,
             searcher,
             shutdown_signal: shutdown_signal,
-            // broad_sender,
         };
         service
     }

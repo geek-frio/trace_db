@@ -68,10 +68,10 @@ impl ShutdownSignal {
         (shut, d_recv)
     }
 
-    fn subscribe(&self, sender: BroadSenderHandle<ShutdownEvent>) -> ShutdownSignal {
+    fn subscribe(&self) -> ShutdownSignal {
         ShutdownSignal {
-            sender: sender.clone(),
-            recv: sender.subscribe(),
+            sender: self.sender.clone(),
+            recv: self.sender.subscribe(),
             drop_notify: self.drop_notify.clone(),
         }
     }
@@ -96,13 +96,13 @@ impl MainServer {
     pub fn new(global_config: Arc<GlobalConfig>, ip: String) -> MainServer {
         MainServer { global_config, ip }
     }
+
     pub async fn block_start(&mut self, broad_sender: BroadSenderHandle<ShutdownEvent>) {
         let _span = info_span!("main_server");
 
         let (shutdown_signal, wait_recv) = ShutdownSignal::chan(broad_sender.clone());
 
-        let ctrl_broad = broad_sender.clone();
-
+        let ctrl_broad = broad_sender;
         ctrlc::set_handler(move || {
             info!("Received shutdown event, broadcast shutdown event to all the spawned task!");
             let _ = ctrl_broad.send(ShutdownEvent::GracefulStop);
@@ -114,23 +114,18 @@ impl MainServer {
         let grpc_clients_chg_receiver = self.create_cluster_watcher(
             conn_broken_receiver,
             event_sender,
-            shutdown_signal.subscribe(broad_sender.clone()),
+            shutdown_signal.subscribe(),
         );
-        self.start_periodical_keep_alive_addr(shutdown_signal.subscribe(broad_sender.clone()));
-
         let clis_chg_recv = create_grpc_clients_watcher(grpc_clients_chg_receiver);
+
+        self.start_periodical_keep_alive_addr(shutdown_signal.subscribe());
 
         let searcher = Searcher::new(clis_chg_recv);
         let (segment_sender, segment_receiver) = tokio::sync::mpsc::unbounded_channel();
 
-        let router =
-            self.start_batch_system_for_segment(shutdown_signal.subscribe(broad_sender.clone()));
+        let router = self.start_batch_system_for_segment(shutdown_signal.subscribe());
 
-        self.start_bridge_channel(
-            segment_receiver,
-            router,
-            shutdown_signal.subscribe(broad_sender.clone()),
-        );
+        self.start_bridge_channel(segment_receiver, router, shutdown_signal.subscribe());
 
         self.start_grpc(
             segment_sender.clone(),
@@ -198,14 +193,18 @@ impl MainServer {
             searcher,
             shutdown_signal,
         );
+
         let service = create_sky_tracing(skytracing);
         let env = Environment::new(1);
+
         let mut server = ServerBuilder::new(Arc::new(env))
             .bind(self.ip.as_str(), self.global_config.grpc_port as u16)
             .register_service(service)
             .build()
             .unwrap();
+
         server.start();
+
         wait_shutdown.recv().await;
     }
 
@@ -235,6 +234,9 @@ impl MainServer {
                             info!("Tick task received shutdown event, shutdown!");
                             drop(send);
                             return;
+                        }
+                        else => {
+                            break;
                         }
                     }
                 }
