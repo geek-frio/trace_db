@@ -1,6 +1,4 @@
-use lazy_static::lazy_static;
-
-use skdb::{conf::ConfigManager, log::init_tracing_logger, serv::MainServer};
+use skdb::{conf::ConfigManager, log::init_tracing_logger, serv::MainServer, TOKIO_RUN};
 use std::sync::Arc;
 use tracing::info;
 
@@ -16,17 +14,20 @@ pub struct Args {
     config: String,
 }
 
-enum ShutdownEvent {
-    Err(anyhow::Error),
-    Normal,
-}
-
 fn main() {
     let _span = info_span!("main");
     let args = Args::parse();
     println!("Server started begin to start, args:{:?}", args);
+
     let global_config = Arc::new(ConfigManager::load(args.config.into()));
+
     init_tracing_logger(global_config.clone());
     info!(global_config = ?global_config, "Server load global config");
+
+    let (shutdown_sender, _recv) = tokio::sync::broadcast::channel(1);
     let mut main_server = MainServer::new(global_config, args.ip);
+
+    TOKIO_RUN.block_on(async move {
+        main_server.block_start(shutdown_sender).await;
+    });
 }
