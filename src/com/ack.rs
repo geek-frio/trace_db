@@ -5,7 +5,7 @@ use tokio::sync::oneshot::Sender;
 use super::pkt::PktHeader;
 
 pub enum CallbackStat {
-    Handshake,
+    Handshake(i32),
     Ok(PktHeader),
     IOErr(TagEngineError, PktHeader),
     ExpiredData(PktHeader),

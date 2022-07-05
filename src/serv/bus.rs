@@ -30,6 +30,18 @@ impl<L> RemoteMsgPoller<L, DuplexSink<SegmentRes>>
 where
     L: Stream<Item = GrpcResult<SegmentData>> + Unpin,
 {
+    fn sink_handshake_response(conn_id: i32, sink_handle: SinkHandler) {
+        let mut resp = SegmentRes::new();
+        let mut meta = Meta::new();
+
+        meta.connId = conn_id;
+        meta.field_type = Meta_RequestType::HANDSHAKE;
+        info!(meta = ?meta, %conn_id, resp = ?resp, "Send handshake resp");
+        resp.set_meta(meta);
+
+        sink_handle.send_event(SinkEvent::HandshakeSuccess((resp, WriteFlags::default())));
+    }
+
     fn sink_success_response(pkt: PktHeader, sink_handle: SinkHandler) {
         let mut seg_res = SegmentRes::new();
         let mut meta = Meta::new();
@@ -96,7 +108,7 @@ where
                 seg = stream.next() => {
                     if let Some(seg) = seg {
                         let (callback_sender, callback_receiver) = tokio::sync::oneshot::channel();
-                        let redirect_res = Self::redirect_batch_exec(seg, sender, handler.clone(), callback_sender).await;
+                        let redirect_res = Self::redirect_batch_exec(seg, sender, callback_sender).await;
 
                         if let Err(_) = redirect_res {
                             error!("Poll grpc request failed!");
@@ -108,8 +120,8 @@ where
                             let call_state = callback_receiver.await.unwrap();
 
                             match call_state {
-                                CallbackStat::Handshake => {
-                                    //do nothing
+                                CallbackStat::Handshake(conn_id) => {
+                                    Self::sink_handshake_response(conn_id, sink_handle);
                                 }
                                 CallbackStat::Ok(pkt) => {
                                     Self::sink_success_response(pkt, sink_handle);
@@ -143,16 +155,15 @@ where
     async fn redirect_batch_exec<'a>(
         data: GrpcResult<SegmentData>,
         mail: &'a mut UnboundedSender<SegmentDataCallback>,
-        sink: SinkHandler,
         callback: tokio::sync::oneshot::Sender<CallbackStat>,
     ) -> Result<(), AnyError> {
         match data {
             Ok(segment_data) => {
                 let mut segment_processor: ExecutorStat<'a> =
-                    segment_data.with_process(mail, sink, callback).into();
+                    segment_data.with_process(mail, callback).into();
                 loop {
                     let exec_rs =
-                        <ExecutorStat<'a> as SegmentExecute>::exec(segment_processor).await;
+                        <ExecutorStat<'a> as SegmentCallbackWrap>::exec(segment_processor).await;
 
                     match exec_rs {
                         ExecutorStat::HandShake(o)
@@ -196,7 +207,6 @@ trait SegmentProcess {
     fn with_process<'a>(
         self,
         mail: &'a mut UnboundedSender<SegmentDataCallback>,
-        sink: SinkHandler,
         callback: tokio::sync::oneshot::Sender<CallbackStat>,
     ) -> SegmentProcessor<'a>;
 }
@@ -271,7 +281,6 @@ impl SinkActor {
 struct SegmentProcessor<'a> {
     data: SegmentData,
     batch_handle: &'a mut UnboundedSender<SegmentDataCallback>,
-    sink: SinkHandler,
     callback: tokio::sync::oneshot::Sender<CallbackStat>,
 }
 
@@ -292,13 +301,11 @@ impl SegmentProcess for SegmentData {
     fn with_process<'a>(
         self,
         batch_handle: &'a mut UnboundedSender<SegmentDataCallback>,
-        sink: SinkHandler,
         callback: tokio::sync::oneshot::Sender<CallbackStat>,
     ) -> SegmentProcessor<'a> {
         SegmentProcessor {
             data: self,
             batch_handle,
-            sink,
             callback,
         }
     }
@@ -312,50 +319,32 @@ enum ExecutorStat<'a> {
 }
 
 #[async_trait]
-impl<'a> SegmentExecute for ExecutorStat<'a> {
+impl<'a> SegmentCallbackWrap for ExecutorStat<'a> {
     type Next = ExecutorStat<'a>;
 
     async fn exec(self) -> Self::Next {
         match self {
             ExecutorStat::HandShake(s) => {
                 let conn_id = CONN_MANAGER.gen_new_conn_id();
-
-                let mut resp = SegmentRes::new();
-                let mut meta = Meta::new();
-                meta.connId = conn_id;
-                meta.field_type = Meta_RequestType::HANDSHAKE;
-                info!(meta = ?meta, %conn_id, resp = ?resp, "Send handshake resp");
-                resp.set_meta(meta);
-
-                s.sink
-                    .send_event(SinkEvent::HandshakeSuccess((resp, WriteFlags::default())));
-
-                let _ = s.callback.send(CallbackStat::Handshake);
+                let _ = s.callback.send(CallbackStat::Handshake(conn_id));
                 return ExecutorStat::Last;
             }
+
             ExecutorStat::Trans(s) => {
                 let span = span!(Level::TRACE, "trans_receiver_consume", data = ?s.data);
-
-                let data = SegmentDataCallback {
-                    data: s.data,
-                    callback: AckCallback::new(s.callback),
-                    span,
-                };
+                let data = SegmentDataCallback::new(s.data, AckCallback::new(s.callback), span);
 
                 let _ = s.batch_handle.send(data);
                 return ExecutorStat::Last;
             }
+
             ExecutorStat::NeedTrans(s) => {
                 trace!(meta = ?s.data.get_meta(), conn_id = s.data.get_meta().get_connId(), "Has received need send data!");
                 let span = span!(Level::TRACE, "trans_receiver_consume_need_resend");
 
-                let data = SegmentDataCallback {
-                    data: s.data,
-                    callback: AckCallback::new(s.callback),
-                    span,
-                };
-
+                let data = SegmentDataCallback::new(s.data, AckCallback::new(s.callback), span);
                 let _ = s.batch_handle.send(data);
+
                 trace!("NEED_RESEND: Has sent segment to local channel(Waiting for storage operation and callback)");
                 return ExecutorStat::Last;
             }
@@ -367,8 +356,8 @@ impl<'a> SegmentExecute for ExecutorStat<'a> {
 }
 
 #[async_trait]
-pub trait SegmentExecute {
-    type Next: SegmentExecute;
+pub trait SegmentCallbackWrap {
+    type Next: SegmentCallbackWrap;
 
     async fn exec(self) -> Self::Next;
 }

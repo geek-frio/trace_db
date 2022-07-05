@@ -20,6 +20,16 @@ pub struct SegmentDataCallback {
     pub span: Span,
 }
 
+impl SegmentDataCallback {
+    pub fn new(data: SegmentData, callback: AckCallback, span: Span) -> SegmentDataCallback {
+        SegmentDataCallback {
+            data,
+            callback,
+            span,
+        }
+    }
+}
+
 pub struct TagFsm {
     receiver: Receiver<SegmentDataCallback>,
     mailbox: Option<BasicMailbox<TagFsm>>,
