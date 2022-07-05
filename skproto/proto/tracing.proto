@@ -64,9 +64,7 @@ message SegmentData {
 
 message SegmentRes {
     Meta meta = 1;
-    enum Code {
-        ACK = 0;
-    }
+    SegmentData org_data = 2;
 }
 
 message Meta {

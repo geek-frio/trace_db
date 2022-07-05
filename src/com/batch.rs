@@ -413,7 +413,7 @@ where
                 msg_cnt = self.msg_cnt,
                 "We have got a Tick Event"
             );
-            normal.commit(&self.msg_buf);
+            normal.commit(&mut self.msg_buf);
             self.msg_cnt = 0;
             self.msg_buf.clear();
             normal.untag_tick();
@@ -513,7 +513,7 @@ mod test_poll_handler {
             *msg_cnt += msg_buf.len();
         }
 
-        fn commit(&mut self, _: &Vec<Self::Msg>) {
+        fn commit(&mut self, _: &mut Vec<Self::Msg>) {
             self.is_commit = true;
         }
 

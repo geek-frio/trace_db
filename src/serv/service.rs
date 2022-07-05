@@ -1,4 +1,5 @@
 use super::bus::RemoteMsgPoller;
+use super::ShutdownSignal;
 use crate::client::trans::TransportErr;
 use crate::com::index::ConvertIndexAddr;
 use crate::com::index::IndexAddr;
@@ -8,13 +9,11 @@ use crate::tag::fsm::SegmentDataCallback;
 use crate::tag::search::Searcher;
 use crate::*;
 use anyhow::Error as AnyError;
-use futures::pin_mut;
 use futures::StreamExt;
 use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
 use skproto::tracing::*;
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -46,6 +45,9 @@ pub struct SkyTracingService {
         Box<dyn std::error::Error + Send + Sync>,
     >,
     searcher: Searcher<SkyTracingClient>,
+
+    shutdown_signal: ShutdownSignal,
+    // broad_sender: tokio::sync::broadcast::Sender<ShutdownEvent>,
 }
 
 impl SkyTracingService {
@@ -59,6 +61,7 @@ impl SkyTracingService {
             Box<dyn std::error::Error + Send + Sync>,
         >,
         searcher: Searcher<SkyTracingClient>,
+        shutdown_signal: ShutdownSignal,
     ) -> SkyTracingService {
         let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
@@ -69,6 +72,8 @@ impl SkyTracingService {
             index_map: index_map.clone(),
             service,
             searcher,
+            shutdown_signal: shutdown_signal,
+            // broad_sender,
         };
         service
     }
@@ -93,7 +98,10 @@ impl SkyTracing for SkyTracingService {
         stream: ::grpcio::RequestStream<SegmentData>,
         sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
-        let mut msg_poller = RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone(), recv);
+        let shutdown_signal = self.shutdown_signal.clone();
+        let mut msg_poller =
+            RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone(), shutdown_signal);
+
         TOKIO_RUN.spawn(async move {
             let poll_res = msg_poller.loop_poll().await;
             if let Err(e) = poll_res {

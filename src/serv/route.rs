@@ -96,7 +96,8 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                     Err(e) => {
                         error!("This error can not fix by retry, so we just ack this msg Maybe we should store this msg anywhere!");
                         error!(seq_id = msg.data.get_meta().get_seqId(), trace_id = ?msg.data.trace_id, "Init addr's TagEngine failed!Just callback this data.e:{:?}", e);
-                        msg.callback.callback(CallbackStat::IOErr(e, msg.data.get_meta().get_seqId())); 
+                        
+                        msg.callback.callback(CallbackStat::IOErr(e, msg.data.into())); 
                     }
                 }
             }
@@ -123,7 +124,7 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                             .entered();
                             trace!(parent: &segment_callback.span, "Has received the segment, try to route to mailbox.");
                             if let Err(seg) = self.route_msg(segment_callback) {
-                                seg.callback.callback(CallbackStat::ExpiredData(seg.data.get_meta().get_seqId()));
+                                seg.callback.callback(CallbackStat::ExpiredData(seg.data.into()));
                             }
                         }
                         None => return Err(AnyError::msg("LocalSegmentMsgConsumer's sender has closed")),
@@ -135,7 +136,7 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                             while let Ok(segment_callback) = self.receiver.try_recv() {
                                 info!("loop consume all the segments waiting in the channel");
                                 if let Err(seg) = self.route_msg(segment_callback) {
-                                    seg.callback.callback(CallbackStat::ShuttingDown);
+                                    seg.callback.callback(CallbackStat::ShuttingDown(seg.data));
                                 }
                             }
                             info!("Wait more 10 seconds of consuming operation..");

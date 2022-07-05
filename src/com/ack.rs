@@ -1,11 +1,14 @@
 use crate::tag::engine::TagEngineError;
+use skproto::tracing::SegmentData;
 use tokio::sync::oneshot::Sender;
 
-pub(crate) enum CallbackStat {
-    Ok(i64),
-    IOErr(TagEngineError, i64),
-    ExpiredData(i64),
-    ShuttingDown,
+use super::pkt::PktHeader;
+
+pub enum CallbackStat {
+    Ok(PktHeader),
+    IOErr(TagEngineError, PktHeader),
+    ExpiredData(PktHeader),
+    ShuttingDown(SegmentData),
 }
 pub struct AckCallback {
     sender: Sender<CallbackStat>,
@@ -16,7 +19,7 @@ impl AckCallback {
         AckCallback { sender }
     }
 
-    pub fn callback(&self, stat: CallbackStat) {
+    pub fn callback(self, stat: CallbackStat) {
         let _ = self.sender.send(stat);
     }
 }

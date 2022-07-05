@@ -49,7 +49,7 @@ pub(crate) trait FsmExecutor {
 
     fn handle_tasks(&mut self, msg_buf: &mut Vec<Self::Msg>, msg_cnt: &mut usize);
 
-    fn commit(&mut self, msg_buf: &Vec<Self::Msg>);
+    fn commit(&mut self, msg_buf: &mut Vec<Self::Msg>);
 
     fn remain_msgs(&self) -> usize;
 }
@@ -103,28 +103,28 @@ impl FsmExecutor for TagFsm {
         }
     }
 
-    fn commit(&mut self, msgs: &Vec<Self::Msg>) {
+    fn commit(&mut self, msgs: &mut Vec<Self::Msg>) {
         let res = self.engine.flush();
         match res {
             Err(e) => {
                 error!(%e, "Flush data failed!");
-                for msg in msgs {
+                while let Some(msg) = msgs.pop() {
                     let span = &msg.span;
                     let _entered = span.enter();
 
                     msg.callback
-                        .callback(CallbackStat::IOErr(e, msg.data.get_meta().get_seqId()));
+                        .callback(CallbackStat::IOErr(e.clone(), msg.data.clone().into()));
 
                     error!("call back error to client");
                 }
             }
             Ok(_tantivy_id) => {
-                for msg in msgs {
+                while let Some(msg) = msgs.pop() {
                     let span = &msg.span;
                     let _entered = span.enter();
 
                     msg.callback
-                        .callback(CallbackStat::Ok(msg.data.get_meta().get_seqId()));
+                        .callback(CallbackStat::Ok(msg.data.clone().into()));
 
                     trace!(
                         trace_id = msg.data.get_trace_id(),
