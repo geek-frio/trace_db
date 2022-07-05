@@ -1,4 +1,4 @@
-use skproto::tracing::{SegmentData, SegmentRes};
+use skproto::tracing::SegmentData;
 
 pub struct PktHeader {
     pub(crate) conn_id: i32,

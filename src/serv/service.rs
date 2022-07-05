@@ -99,7 +99,7 @@ impl SkyTracing for SkyTracingService {
         sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
         let shutdown_signal = self.shutdown_signal.clone();
-        let mut msg_poller =
+        let msg_poller =
             RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone(), shutdown_signal);
 
         TOKIO_RUN.spawn(async move {
