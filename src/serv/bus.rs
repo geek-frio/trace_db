@@ -186,20 +186,6 @@ where
         }
         Ok(())
     }
-
-    pub async fn ack_seg(sink: &mut DuplexSink<SegmentRes>, seq_id: i64) -> Result<(), AnyError> {
-        trace!(seq_id = seq_id, "Has received ack callback");
-        let seg = {
-            let mut s = SegmentRes::default();
-            let mut meta = Meta::new();
-            meta.set_field_type(Meta_RequestType::TRANS_ACK);
-            meta.set_seqId(seq_id);
-            s.set_meta(meta);
-            (s, WriteFlags::default())
-        };
-        sink.send(seg).await?;
-        Ok(())
-    }
 }
 
 #[async_trait]
