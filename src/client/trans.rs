@@ -45,6 +45,8 @@ pub enum TransportErr {
     Shutdown,
     #[error("Client request service transport layer underground channel is full")]
     LocalChanFullOrClosed,
+    #[error("IOError, auto retry has exceeded max retry times")]
+    RetryLimit,
 }
 
 #[derive(Clone)]
@@ -169,19 +171,33 @@ where
         let seq_id = item.get_meta().get_seqId();
         match item.get_meta().field_type {
             Meta_RequestType::NEED_RESEND => {
-                let iter = self.ring.not_ack_iter();
+                let iter = self.ring.not_ack_iter_mut();
+
                 for item in iter {
                     let mut segment = item.clone();
                     let mut meta = Meta::new();
+
                     meta.set_field_type(Meta_RequestType::NEED_RESEND);
                     meta.set_seqId(seq_id);
+
+                    let resend_count = meta.resend_count;
+                    if resend_count >= 3 {
+                        let s = self.callback_map.remove(&seq_id);
+                        if let Some(s) = s {
+                            let _ = s.send(Err(TransportErr::RetryLimit));
+                            return;
+                        }
+                    }
+                    meta.set_resend_count(resend_count + 1);
                     segment.set_meta(meta);
+
                     let _ = self.sink.send((segment, WriteFlags::default())).await;
                 }
             }
             Meta_RequestType::TRANS_ACK => {
                 let seq_id = item.get_meta().get_seqId();
                 let res = self.ring.ack(seq_id);
+
                 match res {
                     Ok(v) => {
                         for seq_id in v.into_iter() {
