@@ -48,7 +48,6 @@ pub struct SkyTracingService {
 }
 
 impl SkyTracingService {
-    // do new and spawn two things
     pub fn new(
         config: Arc<GlobalConfig>,
         batch_system_sender: UnboundedSender<SegmentDataCallback>,
@@ -90,7 +89,7 @@ impl SkyTracingService {
 impl SkyTracing for SkyTracingService {
     fn push_segments(
         &mut self,
-        _: ::grpcio::RpcContext,
+        _ctx: ::grpcio::RpcContext,
         stream: ::grpcio::RequestStream<SegmentData>,
         sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
@@ -101,7 +100,7 @@ impl SkyTracing for SkyTracingService {
         TOKIO_RUN.spawn(async move {
             let poll_res = msg_poller.loop_poll().await;
             if let Err(e) = poll_res {
-                error!("Serious problem, loop poll failed!, sink will be dropped, client will reconnect e:{:?}", e);
+                error!("Serious problem, loop poll failed!, sink will be dropped, client should reconnect e:{:?}", e);
             }
         });
     }

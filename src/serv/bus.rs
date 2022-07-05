@@ -76,6 +76,7 @@ where
 
         let (handler, actor) = SinkActor::spawn(self.sink);
 
+        // In charge of receiving sink response to client
         TOKIO_RUN.spawn(async move {
             let r = actor.run().await;
 
@@ -107,6 +108,9 @@ where
                             let call_state = callback_receiver.await.unwrap();
 
                             match call_state {
+                                CallbackStat::Handshake => {
+                                    //do nothing
+                                }
                                 CallbackStat::Ok(pkt) => {
                                     Self::sink_success_response(pkt, sink_handle);
                                 },
@@ -266,7 +270,7 @@ impl SinkActor {
 
 struct SegmentProcessor<'a> {
     data: SegmentData,
-    mail: &'a mut UnboundedSender<SegmentDataCallback>,
+    batch_handle: &'a mut UnboundedSender<SegmentDataCallback>,
     sink: SinkHandler,
     callback: tokio::sync::oneshot::Sender<CallbackStat>,
 }
@@ -287,13 +291,13 @@ impl<'a> From<SegmentProcessor<'a>> for ExecutorStat<'a> {
 impl SegmentProcess for SegmentData {
     fn with_process<'a>(
         self,
-        mail: &'a mut UnboundedSender<SegmentDataCallback>,
+        batch_handle: &'a mut UnboundedSender<SegmentDataCallback>,
         sink: SinkHandler,
         callback: tokio::sync::oneshot::Sender<CallbackStat>,
     ) -> SegmentProcessor<'a> {
         SegmentProcessor {
             data: self,
-            mail,
+            batch_handle,
             sink,
             callback,
         }
@@ -315,36 +319,43 @@ impl<'a> SegmentExecute for ExecutorStat<'a> {
         match self {
             ExecutorStat::HandShake(s) => {
                 let conn_id = CONN_MANAGER.gen_new_conn_id();
+
                 let mut resp = SegmentRes::new();
                 let mut meta = Meta::new();
                 meta.connId = conn_id;
                 meta.field_type = Meta_RequestType::HANDSHAKE;
                 info!(meta = ?meta, %conn_id, resp = ?resp, "Send handshake resp");
                 resp.set_meta(meta);
+
                 s.sink
                     .send_event(SinkEvent::HandshakeSuccess((resp, WriteFlags::default())));
+
+                let _ = s.callback.send(CallbackStat::Handshake);
                 return ExecutorStat::Last;
             }
             ExecutorStat::Trans(s) => {
                 let span = span!(Level::TRACE, "trans_receiver_consume", data = ?s.data);
+
                 let data = SegmentDataCallback {
                     data: s.data,
                     callback: AckCallback::new(s.callback),
                     span,
                 };
-                // Unbounded sender, ignore
-                let _ = s.mail.send(data);
+
+                let _ = s.batch_handle.send(data);
                 return ExecutorStat::Last;
             }
             ExecutorStat::NeedTrans(s) => {
                 trace!(meta = ?s.data.get_meta(), conn_id = s.data.get_meta().get_connId(), "Has received need send data!");
                 let span = span!(Level::TRACE, "trans_receiver_consume_need_resend");
+
                 let data = SegmentDataCallback {
                     data: s.data,
                     callback: AckCallback::new(s.callback),
                     span,
                 };
-                let _ = s.mail.send(data);
+
+                let _ = s.batch_handle.send(data);
                 trace!("NEED_RESEND: Has sent segment to local channel(Waiting for storage operation and callback)");
                 return ExecutorStat::Last;
             }
