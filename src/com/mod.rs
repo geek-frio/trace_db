@@ -1,7 +1,7 @@
-pub mod ack;
+pub(crate) mod ack;
 pub(crate) mod gen;
-pub mod index;
-pub mod mail;
+pub(crate) mod index;
+pub(crate) mod mail;
 pub(crate) mod pkt;
-pub mod ring;
-pub mod util;
+pub(crate) mod ring;
+pub(crate) mod util;

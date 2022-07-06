@@ -1,25 +1,24 @@
 #![feature(test)]
 #![feature(array_into_iter_constructors)]
 
-extern crate test;
-
 extern crate rand;
 extern crate tantivy;
+extern crate test;
 extern crate uuid;
 
-pub mod client;
+mod batch;
 mod com;
+mod fsm;
+mod redis;
+mod router;
+mod sched;
+mod tag;
+mod tracing_log;
+
+pub mod client;
 pub mod conf;
 pub mod log;
 pub mod serv;
-mod tag;
-pub mod tracing_log;
-
-pub(crate) mod batch;
-pub(crate) mod redis;
-pub(crate) mod router;
-pub(crate) mod fsm;
-pub(crate) mod sched;
 
 use lazy_static::lazy_static;
 use tokio::runtime::Builder;
