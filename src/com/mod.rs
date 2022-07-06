@@ -2,6 +2,7 @@ pub mod ack;
 pub mod batch;
 pub mod ctl;
 pub mod fsm;
+pub(crate) mod gen;
 pub mod index;
 pub mod mail;
 pub(crate) mod pkt;

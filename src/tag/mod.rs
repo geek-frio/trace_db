@@ -5,7 +5,7 @@ pub mod search;
 mod tests {
     use std::time::Instant;
 
-    use crate::test::gen as local_gen;
+    use crate::com::gen as local_gen;
     use rand::Rng;
     use tantivy::schema::{Schema, INDEXED, STORED, STRING, TEXT};
     use tantivy::{Document, Index};
