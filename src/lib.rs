@@ -7,7 +7,7 @@ extern crate uuid;
 pub mod client;
 mod com;
 pub mod conf;
-mod kv;
+// mod kv;
 pub mod log;
 pub mod serv;
 mod tag;
