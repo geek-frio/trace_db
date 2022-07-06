@@ -32,8 +32,8 @@ mod tests {
     use test::Bencher;
 
     #[bench]
-    fn bench_nothing_slowly(b: &mut Bencher) {}
+    fn bench_nothing_slowly(_b: &mut Bencher) {}
 
     #[bench]
-    fn bench_nothing_fast(b: &mut Bencher) {}
+    fn bench_nothing_fast(_b: &mut Bencher) {}
 }
