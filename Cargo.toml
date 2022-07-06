@@ -5,13 +5,6 @@ version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[workspace]
-members = [
-    "cmd/skdb-server",
-    "cmd/skdb-proxy",
-    "cmd/skdb-test",
-    "skproto",
-]
 
 [dependencies]
 clap = {version = "3.0.9", features = ["derive"]}
@@ -49,3 +42,6 @@ ctrlc = "3.2.2"
 
 [dev-dependencies]
 pretty_assertions = "1"
+
+[[bin]]
+name = "server"
