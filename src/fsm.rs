@@ -1,6 +1,6 @@
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
-use super::mail::BasicMailbox;
-use super::sched::FsmScheduler;
+use crate::com::mail::BasicMailbox;
+use crate::sched::FsmScheduler;
 use core::panic;
 use core::ptr;
 use core::sync::atomic::Ordering;

@@ -1,5 +1,5 @@
-use super::batch::FsmTypes;
-use super::fsm::Fsm;
+use crate::batch::FsmTypes;
+use crate::fsm::Fsm;
 use crossbeam_channel::Sender;
 
 pub trait FsmScheduler {

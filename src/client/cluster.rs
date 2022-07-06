@@ -10,8 +10,8 @@ use tower::util::BoxCloneService;
 use tracing::{error, info};
 
 use crate::client::trans::Transport;
-use crate::com::redis::RedisTTLSet;
 use crate::conf::GlobalConfig;
+use crate::redis::RedisTTLSet;
 use crate::serv::ShutdownSignal;
 use chashmap::CHashMap;
 use futures::never::Never;
@@ -361,8 +361,13 @@ mod tests {
             app_name: String::from("test"),
             server_ip: String::from("127.0.0.1"),
         });
+
+        let (shutdown_sender, _recv) = tokio::sync::broadcast::channel(1);
+
+        let (shutdown_signal, _recv) = ShutdownSignal::chan(shutdown_sender);
         let (shutdown_sender, _) = tokio::sync::broadcast::channel(1);
-        init_tracing_logger(config.clone());
+
+        init_tracing_logger(config.clone(), shutdown_signal);
 
         let s = shutdown_sender.clone();
         TOKIO_RUN.spawn(async move {

@@ -32,12 +32,14 @@ impl RollingFileMaker {
         shut_notify: Sender<ReverseFileEvent>,
     ) -> Result<(RollingFileMaker, Sender<MsgEvent>), AnyError> {
         let (sender, mut receiver) = channel(5000);
+
         let writer = RollingFileWriter {
             sender: sender.clone(),
         };
 
         let mut tracing_log_consumer =
             TracingLogConsumer::new(name_prefix, log_path, rolling_size, shut_notify).await?;
+
         TOKIO_RUN.spawn(async move {
             loop {
                 let msg_event = receiver.recv().await;
@@ -48,7 +50,7 @@ impl RollingFileMaker {
                     Some(event) => match event {
                         MsgEvent::Flush => {
                             let _ = tracing_log_consumer.flush().await;
-                            // Check if need rolling operation
+
                             if tracing_log_consumer.need_rolling() {
                                 let r= tracing_log_consumer.recreate().await;
                                 if let Err(e) = r {
@@ -61,6 +63,7 @@ impl RollingFileMaker {
                                 if e.kind() == ErrorKind::Other {
                                     let _ = tracing_log_consumer.recreate().await;
                                     let r = tracing_log_consumer.write(m.as_slice()).await;
+
                                     if let Err(e) = r {
                                         error!(log_data = ?m.as_slice(), "Consume tracing log msgs failed!Recreate Writer can't save it {:?}", e);
                                     }
@@ -75,6 +78,7 @@ impl RollingFileMaker {
                                     let _ = tracing_log_consumer.write(buf.as_slice()).await;
                                 }
                             }
+
                             let _ = tracing_log_consumer.flush().await;
                             let _ = tracing_log_consumer.shut_notify.send(ReverseFileEvent::Shutdown).await;
                         }
@@ -239,8 +243,10 @@ impl TracingLogConsumer {
         shut_notify: Sender<ReverseFileEvent>,
     ) -> Result<TracingLogConsumer, AnyError> {
         let mut cur_log_dir = log_dir.clone();
+
         let writer =
             Self::create_writer(name_prefix.as_str(), &mut cur_log_dir, 1, &shut_notify).await?;
+
         Ok(TracingLogConsumer {
             writer,
             log_dir,
@@ -261,11 +267,13 @@ impl TracingLogConsumer {
     ) -> Result<Option<BufWriter<File>>, AnyError> {
         let file_name = Self::gen_new_file_name(name_prefix, file_num);
         path_buf.push(file_name);
+
         let file = OpenOptions::new()
             .write(true)
             .create(true)
             .open(&path_buf)
             .await?;
+
         let _ = event_sender.try_send(ReverseFileEvent::LogFileCreate(path_buf.clone()));
         Ok(Some(BufWriter::new(file)))
     }
@@ -308,6 +316,7 @@ mod tracing_log {
         let mut log_dir_buf = PathBuf::new();
         let (shut_notify, shut_recv) = channel(500);
         log_dir_buf.push(log_dir);
+
         let (maker, shutdown_sender) = RollingFileMaker::init(
             name_prefix.to_string(),
             log_dir_buf,
@@ -316,6 +325,7 @@ mod tracing_log {
         )
         .await
         .expect("RollingFileMaker init failed!");
+
         (maker, shut_recv, shutdown_sender)
     }
 
@@ -341,18 +351,22 @@ mod tracing_log {
         let buf = "abc";
         let (maker, mut shut_recv, shutdown_sender) =
             create_test_rolling_file_maker(TEST_DIR, TEST_PREIFX, 100).await;
+
         let mut w = maker.make_writer();
         w.write(buf.as_bytes()).unwrap();
         w.flush().unwrap();
+
         sleep(Duration::from_secs(1)).await;
 
         let mut created_files = vec![];
         let event = shut_recv.recv().await.unwrap();
+
         if let ReverseFileEvent::LogFileCreate(p) = event {
             let body = tokio::fs::read_to_string(p.as_path()).await.unwrap();
             assert!(body == buf);
             created_files.push(p);
         }
+
         collect_and_drop_files(shutdown_sender, &mut shut_recv, &mut created_files).await;
         Ok(())
     }

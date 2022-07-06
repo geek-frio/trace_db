@@ -8,15 +8,16 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
+use crate::batch::{BatchSystem, FsmTypes};
 use crate::client::cluster::{
     make_service, ClientEvent, ClusterActiveWatcher, Observe, Observer, Watch,
 };
 use crate::client::trans::TransportErr;
-use crate::com::batch::{BatchSystem, FsmTypes};
-use crate::com::redis::{RedisAddr, RedisTTLSet};
-use crate::com::router::Router;
-use crate::com::sched::NormalScheduler;
 use crate::conf::GlobalConfig;
+use crate::log::init_tracing_logger;
+use crate::redis::{RedisAddr, RedisTTLSet};
+use crate::router::Router;
+use crate::sched::NormalScheduler;
 use crate::tag::fsm::{SegmentDataCallback, TagFsm};
 use crate::tag::search::Searcher;
 use crate::TOKIO_RUN;
@@ -57,7 +58,7 @@ impl Clone for ShutdownSignal {
 }
 
 impl ShutdownSignal {
-    fn chan(broad_sender: BroadSenderHandle<ShutdownEvent>) -> (ShutdownSignal, Receiver<()>) {
+    pub fn chan(broad_sender: BroadSenderHandle<ShutdownEvent>) -> (ShutdownSignal, Receiver<()>) {
         let (d_send, d_recv) = tokio::sync::mpsc::channel(1);
         let b_recv = broad_sender.clone().subscribe();
         let shut = ShutdownSignal {
@@ -102,6 +103,8 @@ impl MainServer {
 
         let (shutdown_signal, wait_recv) = ShutdownSignal::chan(broad_sender.clone());
 
+        init_tracing_logger(self.global_config.clone(), shutdown_signal.subscribe());
+
         let ctrl_broad = broad_sender;
         ctrlc::set_handler(move || {
             info!("Received shutdown event, broadcast shutdown event to all the spawned task!");
@@ -118,15 +121,12 @@ impl MainServer {
         );
         let clis_chg_recv = create_grpc_clients_watcher(grpc_clients_chg_receiver);
 
-        self.start_periodical_keep_alive_addr(shutdown_signal.subscribe());
-
         let searcher = Searcher::new(clis_chg_recv);
         let (segment_sender, segment_receiver) = tokio::sync::mpsc::unbounded_channel();
 
+        self.start_periodical_keep_alive_addr(shutdown_signal.subscribe());
         let router = self.start_batch_system_for_segment(shutdown_signal.subscribe());
-
         self.start_bridge_channel(segment_receiver, router, shutdown_signal.subscribe());
-
         self.start_grpc(
             segment_sender.clone(),
             wait_recv,

@@ -2,9 +2,9 @@ use std::borrow::Cow;
 
 use crate::com::{
     ack::{AckCallback, CallbackStat},
-    fsm::Fsm,
     mail::BasicMailbox,
 };
+use crate::fsm::Fsm;
 use crossbeam_channel::Receiver;
 use skproto::tracing::SegmentData;
 use tracing::{error, trace, Span};

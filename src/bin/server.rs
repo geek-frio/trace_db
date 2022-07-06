@@ -1,7 +1,6 @@
 use clap::Parser;
-use skdb::{conf::ConfigManager, log::init_tracing_logger, serv::MainServer, TOKIO_RUN};
+use skdb::{conf::ConfigManager, serv::MainServer, TOKIO_RUN};
 use std::sync::Arc;
-use tracing::info;
 use tracing::info_span;
 
 #[derive(Parser, Debug)]
@@ -20,9 +19,6 @@ fn main() {
     println!("Server started begin to start, args:{:?}", args);
 
     let global_config = Arc::new(ConfigManager::load(args.config.into()));
-
-    init_tracing_logger(global_config.clone());
-    info!(global_config = ?global_config, "Server load global config");
 
     let (shutdown_sender, _recv) = tokio::sync::broadcast::channel(1);
     let mut main_server = MainServer::new(global_config, args.ip);
