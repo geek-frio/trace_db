@@ -381,41 +381,65 @@ where
 
 #[cfg(test)]
 mod test_remote_msg_poller {
-    use self::mock_handshake::{HandshakeSink, HandshakeStream};
-
+    use self::mock_handshake::HandshakeStream;
     use super::*;
     use crate::com::gen::{_gen_data_binary, _gen_tag};
     use crate::log::init_console_logger;
     use chrono::Local;
+    use futures::Sink;
     use skproto::tracing::{Meta, Meta_RequestType};
     use std::pin::Pin;
+    use std::task::Context;
     use std::task::Poll;
     use tokio::sync::mpsc::UnboundedReceiver;
 
+    fn setup() {
+        init_console_logger();
+    }
+
+    fn shutdown() {
+        info!("Service is shutting down...");
+    }
+
+    pub struct TestSink {
+        pub send: UnboundedSender<(SegmentRes, WriteFlags)>,
+    }
+
+    impl Sink<(SegmentRes, WriteFlags)> for TestSink {
+        type Error = grpcio::Error;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(
+            self: Pin<&mut Self>,
+            item: (SegmentRes, WriteFlags),
+        ) -> Result<(), Self::Error> {
+            let _ = self.send.send(item);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
     mod mock_handshake {
         use super::*;
-        use futures::Sink;
-        use std::task::Context;
-
-        pub fn mock_seg(conn_id: i32, api_id: i32, seq_id: i64) -> SegmentData {
-            let mut segment = SegmentData::new();
-            let mut meta = Meta::new();
-            meta.connId = conn_id;
-            meta.field_type = Meta_RequestType::TRANS;
-            meta.seqId = seq_id;
-            let now = Local::now();
-            meta.set_send_timestamp(now.timestamp_nanos() as u64);
-            let uuid = uuid::Uuid::new_v4();
-            segment.set_meta(meta);
-            segment.set_trace_id(uuid.to_string());
-            segment.set_api_id(api_id);
-            segment.set_payload(_gen_data_binary());
-            segment.set_zone(_gen_tag(3, 5, 'a'));
-            segment.set_biz_timestamp(now.timestamp_millis() as u64);
-            segment.set_seg_id(uuid.to_string());
-            segment.set_ser_key(_gen_tag(4, 3, 's'));
-            segment
-        }
 
         pub struct HandshakeStream {
             pub is_ready: bool,
@@ -442,47 +466,10 @@ mod test_remote_msg_poller {
                 }
             }
         }
-
-        pub struct HandshakeSink {
-            pub send: UnboundedSender<(SegmentRes, WriteFlags)>,
-        }
-
-        impl Sink<(SegmentRes, WriteFlags)> for HandshakeSink {
-            type Error = grpcio::Error;
-
-            fn poll_ready(
-                self: Pin<&mut Self>,
-                _cx: &mut Context<'_>,
-            ) -> Poll<Result<(), Self::Error>> {
-                Poll::Ready(Ok(()))
-            }
-
-            fn start_send(
-                self: Pin<&mut Self>,
-                item: (SegmentRes, WriteFlags),
-            ) -> Result<(), Self::Error> {
-                let _ = self.send.send(item);
-                Ok(())
-            }
-
-            fn poll_flush(
-                self: Pin<&mut Self>,
-                _cx: &mut Context<'_>,
-            ) -> Poll<Result<(), Self::Error>> {
-                Poll::Ready(Ok(()))
-            }
-
-            fn poll_close(
-                self: Pin<&mut Self>,
-                _cx: &mut Context<'_>,
-            ) -> Poll<Result<(), Self::Error>> {
-                Poll::Ready(Ok(()))
-            }
-        }
     }
 
     fn init_remote_poller() -> (
-        RemoteMsgPoller<HandshakeStream, HandshakeSink>,
+        RemoteMsgPoller<HandshakeStream, TestSink>,
         UnboundedReceiver<SegmentDataCallback>,
         UnboundedReceiver<(SegmentRes, WriteFlags)>,
     ) {
@@ -497,21 +484,13 @@ mod test_remote_msg_poller {
         (
             RemoteMsgPoller {
                 source_stream: HandshakeStream { is_ready: false },
-                sink: HandshakeSink { send: sink_send },
+                sink: TestSink { send: sink_send },
                 local_sender,
                 shutdown_signal,
             },
             local_recveiver,
             sink_res,
         )
-    }
-
-    fn setup() {
-        init_console_logger();
-    }
-
-    fn shutdown() {
-        info!("Service is shutting down...");
     }
 
     #[tokio::test]
@@ -537,5 +516,92 @@ mod test_remote_msg_poller {
         }
 
         shutdown();
+    }
+
+    mod normal_req {
+        use super::*;
+
+        pub fn mock_seg(conn_id: i32, api_id: i32, seq_id: i64) -> SegmentData {
+            let mut segment = SegmentData::new();
+            let mut meta = Meta::new();
+            meta.connId = conn_id;
+            meta.field_type = Meta_RequestType::TRANS;
+            meta.seqId = seq_id;
+
+            let now = Local::now();
+            meta.set_send_timestamp(now.timestamp_nanos() as u64);
+
+            let uuid = uuid::Uuid::new_v4();
+
+            segment.set_meta(meta);
+            segment.set_trace_id(uuid.to_string());
+            segment.set_api_id(api_id);
+            segment.set_payload(_gen_data_binary());
+            segment.set_zone(_gen_tag(3, 5, 'a'));
+            segment.set_biz_timestamp(now.timestamp_millis() as u64);
+            segment.set_seg_id(uuid.to_string());
+            segment.set_ser_key(_gen_tag(4, 3, 's'));
+            segment
+        }
+
+        pub struct NormalReq {}
+
+        impl Stream for NormalReq {
+            type Item = Result<skproto::tracing::SegmentData, grpcio::Error>;
+
+            fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+                let seg = mock_seg(1, 1, 1);
+
+                Poll::Ready(Some(Ok(seg)))
+            }
+        }
+
+        pub fn init_remote_poller() -> (
+            RemoteMsgPoller<NormalReq, TestSink>,
+            UnboundedReceiver<SegmentDataCallback>,
+            UnboundedReceiver<(SegmentRes, WriteFlags)>,
+        ) {
+            let (local_sender, local_recveiver) = tokio::sync::mpsc::unbounded_channel();
+            let (broad_sender, _broad_recv) = tokio::sync::broadcast::channel(1);
+
+            let (shutdown_signal, _recv) = ShutdownSignal::chan(broad_sender);
+
+            let (sink_send, sink_res) = tokio::sync::mpsc::unbounded_channel();
+            (
+                RemoteMsgPoller {
+                    source_stream: NormalReq {},
+                    sink: TestSink { send: sink_send },
+                    local_sender,
+                    shutdown_signal,
+                },
+                local_recveiver,
+                sink_res,
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn test_normal_req_basic_ok() {
+        let (poller, mut local_recv, mut sink_recv) = normal_req::init_remote_poller();
+
+        tokio::spawn(async {
+            let _ = poller.loop_poll().await;
+        });
+
+        let segment_callback = local_recv.recv().await;
+        match segment_callback {
+            Some(seg_callback) => {
+                let seg = seg_callback.data;
+                seg_callback.callback.callback(CallbackStat::Ok(seg.into()));
+            }
+            None => {
+                unreachable!()
+            }
+        }
+
+        if let Some((res, flags)) = sink_recv.recv().await {
+        } else {
+            unreachable!();
+        }
     }
 }
