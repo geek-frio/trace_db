@@ -9,10 +9,11 @@ use async_trait::async_trait;
 use futures::SinkExt;
 use futures::{Stream, StreamExt};
 use futures_sink::Sink;
-use grpcio::{DuplexSink, Error as GrpcError};
+use grpcio::Error as GrpcError;
 use grpcio::{Result as GrpcResult, WriteFlags};
 use pin_project::pin_project;
 use skproto::tracing::{Meta, Meta_RequestType, SegmentData, SegmentRes};
+use std::error::Error;
 use std::fmt::Debug;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info, span, trace, warn, Level};
@@ -26,9 +27,11 @@ pub struct RemoteMsgPoller<L, S> {
     shutdown_signal: ShutdownSignal,
 }
 
-impl<L> RemoteMsgPoller<L, DuplexSink<SegmentRes>>
+impl<L, S> RemoteMsgPoller<L, S>
 where
     L: Stream<Item = GrpcResult<SegmentData>> + Unpin,
+    S: futures_sink::Sink<(SegmentRes, WriteFlags)> + Send + 'static,
+    S::Error: Send + Sync + Into<anyhow::Error> + 'static,
 {
     fn sink_handshake_response(conn_id: i32, sink_handle: SinkHandler) {
         let mut resp = SegmentRes::new();
@@ -74,9 +77,11 @@ where
     }
 }
 
-impl<L> RemoteMsgPoller<L, DuplexSink<SegmentRes>>
+impl<L, S> RemoteMsgPoller<L, S>
 where
     L: Stream<Item = GrpcResult<SegmentData>> + Unpin,
+    S: futures_sink::Sink<(SegmentRes, WriteFlags)> + Send + Unpin + 'static,
+    S::Error: Send + Sync + Error + Into<anyhow::Error> + 'static,
 {
     // Loop poll remote from grpc stream, until:
     // 1. Have met serious grpc transport problem;
@@ -215,12 +220,16 @@ impl SinkHandler {
     }
 }
 
-pub struct SinkActor {
-    sink: grpcio::DuplexSink<SegmentRes>,
+pub struct SinkActor<S> {
+    sink: S,
     receiver: tokio::sync::mpsc::UnboundedReceiver<SinkEvent>,
 }
 
-impl SinkActor {
+impl<S> SinkActor<S>
+where
+    S: futures_sink::Sink<(SegmentRes, WriteFlags)> + Unpin + 'static,
+    S::Error: Send + std::error::Error + Sync + 'static,
+{
     async fn run(self) -> Result<(), anyhow::Error> {
         let mut recv = self.receiver;
         let mut sink = self.sink;
@@ -257,7 +266,7 @@ impl SinkActor {
         Ok(())
     }
 
-    fn spawn(sink: grpcio::DuplexSink<SegmentRes>) -> (SinkHandler, SinkActor) {
+    fn spawn(sink: S) -> (SinkHandler, SinkActor<S>) {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
 
         (SinkHandler { sender }, SinkActor { sink, receiver })
@@ -372,88 +381,161 @@ where
 
 #[cfg(test)]
 mod test_remote_msg_poller {
+    use self::mock_handshake::{HandshakeSink, HandshakeStream};
+
     use super::*;
     use crate::com::gen::{_gen_data_binary, _gen_tag};
+    use crate::log::init_console_logger;
     use chrono::Local;
     use skproto::tracing::{Meta, Meta_RequestType};
     use std::pin::Pin;
     use std::task::Poll;
+    use tokio::sync::mpsc::UnboundedReceiver;
 
-    struct MockSink;
+    mod mock_handshake {
+        use super::*;
+        use futures::Sink;
+        use std::task::Context;
 
-    impl Sink<(SegmentRes, WriteFlags)> for MockSink {
-        type Error = std::io::Error;
-
-        fn poll_ready(
-            self: Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            return std::task::Poll::Ready(Ok(()));
+        pub fn mock_seg(conn_id: i32, api_id: i32, seq_id: i64) -> SegmentData {
+            let mut segment = SegmentData::new();
+            let mut meta = Meta::new();
+            meta.connId = conn_id;
+            meta.field_type = Meta_RequestType::TRANS;
+            meta.seqId = seq_id;
+            let now = Local::now();
+            meta.set_send_timestamp(now.timestamp_nanos() as u64);
+            let uuid = uuid::Uuid::new_v4();
+            segment.set_meta(meta);
+            segment.set_trace_id(uuid.to_string());
+            segment.set_api_id(api_id);
+            segment.set_payload(_gen_data_binary());
+            segment.set_zone(_gen_tag(3, 5, 'a'));
+            segment.set_biz_timestamp(now.timestamp_millis() as u64);
+            segment.set_seg_id(uuid.to_string());
+            segment.set_ser_key(_gen_tag(4, 3, 's'));
+            segment
         }
 
-        fn start_send(
-            self: Pin<&mut Self>,
-            _item: (SegmentRes, WriteFlags),
-        ) -> Result<(), Self::Error> {
-            return Ok(());
+        pub struct HandshakeStream {
+            pub is_ready: bool,
         }
 
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            return std::task::Poll::Ready(Ok(()));
-        }
+        impl Stream for HandshakeStream {
+            type Item = GrpcResult<SegmentData>;
 
-        fn poll_close(
-            self: Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            todo!()
-        }
-    }
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                _ctx: &mut Context<'_>,
+            ) -> Poll<Option<Self::Item>> {
+                if !self.is_ready {
+                    self.is_ready = true;
 
-    fn mock_seg(conn_id: i32, api_id: i32, seq_id: i64) -> SegmentData {
-        let mut segment = SegmentData::new();
-        let mut meta = Meta::new();
-        meta.connId = conn_id;
-        meta.field_type = Meta_RequestType::TRANS;
-        meta.seqId = seq_id;
-        let now = Local::now();
-        meta.set_send_timestamp(now.timestamp_nanos() as u64);
-        let uuid = uuid::Uuid::new_v4();
-        segment.set_meta(meta);
-        segment.set_trace_id(uuid.to_string());
-        segment.set_api_id(api_id);
-        segment.set_payload(_gen_data_binary());
-        segment.set_zone(_gen_tag(3, 5, 'a'));
-        segment.set_biz_timestamp(now.timestamp_millis() as u64);
-        segment.set_seg_id(uuid.to_string());
-        segment.set_ser_key(_gen_tag(4, 3, 's'));
-        segment
-    }
+                    let mut seg = SegmentData::new();
+                    let mut meta = Meta::new();
+                    meta.set_field_type(Meta_RequestType::HANDSHAKE);
+                    seg.set_meta(meta);
 
-    struct MockStream {
-        idx: usize,
-        api_id: i32,
-        seq_id: i64,
-    }
-
-    impl Stream for MockStream {
-        type Item = GrpcResult<SegmentData>;
-
-        fn poll_next(
-            mut self: Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> Poll<Option<Self::Item>> {
-            if self.idx > 100 {
-                return Poll::Ready(None);
+                    Poll::Ready(Some(Ok(seg)))
+                } else {
+                    Poll::Pending
+                }
             }
-            self.api_id += 1;
-            self.seq_id += 1;
-            self.idx += 1;
-            let seg = mock_seg(1, self.api_id, self.seq_id);
-            return Poll::Ready(Some(GrpcResult::Ok(seg)));
         }
+
+        pub struct HandshakeSink {
+            pub send: UnboundedSender<(SegmentRes, WriteFlags)>,
+        }
+
+        impl Sink<(SegmentRes, WriteFlags)> for HandshakeSink {
+            type Error = grpcio::Error;
+
+            fn poll_ready(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn start_send(
+                self: Pin<&mut Self>,
+                item: (SegmentRes, WriteFlags),
+            ) -> Result<(), Self::Error> {
+                let _ = self.send.send(item);
+                Ok(())
+            }
+
+            fn poll_flush(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_close(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+    }
+
+    fn init_remote_poller() -> (
+        RemoteMsgPoller<HandshakeStream, HandshakeSink>,
+        UnboundedReceiver<SegmentDataCallback>,
+        UnboundedReceiver<(SegmentRes, WriteFlags)>,
+    ) {
+        use mock_handshake::*;
+
+        let (local_sender, local_recveiver) = tokio::sync::mpsc::unbounded_channel();
+        let (broad_sender, _broad_recv) = tokio::sync::broadcast::channel(1);
+
+        let (shutdown_signal, _recv) = ShutdownSignal::chan(broad_sender);
+
+        let (sink_send, sink_res) = tokio::sync::mpsc::unbounded_channel();
+        (
+            RemoteMsgPoller {
+                source_stream: HandshakeStream { is_ready: false },
+                sink: HandshakeSink { send: sink_send },
+                local_sender,
+                shutdown_signal,
+            },
+            local_recveiver,
+            sink_res,
+        )
+    }
+
+    fn setup() {
+        init_console_logger();
+    }
+
+    fn shutdown() {
+        info!("Service is shutting down...");
+    }
+
+    #[tokio::test]
+    async fn test_handshake_logic() {
+        setup();
+
+        let (poller, _local_recv, mut sink_recv) = init_remote_poller();
+
+        tokio::spawn(async move {
+            let _ = poller.loop_poll().await;
+        });
+        let seg = sink_recv.recv().await;
+
+        match seg {
+            Some((s, _w)) => {
+                let meta = s.get_meta();
+                assert_eq!(meta.get_field_type(), Meta_RequestType::HANDSHAKE);
+                assert!(meta.get_connId() > 0);
+            }
+            None => {
+                unreachable!();
+            }
+        }
+
+        shutdown();
     }
 }
