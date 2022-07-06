@@ -373,7 +373,7 @@ where
 #[cfg(test)]
 mod test_remote_msg_poller {
     use super::*;
-    use crate::test::gen::{_gen_data_binary, _gen_tag};
+    use crate::com::gen::{_gen_data_binary, _gen_tag};
     use chrono::Local;
     use skproto::tracing::{Meta, Meta_RequestType};
     use std::pin::Pin;

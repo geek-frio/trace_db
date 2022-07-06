@@ -3,15 +3,10 @@
 use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::hash_map::Iter;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::hash::Hash;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::time::Duration;
-
-pub fn hash_set_with_capacity<T: Hash + Eq>(capacity: usize) -> HashSet<T> {
-    HashSet::with_capacity(capacity)
-}
 
 struct Record<K> {
     prev: *mut Record<K>,
@@ -209,6 +204,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 impl<K, V> LruCache<K, V, CountTracker>
 where
     K: Eq + Hash + Clone + std::fmt::Debug,
@@ -225,6 +221,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 impl<K, V, T> LruCache<K, V, T>
 where
     K: Eq + Hash + Clone + std::fmt::Debug,

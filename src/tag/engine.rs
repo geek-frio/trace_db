@@ -131,7 +131,7 @@ impl TracingTagEngine {
 mod tests {
     use super::*;
     use crate::com::index::*;
-    use crate::test::gen::{_gen_data_binary, _gen_tag};
+    use crate::com::gen::{_gen_data_binary, _gen_tag};
     use std::sync::Once;
     use tantivy::{chrono::Local, collector::TopDocs, query::QueryParser};
 

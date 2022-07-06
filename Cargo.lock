@@ -1371,62 +1371,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "skdb-proxy"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "crossbeam",
- "crossbeam-channel",
- "futures 0.3.21",
- "futures-util",
- "grpcio",
- "lazy_static",
- "rand 0.8.5",
- "skdb",
- "skproto",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "skdb-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clap",
- "crossbeam-channel",
- "ctrlc",
- "futures 0.3.21",
- "futures-sink",
- "futures-util",
- "grpcio",
- "lazy_static",
- "pin-project",
- "redis",
- "skdb",
- "skproto",
- "tantivy",
- "tantivy-common",
- "tantivy-query-grammar",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "skdb-test"
-version = "0.1.0"
-
-[[package]]
 name = "skproto"
 version = "0.1.0"
 dependencies = [

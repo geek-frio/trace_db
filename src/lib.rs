@@ -1,17 +1,18 @@
+#![feature(test)]
 #![feature(array_into_iter_constructors)]
+
+extern crate test;
+
 extern crate rand;
-// extern crate rocksdb;
 extern crate tantivy;
 extern crate uuid;
 
 pub mod client;
 mod com;
 pub mod conf;
-mod kv;
 pub mod log;
 pub mod serv;
 mod tag;
-mod test;
 
 use lazy_static::lazy_static;
 use tokio::runtime::Builder;
@@ -24,4 +25,15 @@ lazy_static! {
         .enable_time()
         .build()
         .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use test::Bencher;
+
+    #[bench]
+    fn bench_nothing_slowly(_b: &mut Bencher) {}
+
+    #[bench]
+    fn bench_nothing_fast(_b: &mut Bencher) {}
 }

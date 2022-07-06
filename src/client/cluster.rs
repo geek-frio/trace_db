@@ -350,6 +350,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_basic_func() {
         let config = Arc::new(GlobalConfig {
             grpc_port: GRPC_TEST_PORT,

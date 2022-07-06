@@ -188,7 +188,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::test::gen;
+    use crate::com::gen;
     use rand::Rng;
 
     use super::*;
