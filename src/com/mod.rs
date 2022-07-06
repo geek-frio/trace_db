@@ -1,14 +1,7 @@
 pub mod ack;
-pub mod batch;
-pub mod ctl;
-pub mod fsm;
 pub(crate) mod gen;
 pub mod index;
 pub mod mail;
 pub(crate) mod pkt;
-pub mod redis;
 pub mod ring;
-pub mod router;
-pub mod sched;
-pub mod tracing;
 pub mod util;

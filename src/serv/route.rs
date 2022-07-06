@@ -10,11 +10,13 @@ use tantivy::{
 };
 use tracing::{error, info, trace, trace_span};
 
-use crate::{com::{index::{ConvertIndexAddr, MailKeyAddress}, router::Either, fsm::Fsm, ack::CallbackStat}, conf::GlobalConfig, serv::ShutdownEvent, TOKIO_RUN};
+use crate::{com::{index::{ConvertIndexAddr, MailKeyAddress},  ack::CallbackStat}, conf::GlobalConfig, serv::ShutdownEvent, TOKIO_RUN};
+use crate::router::Either;
+use crate::fsm::Fsm;
 use crate::com::mail::BasicMailbox;
 use crate::tag::engine::*;
 use crate::tag::fsm::TagFsm;
-use crate::{com::router::RouteMsg, tag::{fsm::SegmentDataCallback, engine::TracingTagEngine}};
+use crate::{router::RouteMsg, tag::{fsm::SegmentDataCallback, engine::TracingTagEngine}};
 
 use super::ShutdownSignal;
 

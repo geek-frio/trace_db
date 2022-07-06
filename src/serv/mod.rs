@@ -8,15 +8,15 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
+use crate::batch::{BatchSystem, FsmTypes};
 use crate::client::cluster::{
     make_service, ClientEvent, ClusterActiveWatcher, Observe, Observer, Watch,
 };
 use crate::client::trans::TransportErr;
-use crate::com::batch::{BatchSystem, FsmTypes};
-use crate::com::redis::{RedisAddr, RedisTTLSet};
-use crate::com::router::Router;
-use crate::com::sched::NormalScheduler;
 use crate::conf::GlobalConfig;
+use crate::redis::{RedisAddr, RedisTTLSet};
+use crate::router::Router;
+use crate::sched::NormalScheduler;
 use crate::tag::fsm::{SegmentDataCallback, TagFsm};
 use crate::tag::search::Searcher;
 use crate::TOKIO_RUN;

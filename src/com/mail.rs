@@ -1,8 +1,8 @@
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
 
-use super::fsm::Fsm;
-use super::fsm::FsmState;
-use super::sched::FsmScheduler;
+use crate::fsm::Fsm;
+use crate::fsm::FsmState;
+use crate::sched::FsmScheduler;
 use crossbeam_channel::{SendError, Sender};
 use std::borrow::Cow;
 use std::sync::atomic::AtomicUsize;

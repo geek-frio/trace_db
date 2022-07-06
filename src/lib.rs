@@ -13,6 +13,13 @@ pub mod conf;
 pub mod log;
 pub mod serv;
 mod tag;
+pub mod tracing_log;
+
+pub(crate) mod batch;
+pub(crate) mod redis;
+pub(crate) mod router;
+pub(crate) mod fsm;
+pub(crate) mod sched;
 
 use lazy_static::lazy_static;
 use tokio::runtime::Builder;

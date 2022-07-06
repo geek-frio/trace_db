@@ -10,8 +10,8 @@ use tower::util::BoxCloneService;
 use tracing::{error, info};
 
 use crate::client::trans::Transport;
-use crate::com::redis::RedisTTLSet;
 use crate::conf::GlobalConfig;
+use crate::redis::RedisTTLSet;
 use crate::serv::ShutdownSignal;
 use chashmap::CHashMap;
 use futures::never::Never;
