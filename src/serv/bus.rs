@@ -544,15 +544,30 @@ mod test_remote_msg_poller {
             segment
         }
 
-        pub struct NormalReq {}
+        pub struct NormalReq {
+            is_ready: bool,
+        }
+
+        impl NormalReq {
+            fn new() -> NormalReq {
+                NormalReq { is_ready: false }
+            }
+        }
 
         impl Stream for NormalReq {
             type Item = Result<skproto::tracing::SegmentData, grpcio::Error>;
 
-            fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-                let seg = mock_seg(1, 1, 1);
-
-                Poll::Ready(Some(Ok(seg)))
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Self::Item>> {
+                if !self.is_ready {
+                    let seg = mock_seg(1, 1, 1);
+                    self.is_ready = true;
+                    Poll::Ready(Some(Ok(seg)))
+                } else {
+                    Poll::Pending
+                }
             }
         }
 
@@ -569,7 +584,7 @@ mod test_remote_msg_poller {
             let (sink_send, sink_res) = tokio::sync::mpsc::unbounded_channel();
             (
                 RemoteMsgPoller {
-                    source_stream: NormalReq {},
+                    source_stream: NormalReq::new(),
                     sink: TestSink { send: sink_send },
                     local_sender,
                     shutdown_signal,
@@ -582,6 +597,7 @@ mod test_remote_msg_poller {
 
     #[tokio::test]
     async fn test_normal_req_basic_ok() {
+        setup();
         let (poller, mut local_recv, mut sink_recv) = normal_req::init_remote_poller();
 
         tokio::spawn(async {
@@ -599,7 +615,14 @@ mod test_remote_msg_poller {
             }
         }
 
-        if let Some((res, flags)) = sink_recv.recv().await {
+        if let Some((res, _flags)) = sink_recv.recv().await {
+            let conn_id = res.get_meta().get_connId();
+            let seq_id = res.get_meta().get_seqId();
+            let meta_type = res.get_meta().get_field_type();
+
+            assert_eq!(conn_id, 1);
+            assert_eq!(seq_id, 1);
+            assert_eq!(meta_type, Meta_RequestType::TRANS_ACK);
         } else {
             unreachable!();
         }
