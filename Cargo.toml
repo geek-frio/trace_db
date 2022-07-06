@@ -45,3 +45,6 @@ pretty_assertions = "1"
 
 [[bin]]
 name = "server"
+
+[[bin]]
+name = "client"
