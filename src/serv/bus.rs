@@ -385,6 +385,7 @@ mod test_remote_msg_poller {
     use super::*;
     use crate::com::gen::{_gen_data_binary, _gen_tag};
     use crate::log::init_console_logger;
+    use crate::tag::engine::TagEngineError;
     use chrono::Local;
     use futures::Sink;
     use skproto::tracing::{Meta, Meta_RequestType};
@@ -397,7 +398,7 @@ mod test_remote_msg_poller {
         init_console_logger();
     }
 
-    fn shutdown() {
+    fn teardown() {
         info!("Service is shutting down...");
     }
 
@@ -515,10 +516,12 @@ mod test_remote_msg_poller {
             }
         }
 
-        shutdown();
+        teardown();
     }
 
     mod normal_req {
+        use crate::serv::ShutdownEvent;
+
         use super::*;
 
         pub fn mock_seg(conn_id: i32, api_id: i32, seq_id: i64) -> SegmentData {
@@ -575,11 +578,12 @@ mod test_remote_msg_poller {
             RemoteMsgPoller<NormalReq, TestSink>,
             UnboundedReceiver<SegmentDataCallback>,
             UnboundedReceiver<(SegmentRes, WriteFlags)>,
+            tokio::sync::broadcast::Sender<ShutdownEvent>,
         ) {
             let (local_sender, local_recveiver) = tokio::sync::mpsc::unbounded_channel();
             let (broad_sender, _broad_recv) = tokio::sync::broadcast::channel(1);
 
-            let (shutdown_signal, _recv) = ShutdownSignal::chan(broad_sender);
+            let (shutdown_signal, _recv) = ShutdownSignal::chan(broad_sender.clone());
 
             let (sink_send, sink_res) = tokio::sync::mpsc::unbounded_channel();
             (
@@ -591,6 +595,7 @@ mod test_remote_msg_poller {
                 },
                 local_recveiver,
                 sink_res,
+                broad_sender,
             )
         }
     }
@@ -598,7 +603,8 @@ mod test_remote_msg_poller {
     #[tokio::test]
     async fn test_normal_req_basic_ok() {
         setup();
-        let (poller, mut local_recv, mut sink_recv) = normal_req::init_remote_poller();
+        let (poller, mut local_recv, mut sink_recv, _shutdown_sender) =
+            normal_req::init_remote_poller();
 
         tokio::spawn(async {
             let _ = poller.loop_poll().await;
@@ -625,6 +631,47 @@ mod test_remote_msg_poller {
             assert_eq!(meta_type, Meta_RequestType::TRANS_ACK);
         } else {
             unreachable!();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_retry_resp() {
+        info!("testing retry resp");
+        setup();
+
+        let (poller, mut local_recv, mut sink_recv, _shutdown_sender) =
+            normal_req::init_remote_poller();
+
+        tokio::spawn(async {
+            let _ = poller.loop_poll().await;
+        });
+
+        let segment_callback = local_recv.recv().await;
+        match segment_callback {
+            Some(seg_callback) => {
+                let seg = seg_callback.data;
+                let pkt_header = seg.into();
+
+                seg_callback.callback.callback(CallbackStat::IOErr(
+                    TagEngineError::IndexNotExist,
+                    pkt_header,
+                ));
+
+                let resp = sink_recv.recv().await;
+
+                if let Some((seg_resp, _)) = resp {
+                    let meta = seg_resp.get_meta();
+
+                    assert_eq!(1, meta.get_connId());
+                    assert_eq!(1, meta.get_seqId());
+                    assert_eq!(Meta_RequestType::NEED_RESEND, meta.get_field_type());
+                } else {
+                    unreachable!();
+                }
+            }
+            None => {
+                unreachable!()
+            }
         }
     }
 }
