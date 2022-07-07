@@ -17,11 +17,22 @@ lazy_static! {
     pub static ref INIT_LOGGER: Once = Once::new();
 }
 
+pub fn init_console_logger() {
+    INIT_LOGGER.call_once(|| {
+        let stdout_log = tracing_subscriber::fmt::layer().pretty();
+        let subscriber = Registry::default().with(stdout_log);
+
+        tracing::subscriber::set_global_default(subscriber).expect("Console log init failed!");
+    });
+}
+
 pub fn init_tracing_logger(cfg: Arc<GlobalConfig>, mut signal: ShutdownSignal) {
     INIT_LOGGER.call_once(|| {
         let stdout_log = tracing_subscriber::fmt::layer().pretty();
         let subscriber = Registry::default().with(stdout_log);
-        const SET_GLOBAL_SUBSCRIBER_ERR: &'static str = "";
+
+        const SET_GLOBAL_SUBSCRIBER_ERR: &'static str = "local log init failed!";
+
         match cfg.env.as_str() {
             "local" => {
                 tracing::subscriber::set_global_default(subscriber)
