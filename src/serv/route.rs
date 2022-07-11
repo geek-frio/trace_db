@@ -1,119 +1,69 @@
 use anyhow::Error as AnyError;
-use tokio::{sync::mpsc::UnboundedReceiver, time::sleep};
+use protobuf::Message;
 use std::{
+    borrow::Cow,
     collections::HashMap,
-    sync::{atomic::AtomicUsize, Arc, Mutex}, marker::PhantomData, borrow::Cow, time::Duration,
+    marker::PhantomData,
+    sync::{atomic::AtomicUsize, Arc, Mutex},
+    time::Duration,
 };
 use tantivy::{
     schema::{Schema, INDEXED, STORED, STRING, TEXT},
     Index,
 };
+use tokio::{sync::mpsc::UnboundedReceiver, time::sleep};
 use tracing::{error, info, trace, trace_span};
 
-use crate::{com::{index::{ConvertIndexAddr, MailKeyAddress},  ack::CallbackStat}, conf::GlobalConfig, serv::ShutdownEvent, TOKIO_RUN};
-use crate::router::Either;
-use crate::fsm::Fsm;
-use crate::com::mail::BasicMailbox;
 use crate::tag::engine::*;
 use crate::tag::fsm::TagFsm;
-use crate::{router::RouteMsg, tag::{fsm::SegmentDataCallback, engine::TracingTagEngine}};
+use crate::{com::mail::BasicMailbox, router::Router};
+use crate::{
+    com::{
+        ack::CallbackStat,
+        index::{ConvertIndexAddr, MailKeyAddress},
+    },
+    conf::GlobalConfig,
+    serv::ShutdownEvent,
+    TOKIO_RUN,
+};
+use crate::{fsm::Fsm, sched::FsmScheduler};
+use crate::{
+    router::RouteMsg,
+    tag::{engine::TracingTagEngine, fsm::SegmentDataCallback},
+};
 
 use super::ShutdownSignal;
 
-pub struct LocalSegmentMsgConsumer<Router, Err> {
-    router: Router,
-    config: Arc<GlobalConfig>,
-    index_map: Arc<Mutex<HashMap<i64, Index>>>,
-    schema: Schema,
+pub struct LocalSegmentMsgConsumer<N: Fsm, S> {
+    router: Router<N, S>,
     receiver: UnboundedReceiver<SegmentDataCallback>,
-    _err: PhantomData<Err>,
 }
 
-impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Result<(), Err>, TagFsm, Addr = MailKeyAddress> {
+impl<S> LocalSegmentMsgConsumer<TagFsm, S>
+where
+    S: FsmScheduler<F = TagFsm> + Clone,
+{
     pub fn new(
-        router: Router,
-        config: Arc<GlobalConfig>,
+        router: Router<TagFsm, S>,
         receiver: UnboundedReceiver<SegmentDataCallback>,
-    ) -> LocalSegmentMsgConsumer<Router, Err> {
-        let schema = Self::init_sk_schema();
-        let index_map = Arc::new(Mutex::new(HashMap::default()));
-        LocalSegmentMsgConsumer {
-            router,
-            config,
-            index_map,
-            schema,
-            receiver,
-            _err: PhantomData,
-        }
+    ) -> LocalSegmentMsgConsumer<TagFsm, S> {
+        LocalSegmentMsgConsumer { router, receiver }
     }
 
-    fn route_msg(&self, seg: SegmentDataCallback) -> Result<(), SegmentDataCallback> {
-        let mail_key_addr= seg.data.biz_timestamp.with_index_addr();
-        let mail_key_addr= match mail_key_addr{
-            Ok(path) => path,
-            Err(_) => return Err(seg),
-        };
-
-        let trace_id = seg.data.get_trace_id();
-        trace!(
-            index_addr = ?mail_key_addr,
-            seq_id = seg.data.get_meta().get_seqId(),
-            trace_id = trace_id,
-            "Has computed segment's address"
-        );
-
-        let index_path = Box::new(self.config.index_dir.clone());
-        let send_stat = self.router.route_msg(mail_key_addr.into(), seg);
-
-        match send_stat {
-            Either::Right(msg) => {
-                info!(
-                    "Can't find addr's mailbox, create a new one"
-                );
-
-                let (s, r) = crossbeam_channel::unbounded();
-
-                let mut engine =
-                    TracingTagEngine::new(mail_key_addr, index_path.clone(), self.schema.clone());
-
-                let res = engine.init();
-                match res {
-                    Ok(index) => {
-                        self.index_map.lock().unwrap().insert(mail_key_addr.into(), index);
-                        let fsm = Box::new(TagFsm::new(r, None, engine));
-                        let state_cnt = Arc::new(AtomicUsize::new(0));
-                        let mailbox = BasicMailbox::new(s, fsm, state_cnt); 
-
-                        let fsm = mailbox.take_fsm();
-                        if let Some(mut f) = fsm {
-                            f.set_mailbox(Cow::Borrowed(&mailbox));
-                            mailbox.release(f);
-                        }
-
-                        self.router.register(mail_key_addr.into(), mailbox);
-                        self.router.route_msg(mail_key_addr.into(), msg);
-                    }
-                    // TODO: This error can not fix by retry, so we just ack this msg
-                    // Maybe we should store this msg anywhere
-                    Err(e) => {
-                        error!("This error can not fix by retry, so we just ack this msg Maybe we should store this msg anywhere!");
-                        error!(seq_id = msg.data.get_meta().get_seqId(), trace_id = ?msg.data.trace_id, "Init addr's TagEngine failed!Just callback this data.e:{:?}", e);
-                        
-                        msg.callback.callback(CallbackStat::IOErr(e, msg.data.into())); 
-                    }
-                }
-            }
-            Either::Left(Err(_)) => unreachable!("Receiver should never drop! Local unbounded channel mailbox, in logic we never drop receive!"),
-            Either::Left(Ok(_)) => {
-                trace!("Has routed successful");
-            }
-        }
-        Ok(())
+    fn create_tag_fsm(
+        addr: MailKeyAddress,
+        dir: &str,
+    ) -> Result<(TagFsm, crossbeam::channel::Sender<<TagFsm as Fsm>::Message>), TagEngineError>
+    {
+        let engine = TracingTagEngine::new(addr, dir)?;
+        let (s, r) = crossbeam_channel::unbounded();
+        Ok((TagFsm::new(r, None, engine), s))
     }
 
     pub async fn loop_poll(&mut self, shutdown_signal: ShutdownSignal) -> Result<(), AnyError> {
         let mut recv = shutdown_signal.recv;
         let drop_notify = shutdown_signal.drop_notify;
+
         loop {
             tokio::select! {
                 segment_callback = self.receiver.recv() => {
@@ -125,8 +75,11 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                             )
                             .entered();
                             trace!(parent: &segment_callback.span, "Has received the segment, try to route to mailbox.");
-                            if let Err(seg) = self.route_msg(segment_callback) {
-                                seg.callback.callback(CallbackStat::ExpiredData(seg.data.into()));
+
+                            let addr = segment_callback.data.biz_timestamp.with_index_addr().unwrap();
+                            if let Err(stat) = self.router.route_msg(addr, segment_callback, Self::create_tag_fsm) {
+                                let seg = stat.0;
+                                seg.callback.callback(CallbackStat::IOErr(TagEngineError::IndexDirCreateFailed, seg.data.into()));
                             }
                         }
                         None => return Err(AnyError::msg("LocalSegmentMsgConsumer's sender has closed")),
@@ -137,8 +90,11 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                         ShutdownEvent::GracefulStop => {
                             while let Ok(segment_callback) = self.receiver.try_recv() {
                                 info!("loop consume all the segments waiting in the channel");
-                                if let Err(seg) = self.route_msg(segment_callback) {
-                                    seg.callback.callback(CallbackStat::ShuttingDown(seg.data));
+
+                                let addr = segment_callback.data.biz_timestamp.with_index_addr().unwrap();
+                                if let Err(stat) = self.router.route_msg(addr, segment_callback, Self::create_tag_fsm) {
+                                    let seg = stat.0;
+                                    seg.callback.callback(CallbackStat::IOErr(TagEngineError::IndexDirCreateFailed, seg.data.into()));
                                 }
                             }
                             info!("Wait more 10 seconds of consuming operation..");
@@ -159,21 +115,99 @@ impl<Router, Err> LocalSegmentMsgConsumer<Router, Err> where Router: RouteMsg<Re
                             break Ok(());
                         }
                     }
-                    
+
                 }
             }
         }
     }
+}
 
-    pub fn init_sk_schema() -> Schema {
-        let mut schema_builder = Schema::builder();
-        schema_builder.add_text_field(ZONE, STRING);
-        schema_builder.add_i64_field(API_ID, INDEXED);
-        schema_builder.add_text_field(SERVICE, TEXT);
-        schema_builder.add_u64_field(BIZTIME, STORED);
-        schema_builder.add_text_field(TRACE_ID, STRING | STORED);
-        schema_builder.add_text_field(SEGID, STRING);
-        schema_builder.add_text_field(PAYLOAD, STRING);
-        schema_builder.build()
+#[cfg(test)]
+mod tests {
+    use crate::{
+        com::{
+            ack::{AckCallback, CallbackStat},
+            index::MailKeyAddress,
+            mail::BasicMailbox,
+        },
+        conf::GlobalConfig,
+        fsm::Fsm,
+        router::RouteMsg,
+        tag::fsm::SegmentDataCallback,
+    };
+    use chrono::offset::Local;
+    use protobuf::Message;
+    use skproto::tracing::SegmentData;
+    use std::borrow::Cow;
+    use tokio::sync::oneshot::Receiver;
+    use tracing::{span, Level};
+
+    use super::LocalSegmentMsgConsumer;
+
+    struct MockRoute {}
+
+    struct MockFsm {
+        mailbox: Option<BasicMailbox<Self>>,
+    }
+
+    impl Fsm for MockFsm {
+        type Message = ();
+
+        fn is_stopped(&self) -> bool {
+            todo!()
+        }
+
+        fn set_mailbox(
+            &mut self,
+            mailbox: std::borrow::Cow<'_, crate::com::mail::BasicMailbox<Self>>,
+        ) where
+            Self: Sized,
+        {
+            let mailbox = mailbox.into_owned();
+            self.mailbox = Some(mailbox);
+        }
+
+        fn take_mailbox(&mut self) -> Option<crate::com::mail::BasicMailbox<Self>>
+        where
+            Self: Sized,
+        {
+            self.mailbox.take()
+        }
+
+        fn tag_tick(&mut self) {
+            todo!()
+        }
+
+        fn untag_tick(&mut self) {
+            todo!()
+        }
+
+        fn is_tick(&self) -> bool {
+            todo!()
+        }
+    }
+
+    fn gen_segcallback(days: i64, secs: i64) -> (SegmentDataCallback, Receiver<CallbackStat>) {
+        let cur = Local::now();
+        let date_time = cur
+            .checked_sub_signed(chrono::Duration::days(days))
+            .unwrap();
+        let date_time = date_time
+            .checked_sub_signed(chrono::Duration::seconds(secs))
+            .unwrap();
+
+        let mut segment = SegmentData::new();
+        segment.set_biz_timestamp(date_time.timestamp_millis() as u64);
+
+        let span = span!(Level::INFO, "my_span");
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let callback = AckCallback::new(sender);
+
+        (SegmentDataCallback::new(segment, callback, span), receiver)
+    }
+
+    #[tokio::test]
+    async fn test_invalid_segment() {
+        let (seg_callback, receiver) = gen_segcallback(40, 60);
     }
 }

@@ -1,10 +1,13 @@
 use crate::com::index::{IndexAddr, MailKeyAddress};
 use crate::com::mail::BasicMailbox;
 use crate::com::util::{CountTracker, LruCache};
+use crate::conf::GlobalConfig;
 use crate::fsm::Fsm;
 use crate::sched::FsmScheduler;
+use crate::tag::engine::TagEngineError;
 use anyhow::Error as AnyError;
-use crossbeam_channel::TrySendError;
+use crossbeam_channel::Sender;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::hash_map::Iter;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,10 +15,17 @@ use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, sync::atomic::AtomicUsize};
 use tracing::info;
 
-pub trait RouteMsg<L, N: Fsm> {
+pub struct RouteErr<Msg>(pub Msg, TagEngineError);
+
+pub trait RouteMsg<N: Fsm> {
     type Addr;
 
-    fn route_msg(&self, addr: Self::Addr, msg: N::Message) -> Either<L, N::Message>;
+    fn route_msg(
+        &self,
+        addr: Self::Addr,
+        msg: N::Message,
+        f: fn(MailKeyAddress, &str) -> Result<(N, Sender<N::Message>), TagEngineError>,
+    ) -> Result<(), RouteErr<N::Message>>;
 
     fn register(&self, addr: IndexAddr, mailbox: BasicMailbox<N>);
 
@@ -39,68 +49,65 @@ pub struct Router<N: Fsm, S> {
     pub(crate) normal_scheduler: S,
     state_cnt: Arc<AtomicUsize>,
     shutdown: Arc<AtomicBool>,
+    conf: Arc<GlobalConfig>,
 }
 
-pub enum Either<L, R> {
-    Left(L),
-    Right(R),
-}
-
-impl<L, R> Either<L, R> {
-    pub fn as_ref(&self) -> Either<&L, &R> {
-        match self {
-            Either::Left(ref l) => Either::Left(l),
-            Either::Right(ref r) => Either::Right(r),
-        }
-    }
-
-    pub fn as_mut(&mut self) -> Either<&mut L, &mut R> {
-        match self {
-            Either::Left(ref mut l) => Either::Left(l),
-            Either::Right(ref mut r) => Either::Right(r),
-        }
-    }
-
-    pub fn left(self) -> Option<L> {
-        match self {
-            Either::Left(l) => Some(l),
-            _ => None,
-        }
-    }
-
-    pub fn right(self) -> Option<R> {
-        match self {
-            Either::Right(r) => Some(r),
-            _ => None,
-        }
-    }
-}
-
-impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<Result<(), TrySendError<N::Message>>, N>
-    for Router<N, S>
+impl<N, S> Router<N, S>
+where
+    N: Fsm,
+    S: FsmScheduler<F = N> + Clone,
 {
+    fn create_mailbox(&self, fsm: N, fsm_sender: Sender<N::Message>) -> BasicMailbox<N> {
+        let state_cnt = Arc::new(AtomicUsize::new(0));
+        let mailbox = BasicMailbox::new(fsm_sender, Box::new(fsm), state_cnt);
+
+        let fsm = mailbox.take_fsm();
+        if let Some(mut f) = fsm {
+            f.set_mailbox(Cow::Borrowed(&mailbox));
+            mailbox.release(f);
+        }
+
+        mailbox
+    }
+
+    fn send_msg(
+        &self,
+        mailbox: &BasicMailbox<N>,
+        msg: N::Message,
+    ) -> Result<(), RouteErr<N::Message>> {
+        match mailbox.send(msg, &self.normal_scheduler) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(RouteErr(e.0, TagEngineError::ReceiverDroppped)),
+        }
+    }
+}
+
+impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
     type Addr = MailKeyAddress;
 
     fn route_msg(
         &self,
         addr: Self::Addr,
         msg: N::Message,
-    ) -> Either<Result<(), TrySendError<N::Message>>, N::Message> {
-        let mut msg = Some(msg);
-        let res = self.check_do(addr.into(), |mailbox| {
-            let m = msg.take().unwrap();
-            match mailbox.send(m, &self.normal_scheduler) {
-                Ok(()) => Some(()),
-                Err(send_err) => {
-                    msg = Some(send_err.0);
-                    None
+        create_fsm: fn(MailKeyAddress, &str) -> Result<(N, Sender<N::Message>), TagEngineError>,
+    ) -> Result<(), RouteErr<N::Message>> {
+        let mailbox = self.retrive_mailbox(addr.into());
+        match mailbox {
+            Some(mailbox) => self.send_msg(mailbox, msg),
+            None => {
+                let res = create_fsm(addr.clone(), &self.conf.index_dir);
+                if let Err(e) = res {
+                    return Err(RouteErr(msg, e));
                 }
+
+                let (fsm, fsm_sender) = res.unwrap();
+                let mailbox = self.create_mailbox(fsm, fsm_sender);
+
+                let res_send = self.send_msg(&mailbox, msg);
+                self.register(addr.into(), mailbox);
+
+                res_send
             }
-        });
-        match res {
-            CheckDoResult::NotExist => Either::Right(msg.unwrap()),
-            CheckDoResult::Invalid => Either::Left(Err(TrySendError::Disconnected(msg.unwrap()))),
-            CheckDoResult::Valid(_) => Either::Left(Ok(())),
         }
     }
 
@@ -133,7 +140,11 @@ impl<N: Fsm, S> Router<N, S>
 where
     S: FsmScheduler<F = N> + Clone,
 {
-    pub fn new(normal_scheduler: S, state_cnt: Arc<AtomicUsize>) -> Router<N, S> {
+    pub fn new(
+        normal_scheduler: S,
+        state_cnt: Arc<AtomicUsize>,
+        conf: Arc<GlobalConfig>,
+    ) -> Router<N, S> {
         Router {
             normals: Arc::new(Mutex::new(NormalMailMap {
                 map: HashMap::default(),
@@ -143,6 +154,7 @@ where
             normal_scheduler,
             state_cnt,
             shutdown: Arc::new(AtomicBool::new(false)),
+            conf,
         }
     }
 
@@ -150,17 +162,16 @@ where
         self.shutdown.load(Ordering::SeqCst)
     }
 
-    fn check_do<F, R>(&self, addr: IndexAddr, mut f: F) -> CheckDoResult<R>
-    where
-        F: FnMut(&BasicMailbox<N>) -> Option<R>,
-    {
-        let mut caches = self.caches.borrow_mut();
-        // 缓存命中，走缓存获取
-        if let Some(mailbox) = caches.get(&addr) {
-            if let Some(r) = f(mailbox) {
-                return CheckDoResult::Valid(r);
-            }
+    fn retrive_mailbox(&self, addr: IndexAddr) -> Option<&BasicMailbox<N>> {
+        // FixMe: this used RefMut::leak, it's a nightly feature
+        //  the reason to use leak is that we cannot leak &BasicMailBox using RefMut
+        //  compiler will throw error
+        let basic_box = self.get_mailbox_from_ref(&addr);
+
+        if basic_box.is_some() {
+            return basic_box;
         }
+
         let (cnt, mailbox) = {
             let mut boxes = self.normals.lock().unwrap();
             let cnt = boxes.map.len();
@@ -168,24 +179,23 @@ where
             let b = match boxes.map.get_mut(&addr) {
                 Some(mailbox) => mailbox.clone(),
                 None => {
-                    drop(boxes);
-                    return CheckDoResult::NotExist;
+                    return None;
                 }
             };
             (cnt, b)
         };
-        if cnt > caches.capacity() || cnt < caches.capacity() / 2 {
-            caches.resize(cnt);
+
+        if cnt > self.caches.borrow().capacity() || cnt < self.caches.borrow().capacity() / 2 {
+            self.caches.borrow_mut().resize(cnt);
         }
 
-        let res = f(&mailbox);
-        match res {
-            Some(r) => {
-                caches.insert(addr, mailbox);
-                CheckDoResult::Valid(r)
-            }
-            None => CheckDoResult::Invalid,
-        }
+        self.caches.borrow_mut().insert(addr, mailbox);
+        self.get_mailbox_from_ref(&addr)
+    }
+
+    fn get_mailbox_from_ref(&self, addr: &IndexAddr) -> Option<&BasicMailbox<N>> {
+        let caches_mut = self.caches.borrow_mut();
+        std::cell::RefMut::leak(caches_mut).get(addr.into())
     }
 
     pub fn notify_all_idle_mailbox(&self) -> Result<(), AnyError> {
@@ -234,6 +244,7 @@ impl<N: Fsm, S: Clone> Clone for Router<N, S> {
             normal_scheduler: self.normal_scheduler.clone(),
             shutdown: self.shutdown.clone(),
             state_cnt: self.state_cnt.clone(),
+            conf: self.conf.clone(),
         }
     }
 }

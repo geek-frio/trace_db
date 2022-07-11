@@ -27,17 +27,12 @@ impl ConvertIndexAddr for i64 {
         let now = Utc::now();
         let d = Utc.timestamp_millis(self);
 
-        // We only need biz data 30 days ago
-        if now - Duration::days(30) > d {
-            return Err(AnyError::msg("Data biztime has exceeded 30 days"));
-        }
-
+        let month = d.month();
         let day = d.day();
         let hour = d.hour();
         let minute = d.minute() / 15;
 
-        // Only reserve last 30 days segment data
-        let s = format!("{}{:0>2}{:0>2}", day, hour, minute);
+        let s = format!("{:0>2}{:0>2}{:0>2}{:0>2}", month, day, hour, minute);
         let val = s.parse::<i64>()?;
 
         Ok(MailKeyAddress {

@@ -13,15 +13,6 @@ const NOTIFYSTATE_NOTIFIED: usize = 0;
 const NOTIFYSTATE_IDLE: usize = 1;
 const NOTIFYSTATE_DROP: usize = 2;
 
-impl<Owner: Fsm> Clone for BasicMailbox<Owner> {
-    fn clone(&self) -> BasicMailbox<Owner> {
-        BasicMailbox {
-            sender: self.sender.clone(),
-            state: self.state.clone(),
-        }
-    }
-}
-
 pub struct FsmState<N> {
     status: AtomicUsize,
     data: AtomicPtr<N>,

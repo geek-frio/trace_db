@@ -215,7 +215,7 @@ impl MainServer {
         let (s, r) = crossbeam_channel::unbounded::<FsmTypes<TagFsm>>();
         let fsm_sche = NormalScheduler { sender: s };
         let atomic = AtomicUsize::new(1);
-        let router = Router::new(fsm_sche, Arc::new(atomic));
+        let router = Router::new(fsm_sche, Arc::new(atomic), self.global_config.clone());
 
         let mut batch_system = BatchSystem::new(router.clone(), r, 1, 500);
         batch_system.spawn("Tag Poller".to_string());
@@ -252,8 +252,7 @@ impl MainServer {
         router: Router<TagFsm, NormalScheduler<TagFsm>>,
         shutdown_signal: ShutdownSignal,
     ) {
-        let mut local_consumer =
-            LocalSegmentMsgConsumer::new(router, self.global_config.clone(), receiver);
+        let mut local_consumer = LocalSegmentMsgConsumer::new(router, receiver);
         TOKIO_RUN.spawn(
             async move {
                 let r = local_consumer.loop_poll(shutdown_signal).await;

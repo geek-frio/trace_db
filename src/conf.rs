@@ -17,6 +17,20 @@ pub struct GlobalConfig {
     pub server_ip: String,
 }
 
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        GlobalConfig {
+            grpc_port: 9999,
+            redis_addr: "127.0.0.1:6379".to_string(),
+            index_dir: "/tmp/skdb".to_string(),
+            env: "local".to_string(),
+            log_path: "/tmp/".to_string(),
+            app_name: "skdb".to_string(),
+            server_ip: "127.0.0.1".to_string(),
+        }
+    }
+}
+
 pub struct ConfigManager;
 
 impl ConfigManager {
