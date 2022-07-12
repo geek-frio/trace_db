@@ -9,7 +9,6 @@ use tracing::error;
 use super::schema::{API_ID, BIZTIME, PAYLOAD, SEGID, SERVICE, TRACE_ID, TRACING_SCHEMA, ZONE};
 
 pub struct TracingTagEngine {
-    addr: MailKeyAddress,
     index_writer: IndexWriter,
     index: Index,
 }
@@ -39,7 +38,6 @@ impl TracingTagEngine {
                 let res_writer = index.writer(100_100_000);
                 match res_writer {
                     Ok(writer) => Ok(TracingTagEngine {
-                        addr,
                         index_writer: writer,
                         index,
                     }),

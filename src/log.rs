@@ -4,7 +4,8 @@ use std::{
 };
 
 use lazy_static::lazy_static;
-use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, Registry};
+use tracing::metadata::LevelFilter;
+use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, Layer, Registry};
 
 use crate::{
     conf::GlobalConfig,
@@ -20,7 +21,7 @@ lazy_static! {
 pub fn init_console_logger() {
     INIT_LOGGER.call_once(|| {
         let stdout_log = tracing_subscriber::fmt::layer().pretty();
-        let subscriber = Registry::default().with(stdout_log);
+        let subscriber = Registry::default().with(stdout_log.with_filter(LevelFilter::TRACE));
 
         tracing::subscriber::set_global_default(subscriber).expect("Console log init failed!");
     });

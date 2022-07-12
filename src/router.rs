@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, sync::atomic::AtomicUsize};
 use tracing::info;
 
-pub struct RouteErr<Msg>(pub Msg, TagEngineError);
+pub struct RouteErr<Msg>(pub Msg, pub TagEngineError);
 
 pub trait RouteMsg<N: Fsm> {
     type Addr;
@@ -35,12 +35,6 @@ pub trait RouteMsg<N: Fsm> {
 pub struct NormalMailMap<N: Fsm> {
     map: HashMap<IndexAddr, BasicMailbox<N>>,
     alive_cnt: Arc<AtomicUsize>,
-}
-
-enum CheckDoResult<T> {
-    NotExist,
-    Invalid,
-    Valid(T),
 }
 
 pub struct Router<N: Fsm, S> {
@@ -91,6 +85,7 @@ impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
         msg: N::Message,
         create_fsm: fn(MailKeyAddress, &str) -> Result<(N, Sender<N::Message>), TagEngineError>,
     ) -> Result<(), RouteErr<N::Message>> {
+        info!("Start to retrieve mailbox");
         let mailbox = self.retrive_mailbox(addr.into());
         match mailbox {
             Some(mailbox) => self.send_msg(mailbox, msg),
@@ -124,12 +119,14 @@ impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
 
     fn register_all(&self, mailboxes: Vec<(IndexAddr, BasicMailbox<N>)>) {
         let mut normals = self.normals.lock().unwrap();
+
         normals.map.reserve(mailboxes.len());
         for (addr, mailbox) in mailboxes {
             if let Some(m) = normals.map.insert(addr, mailbox) {
                 m.close();
             }
         }
+
         normals
             .alive_cnt
             .store(normals.map.len(), Ordering::Relaxed);

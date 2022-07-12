@@ -13,12 +13,14 @@ pub const SEGID: &'static str = "seg_id";
 pub const PAYLOAD: &'static str = "payload";
 
 /// Used for static init Tantivy Schema
-pub static TRACING_SCHEMA: SCHEMA = SCHEMA { private_fields: () };
+pub static TRACING_SCHEMA: SCHEMA = SCHEMA {
+    _private_fields: (),
+};
 
 unsafe impl Sync for Lazy {}
 
 pub struct SCHEMA {
-    private_fields: (),
+    _private_fields: (),
 }
 
 pub struct Lazy(Cell<MaybeUninit<Schema>>);

@@ -1,5 +1,6 @@
 use skproto::tracing::SegmentData;
 
+#[derive(Debug)]
 pub struct PktHeader {
     pub(crate) conn_id: i32,
     pub(crate) seq_id: i64,
