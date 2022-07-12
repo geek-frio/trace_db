@@ -1,20 +1,13 @@
 use super::ShutdownSignal;
 use crate::router::Router;
-use crate::tag::engine::*;
 use crate::tag::fsm::TagFsm;
 use crate::{
-    com::{
-        ack::CallbackStat,
-        index::{ConvertIndexAddr, MailKeyAddress},
-    },
+    com::{ack::CallbackStat, index::ConvertIndexAddr},
     serv::ShutdownEvent,
     TOKIO_RUN,
 };
 use crate::{fsm::Fsm, sched::FsmScheduler};
-use crate::{
-    router::RouteMsg,
-    tag::{engine::TracingTagEngine, fsm::SegmentDataCallback},
-};
+use crate::{router::RouteMsg, tag::fsm::SegmentDataCallback};
 use anyhow::Error as AnyError;
 use std::time::Duration;
 use tokio::{sync::mpsc::UnboundedReceiver, time::sleep};
@@ -36,16 +29,6 @@ where
         LocalSegmentMsgConsumer { router, receiver }
     }
 
-    fn create_tag_fsm(
-        addr: MailKeyAddress,
-        dir: &str,
-    ) -> Result<(TagFsm, crossbeam::channel::Sender<<TagFsm as Fsm>::Message>), TagEngineError>
-    {
-        let engine = TracingTagEngine::new(addr, dir)?;
-        let (s, r) = crossbeam_channel::unbounded();
-        Ok((TagFsm::new(r, None, engine), s))
-    }
-
     pub async fn loop_poll(&mut self, shutdown_signal: ShutdownSignal) -> Result<(), AnyError> {
         let mut shutdown = shutdown_signal.recv;
         let drop_notify = shutdown_signal.drop_notify;
@@ -65,7 +48,7 @@ where
                             let res_addr = segment_callback.data.biz_timestamp.with_index_addr();
                             match res_addr {
                                 Ok(addr) => {
-                                    if let Err(stat) = self.router.route_msg(addr, segment_callback, Self::create_tag_fsm) {
+                                    if let Err(stat) = self.router.route_msg(addr, segment_callback, Router::create_tag_fsm) {
                                         let seg = stat.0;
                                         seg.callback.callback(CallbackStat::IOErr(stat.1, seg.data.into()));
                                     }
@@ -89,7 +72,7 @@ where
                                 info!("loop consume all the segments waiting in the channel");
 
                                 let addr = segment_callback.data.biz_timestamp.with_index_addr().unwrap();
-                                if let Err(stat) = self.router.route_msg(addr, segment_callback, Self::create_tag_fsm) {
+                                if let Err(stat) = self.router.route_msg(addr, segment_callback, Router::create_tag_fsm) {
                                     let seg = stat.0;
                                     seg.callback.callback(CallbackStat::IOErr(stat.1, seg.data.into()));
                                 }

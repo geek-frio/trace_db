@@ -3,8 +3,9 @@ use crate::com::mail::BasicMailbox;
 use crate::com::util::{CountTracker, LruCache};
 use crate::conf::GlobalConfig;
 use crate::fsm::Fsm;
-use crate::sched::FsmScheduler;
-use crate::tag::engine::TagEngineError;
+use crate::sched::{FsmScheduler, NormalScheduler};
+use crate::tag::engine::{TagEngineError, TracingTagEngine};
+use crate::tag::fsm::TagFsm;
 use anyhow::Error as AnyError;
 use crossbeam_channel::Sender;
 use std::borrow::Cow;
@@ -44,6 +45,18 @@ pub struct Router<N: Fsm, S> {
     state_cnt: Arc<AtomicUsize>,
     shutdown: Arc<AtomicBool>,
     conf: Arc<GlobalConfig>,
+}
+
+impl Router<TagFsm, NormalScheduler<TagFsm>> {
+    pub fn create_tag_fsm(
+        addr: MailKeyAddress,
+        dir: &str,
+    ) -> Result<(TagFsm, crossbeam::channel::Sender<<TagFsm as Fsm>::Message>), TagEngineError>
+    {
+        let engine = TracingTagEngine::new(addr, dir)?;
+        let (s, r) = crossbeam_channel::unbounded();
+        Ok((TagFsm::new(r, None, engine), s))
+    }
 }
 
 impl<N, S> Router<N, S>
@@ -159,7 +172,7 @@ where
         self.shutdown.load(Ordering::SeqCst)
     }
 
-    fn retrive_mailbox(&self, addr: IndexAddr) -> Option<&BasicMailbox<N>> {
+    pub(crate) fn retrive_mailbox(&self, addr: IndexAddr) -> Option<&BasicMailbox<N>> {
         // FixMe: this used RefMut::leak, it's a nightly feature
         //  the reason to use leak is that we cannot leak &BasicMailBox using RefMut
         //  compiler will throw error
@@ -249,5 +262,41 @@ impl<N: Fsm, S: Clone> Clone for Router<N, S> {
 impl<N: Fsm> NormalMailMap<N> {
     fn iter(&self) -> Iter<IndexAddr, BasicMailbox<N>> {
         self.map.iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Router;
+    use crate::{
+        log::init_console_logger, router::RouteMsg, sched::NormalScheduler, tag::fsm::TagFsm,
+    };
+    use std::sync::{atomic::AtomicUsize, Arc};
+
+    struct Init {
+        router: Router<TagFsm, NormalScheduler<TagFsm>>,
+        fsm: TagFsm,
+    }
+
+    fn setup() -> Router<TagFsm, NormalScheduler<TagFsm>> {
+        init_console_logger();
+
+        let (send, _recv) = crossbeam_channel::unbounded();
+        let fsm_sche = NormalScheduler { sender: send };
+        let atomic = AtomicUsize::new(1);
+
+        let router = Router::new(fsm_sche, Arc::new(atomic), Arc::new(Default::default()));
+
+        router
+    }
+
+    #[test]
+    fn test_router_basics() {
+        let router = setup();
+
+        let res_mailbox = router.retrive_mailbox(1234);
+        assert!(res_mailbox.is_none());
+
+        router.create_mailbox(fsm, fsm_sender)
     }
 }
