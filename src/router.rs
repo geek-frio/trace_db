@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, sync::atomic::AtomicUsize};
 use tracing::info;
 
+#[derive(Debug)]
 pub struct RouteErr<Msg>(pub Msg, pub TagEngineError);
 
 pub trait RouteMsg<N: Fsm> {
@@ -224,9 +225,18 @@ where
     pub fn close(&self, addr: IndexAddr) {
         self.caches.borrow_mut().remove(&addr);
         let mut mailboxes = self.normals.lock().unwrap();
+
+        mailboxes.map.iter().for_each(|(k, _)| {
+            tracing::trace!("key is:{}", k);
+        });
+
+        tracing::trace!("map length:{}", mailboxes.map.len());
         if let Some(mb) = mailboxes.map.remove(&addr) {
+            tracing::trace!("Remove success!");
             mb.close();
         }
+
+        tracing::trace!("after remove, length is:{}", mailboxes.map.len());
         mailboxes
             .alive_cnt
             .store(mailboxes.map.len(), Ordering::Relaxed);
@@ -270,13 +280,17 @@ mod tests {
 
     use super::Router;
     use crate::{
-        com::{index::ConvertIndexAddr, test_util::gen_valid_mailkeyadd},
+        batch::FsmTypes,
+        com::{
+            index::ConvertIndexAddr,
+            test_util::{gen_segcallback, gen_valid_mailkeyadd},
+        },
         log::init_console_logger,
         router::RouteMsg,
         sched::NormalScheduler,
-        tag::fsm::TagFsm,
+        tag::fsm::{FsmExecutor, TagFsm},
     };
-    use std::sync::{atomic::AtomicUsize, Arc};
+    use std::sync::{atomic::AtomicUsize, atomic::Ordering, Arc};
 
     fn setup() -> Router<TagFsm, NormalScheduler<TagFsm>> {
         init_console_logger();
@@ -294,18 +308,57 @@ mod tests {
     fn test_router_basics() {
         let router = setup();
 
-        // let res_mailbox = router.retrive_mailbox(1234);
-        // assert!(res_mailbox.is_none());
-        // drop(res_mailbox);
+        let msg = gen_segcallback(1, 1);
 
+        let res = router.route_msg(
+            1234u64.with_index_addr().unwrap(),
+            msg.0,
+            Router::create_tag_fsm,
+        );
+
+        match res {
+            Ok(_) => {
+                assert!(router.alive_cnt().load(Ordering::Relaxed) == 1);
+            }
+            Err(_) => {
+                panic!();
+            }
+        }
+        router.close(1234i64.with_index_addr().unwrap().into());
+
+        assert_eq!(0, router.alive_cnt().load(Ordering::Relaxed));
+
+        // Test regist
         let mail_addr = gen_valid_mailkeyadd();
         let (tag_fsm, fsm_sender) = Router::create_tag_fsm(mail_addr.clone(), "/tmp").unwrap();
         let mailbox = router.create_mailbox(tag_fsm, fsm_sender);
-
-        router.register(mail_addr.clone().into(), mailbox);
+        router.register(mail_addr.into(), mailbox);
         trace!(
             "router caches ref count:{}",
             router.caches.try_borrow_mut().is_ok()
         );
+
+        let (s, r) = crossbeam_channel::unbounded::<FsmTypes<TagFsm>>();
+        let fsm_sche = NormalScheduler { sender: s };
+
+        let msg = gen_segcallback(1, 1);
+        let res_send = router.send_msg(mail_addr.into(), msg.0, &fsm_sche);
+
+        assert!(res_send.is_ok());
+        let res_fsm = r.recv();
+        assert!(res_fsm.is_ok());
+
+        let fsm_types = res_fsm.unwrap();
+        match fsm_types {
+            FsmTypes::Empty => {
+                panic!();
+            }
+            FsmTypes::Normal(box_fsm) => {
+                assert!(box_fsm.remain_msgs() == 1);
+            }
+        }
+
+        router.close(mail_addr.into());
+        assert_eq!(0, router.alive_cnt().load(Ordering::Relaxed));
     }
 }
