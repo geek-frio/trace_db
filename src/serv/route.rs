@@ -118,7 +118,7 @@ mod tests {
     use super::LocalSegmentMsgConsumer;
     use crate::{
         batch::FsmTypes,
-        com::ack::{AckCallback, CallbackStat},
+        com::{ack::CallbackStat, test_util::gen_segcallback},
         log::init_console_logger,
         router::Router,
         sched::NormalScheduler,
@@ -126,31 +126,8 @@ mod tests {
         tag::fsm::{SegmentDataCallback, TagFsm},
         TOKIO_RUN,
     };
-    use chrono::offset::Local;
     use core::panic;
-    use skproto::tracing::SegmentData;
     use std::sync::{atomic::AtomicUsize, Arc};
-    use tokio::sync::oneshot::Receiver;
-    use tracing::{span, Level};
-
-    fn gen_segcallback(days: i64, secs: i64) -> (SegmentDataCallback, Receiver<CallbackStat>) {
-        let cur = Local::now();
-        let date_time = cur
-            .checked_sub_signed(chrono::Duration::days(days))
-            .unwrap();
-        let date_time = date_time
-            .checked_sub_signed(chrono::Duration::seconds(secs))
-            .unwrap();
-
-        let mut segment = SegmentData::new();
-        segment.set_biz_timestamp(date_time.timestamp_millis() as u64);
-
-        let span = span!(Level::INFO, "my_span");
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let callback = AckCallback::new(sender);
-
-        (SegmentDataCallback::new(segment, callback, span), receiver)
-    }
 
     type BatchActor = crossbeam_channel::Receiver<FsmTypes<TagFsm>>;
     type RemoteMsgHandle = tokio::sync::mpsc::UnboundedSender<SegmentDataCallback>;

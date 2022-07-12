@@ -40,7 +40,7 @@ pub struct NormalMailMap<N: Fsm> {
 
 pub struct Router<N: Fsm, S> {
     pub normals: Arc<Mutex<NormalMailMap<N>>>,
-    caches: RefCell<LruCache<IndexAddr, BasicMailbox<N>, CountTracker>>,
+    pub caches: RefCell<LruCache<IndexAddr, BasicMailbox<N>, CountTracker>>,
     pub(crate) normal_scheduler: S,
     state_cnt: Arc<AtomicUsize>,
     shutdown: Arc<AtomicBool>,
@@ -76,17 +76,6 @@ where
 
         mailbox
     }
-
-    fn send_msg(
-        &self,
-        mailbox: &BasicMailbox<N>,
-        msg: N::Message,
-    ) -> Result<(), RouteErr<N::Message>> {
-        match mailbox.send(msg, &self.normal_scheduler) {
-            Ok(()) => Ok(()),
-            Err(e) => Err(RouteErr(e.0, TagEngineError::ReceiverDroppped)),
-        }
-    }
 }
 
 impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
@@ -99,10 +88,10 @@ impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
         create_fsm: fn(MailKeyAddress, &str) -> Result<(N, Sender<N::Message>), TagEngineError>,
     ) -> Result<(), RouteErr<N::Message>> {
         info!("Start to retrieve mailbox");
-        let mailbox = self.retrive_mailbox(addr.into());
-        match mailbox {
-            Some(mailbox) => self.send_msg(mailbox, msg),
-            None => {
+        let res = self.send_msg(addr.into(), msg, &self.normal_scheduler);
+        match res {
+            Ok(_) => Ok(()),
+            Err(msg) => {
                 let res = create_fsm(addr.clone(), &self.conf.index_dir);
                 if let Err(e) = res {
                     return Err(RouteErr(msg, e));
@@ -111,10 +100,13 @@ impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
                 let (fsm, fsm_sender) = res.unwrap();
                 let mailbox = self.create_mailbox(fsm, fsm_sender);
 
-                let res_send = self.send_msg(&mailbox, msg);
                 self.register(addr.into(), mailbox);
+                let res_send = self.send_msg(addr.into(), msg, &self.normal_scheduler);
 
-                res_send
+                match res_send {
+                    Ok(_) => Ok(()),
+                    Err(msg) => Err(RouteErr(msg, TagEngineError::ReceiverDroppped)),
+                }
             }
         }
     }
@@ -172,14 +164,21 @@ where
         self.shutdown.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn retrive_mailbox(&self, addr: IndexAddr) -> Option<&BasicMailbox<N>> {
-        // FixMe: this used RefMut::leak, it's a nightly feature
-        //  the reason to use leak is that we cannot leak &BasicMailBox using RefMut
-        //  compiler will throw error
-        let basic_box = self.get_mailbox_from_ref(&addr);
+    pub(crate) fn send_msg(
+        &self,
+        addr: IndexAddr,
+        msg: N::Message,
+        s: &S,
+    ) -> Result<(), N::Message> {
+        let mut caches_ref = self.caches.borrow_mut();
 
-        if basic_box.is_some() {
-            return basic_box;
+        let mailbox = caches_ref.get(&addr);
+        if let Some(mailbox) = mailbox {
+            let res_send = mailbox.send(msg, s);
+            return match res_send {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e.0),
+            };
         }
 
         let (cnt, mailbox) = {
@@ -189,23 +188,23 @@ where
             let b = match boxes.map.get_mut(&addr) {
                 Some(mailbox) => mailbox.clone(),
                 None => {
-                    return None;
+                    return Err(msg);
                 }
             };
             (cnt, b)
         };
 
-        if cnt > self.caches.borrow().capacity() || cnt < self.caches.borrow().capacity() / 2 {
-            self.caches.borrow_mut().resize(cnt);
+        if cnt > caches_ref.capacity() || cnt < caches_ref.capacity() / 2 {
+            caches_ref.resize(cnt);
         }
 
-        self.caches.borrow_mut().insert(addr, mailbox);
-        self.get_mailbox_from_ref(&addr)
-    }
+        let res_send = mailbox.send(msg, s);
+        if let Err(e) = res_send {
+            return Err(e.0);
+        }
 
-    fn get_mailbox_from_ref(&self, addr: &IndexAddr) -> Option<&BasicMailbox<N>> {
-        let caches_mut = self.caches.borrow_mut();
-        std::cell::RefMut::leak(caches_mut).get(addr.into())
+        caches_ref.insert(addr, mailbox);
+        Ok(())
     }
 
     pub fn notify_all_idle_mailbox(&self) -> Result<(), AnyError> {
@@ -267,16 +266,17 @@ impl<N: Fsm> NormalMailMap<N> {
 
 #[cfg(test)]
 mod tests {
+    use tracing::trace;
+
     use super::Router;
     use crate::{
-        log::init_console_logger, router::RouteMsg, sched::NormalScheduler, tag::fsm::TagFsm,
+        com::{index::ConvertIndexAddr, test_util::gen_valid_mailkeyadd},
+        log::init_console_logger,
+        router::RouteMsg,
+        sched::NormalScheduler,
+        tag::fsm::TagFsm,
     };
     use std::sync::{atomic::AtomicUsize, Arc};
-
-    struct Init {
-        router: Router<TagFsm, NormalScheduler<TagFsm>>,
-        fsm: TagFsm,
-    }
 
     fn setup() -> Router<TagFsm, NormalScheduler<TagFsm>> {
         init_console_logger();
@@ -294,9 +294,18 @@ mod tests {
     fn test_router_basics() {
         let router = setup();
 
-        let res_mailbox = router.retrive_mailbox(1234);
-        assert!(res_mailbox.is_none());
+        // let res_mailbox = router.retrive_mailbox(1234);
+        // assert!(res_mailbox.is_none());
+        // drop(res_mailbox);
 
-        router.create_mailbox(fsm, fsm_sender)
+        let mail_addr = gen_valid_mailkeyadd();
+        let (tag_fsm, fsm_sender) = Router::create_tag_fsm(mail_addr.clone(), "/tmp").unwrap();
+        let mailbox = router.create_mailbox(tag_fsm, fsm_sender);
+
+        router.register(mail_addr.clone().into(), mailbox);
+        trace!(
+            "router caches ref count:{}",
+            router.caches.try_borrow_mut().is_ok()
+        );
     }
 }
