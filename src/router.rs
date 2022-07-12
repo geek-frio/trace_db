@@ -361,4 +361,28 @@ mod tests {
         router.close(mail_addr.into());
         assert_eq!(0, router.alive_cnt().load(Ordering::Relaxed));
     }
+
+    #[test]
+    fn test_regist_all() {
+        let router = setup();
+        let m1 = gen_valid_mailkeyadd();
+        let (fsm1, sender1) = Router::create_tag_fsm(m1.clone(), "/tmp").unwrap();
+        let box1 = router.create_mailbox(fsm1, sender1);
+
+        let m2 = gen_valid_mailkeyadd();
+        let (fsm2, sender2) = Router::create_tag_fsm(m2.clone(), "/tmp").unwrap();
+        let box2 = router.create_mailbox(fsm2, sender2);
+
+        let m3 = gen_valid_mailkeyadd();
+        let (fsm3, sender3) = Router::create_tag_fsm(m3.clone(), "/tmp").unwrap();
+        let box3 = router.create_mailbox(fsm3, sender3);
+
+        router.register_all(vec![
+            (m1.into(), box1),
+            (m2.into(), box2),
+            (m3.into(), box3),
+        ]);
+
+        assert_eq!(router.alive_cnt().load(Ordering::Relaxed), 3);
+    }
 }
