@@ -131,4 +131,6 @@ pub trait Fsm {
     fn untag_tick(&mut self);
 
     fn is_tick(&self) -> bool;
+
+    fn chan_msgs(&self) -> usize;
 }

@@ -183,4 +183,8 @@ impl Fsm for TagFsm {
     fn untag_tick(&mut self) {
         self.tick = true;
     }
+
+    fn chan_msgs(&self) -> usize {
+        self.receiver.len()
+    }
 }
