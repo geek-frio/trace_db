@@ -1,25 +1,16 @@
+use crate::com::index::MailKeyAddress;
+use lazy_static::__Deref;
 use skproto::tracing::SegmentData;
 use tantivy::directory::MmapDirectory;
 use tantivy::schema::*;
 use tantivy::{Document, Index, IndexReader, IndexWriter};
+use tracing::error;
 
-use crate::com::index::MailKeyAddress;
-
-pub const ZONE: &'static str = "zone";
-pub const API_ID: &'static str = "api_id";
-pub const SERVICE: &'static str = "service";
-pub const BIZTIME: &'static str = "biztime";
-pub const TRACE_ID: &'static str = "trace_id";
-pub const SEGID: &'static str = "seg_id";
-pub const PAYLOAD: &'static str = "payload";
+use super::schema::{API_ID, BIZTIME, PAYLOAD, SEGID, SERVICE, TRACE_ID, TRACING_SCHEMA, ZONE};
 
 pub struct TracingTagEngine {
-    dir: Box<String>,
-    // tag data gps (Every 15 minutes of a day, we create a new directory)
-    addr: MailKeyAddress,
-    index_writer: Option<IndexWriter>,
-    index: Option<Index>,
-    schema: Schema,
+    index_writer: IndexWriter,
+    index: Index,
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
@@ -34,118 +25,109 @@ pub enum TagEngineError {
     Other(String),
     #[error("Tracing tag engine init failed, create index dir failed!")]
     IndexDirCreateFailed,
+    #[error("Mailbox receiver is dropped")]
+    ReceiverDroppped,
 }
 
 impl TracingTagEngine {
-    pub fn new(addr: MailKeyAddress, dir: Box<String>, schema: Schema) -> TracingTagEngine {
-        TracingTagEngine {
-            dir: dir,
-            addr,
-            index_writer: None,
-            index: None,
-            schema,
+    pub fn new(addr: MailKeyAddress, data_dir: &str) -> Result<TracingTagEngine, TagEngineError> {
+        let res_index = Self::index_dir_create(addr, data_dir);
+
+        match res_index {
+            Ok(index) => {
+                let res_writer = index.writer(100_100_000);
+                match res_writer {
+                    Ok(writer) => Ok(TracingTagEngine {
+                        index_writer: writer,
+                        index,
+                    }),
+                    Err(e) => {
+                        error!("Index writer create failed!e:{:?}", e);
+                        Err(TagEngineError::IndexDirCreateFailed)
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Create index directory failed!e:{:?}", e);
+                Err(TagEngineError::IndexDirCreateFailed)
+            }
         }
     }
 
-    pub fn init(&mut self) -> Result<Index, TagEngineError> {
-        // TODO: check if it is an outdated directory
-        let path = self.addr.get_idx_path(self.dir.as_str());
+    fn index_dir_create(addr: MailKeyAddress, data_dir: &str) -> Result<Index, anyhow::Error> {
+        let path = addr.get_idx_path(data_dir);
 
-        let result = std::fs::create_dir_all(path.as_path());
-        if result.is_err() {
-            return Err(TagEngineError::IndexDirCreateFailed);
-        }
+        std::fs::create_dir_all(path.as_path())?;
 
-        // TODO: check open operation valid
-        let dir = MmapDirectory::open(path.as_path()).unwrap();
-        let index = Index::open_or_create(dir, self.schema.clone()).unwrap();
-        self.index_writer = Some(index.writer(100_100_000).unwrap());
-        self.index = Some(index.clone());
-        return Ok(index);
+        let dir = MmapDirectory::open(path.as_path())?;
+        let schema = (&TRACING_SCHEMA).deref().clone();
+
+        Ok(Index::open_or_create(dir, schema.clone())?)
     }
 
     pub fn add_record(&self, data: &SegmentData) -> u64 {
         let document = self.create_doc(data);
-        if let Some(writer) = self.index_writer.as_ref() {
-            return writer.add_document(document);
-        }
-        // Index writer is null, 0 return instead
+        self.index_writer.add_document(document);
         0
     }
 
     fn create_doc(&self, data: &SegmentData) -> Document {
         let mut doc = Document::new();
         doc.add(FieldValue::new(
-            self.schema.get_field(TRACE_ID).unwrap(),
+            TRACING_SCHEMA.get_field(TRACE_ID).unwrap(),
             Value::Str(data.trace_id.clone()),
         ));
         doc.add(FieldValue::new(
-            self.schema.get_field(ZONE).unwrap(),
+            TRACING_SCHEMA.get_field(ZONE).unwrap(),
             Value::Str(data.zone.clone()),
         ));
         doc.add(FieldValue::new(
-            self.schema.get_field(SEGID).unwrap(),
+            TRACING_SCHEMA.get_field(SEGID).unwrap(),
             Value::Str(data.seg_id.clone()),
         ));
         doc.add(FieldValue::new(
-            self.schema.get_field(API_ID).unwrap(),
+            TRACING_SCHEMA.get_field(API_ID).unwrap(),
             Value::I64(data.api_id as i64),
         ));
         doc.add(FieldValue::new(
-            self.schema.get_field(BIZTIME).unwrap(),
+            TRACING_SCHEMA.get_field(BIZTIME).unwrap(),
             Value::I64(data.biz_timestamp as i64),
         ));
         doc.add(FieldValue::new(
-            self.schema.get_field(SERVICE).unwrap(),
+            TRACING_SCHEMA.get_field(SERVICE).unwrap(),
             Value::Str(data.ser_key.clone()),
         ));
         doc.add(FieldValue::new(
-            self.schema.get_field(PAYLOAD).unwrap(),
+            TRACING_SCHEMA.get_field(PAYLOAD).unwrap(),
             Value::Str(data.payload.clone()),
         ));
         doc
     }
 
     pub fn flush(&mut self) -> Result<u64, TagEngineError> {
-        if let Some(writer) = &mut self.index_writer {
-            match writer.commit() {
-                Ok(commit_idx) => return Ok(commit_idx),
-                Err(e) => return Err(TagEngineError::RecordsCommitError(e.to_string())),
-            }
+        let res = self.index_writer.commit();
+        match res {
+            Ok(commit_idx) => return Ok(commit_idx),
+            Err(e) => return Err(TagEngineError::RecordsCommitError(e.to_string())),
         }
-        return Err(TagEngineError::WriterNotInit);
     }
 
     pub fn reader(&self) -> Result<(IndexReader, &Index), TagEngineError> {
-        match &self.index {
-            Some(i) => i
-                .reader()
-                .map(|r| (r, i))
-                .map_err(|e| TagEngineError::Other(e.to_string())),
-            None => Err(TagEngineError::IndexNotExist),
-        }
+        self.index
+            .reader()
+            .map(|r| (r, &self.index))
+            .map_err(|e| TagEngineError::Other(e.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::com::index::*;
-    use crate::com::gen::{_gen_data_binary, _gen_tag};
-    use std::sync::Once;
-    use tantivy::{chrono::Local, collector::TopDocs, query::QueryParser};
+    // use super::*;
+    // use crate::com::gen::{_gen_data_binary, _gen_tag};
+    // use crate::com::index::*;
+    // use std::sync::Once;
+    // use tantivy::{chrono::Local, collector::TopDocs, query::QueryParser};
 
-    pub fn init_tracing_schema() -> Schema {
-        let mut schema_builder = Schema::builder();
-        schema_builder.add_text_field("zone", STRING);
-        schema_builder.add_i64_field("api_id", INDEXED);
-        schema_builder.add_text_field("service", TEXT);
-        schema_builder.add_u64_field("biztime", STORED);
-        schema_builder.add_text_field("trace_id", STRING | STORED);
-        schema_builder.add_text_field("seg_id", STRING);
-        schema_builder.add_text_field("payload", STRING);
-        schema_builder.build()
-    }
     #[test]
     fn create_multiple_dir_test() {
         println!(
@@ -160,73 +142,73 @@ mod tests {
 
     #[test]
     fn test_normal_write() {
-        let mut engine = TracingTagEngine::new(
-            123i64.with_index_addr().unwrap(),
-            Box::new("/tmp/tantivy_records".to_string()),
-            init_tracing_schema(),
-        );
+        // let mut engine = TracingTagEngine::new(
+        //     123i64.with_index_addr().unwrap(),
+        //     Box::new("/tmp/tantivy_records".to_string()),
+        //     init_tracing_schema(),
+        // );
 
-        println!("{:?}", engine.init());
+        // println!("{:?}", engine.init());
+
+        // // let (reader, index) = engine.reader().unwrap();
+        // // let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::ApiId)]);
+        // // let searcher = reader.searcher();
+
+        // let init: Once = Once::new();
+        // let mut captured_val = String::new();
+        // for i in 0..10 {
+        //     for j in 0..100 {
+        //         let now = Local::now();
+        //         let mut record = SegmentData::new();
+        //         let uuid = uuid::Uuid::new_v4();
+        //         record.set_api_id(j);
+        //         record.set_biz_timestamp(now.timestamp_nanos() as u64);
+        //         record.set_zone(_gen_tag(3, 3, 'a'));
+        //         record.set_seg_id(uuid.to_string());
+        //         record.set_trace_id(uuid.to_string());
+        //         init.call_once(|| {
+        //             captured_val.push_str(&uuid.to_string());
+        //             println!("i:{}; j:{}; uuid:{}", i, j, uuid.to_string());
+        //         });
+        //         record.set_ser_key(_gen_tag(20, 3, 'e'));
+        //         record.set_payload(_gen_data_binary());
+        //         engine.add_record(&record);
+        //     }
+        //     let e = &mut engine;
+        //     println!("flushed result is:{:?}", e.flush());
+        // }
 
         // let (reader, index) = engine.reader().unwrap();
-        // let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::ApiId)]);
+        // let query_parser =
+        //     QueryParser::for_index(index, vec![engine.schema.get_field(TRACE_ID).unwrap()]);
         // let searcher = reader.searcher();
-
-        let init: Once = Once::new();
-        let mut captured_val = String::new();
-        for i in 0..10 {
-            for j in 0..100 {
-                let now = Local::now();
-                let mut record = SegmentData::new();
-                let uuid = uuid::Uuid::new_v4();
-                record.set_api_id(j);
-                record.set_biz_timestamp(now.timestamp_nanos() as u64);
-                record.set_zone(_gen_tag(3, 3, 'a'));
-                record.set_seg_id(uuid.to_string());
-                record.set_trace_id(uuid.to_string());
-                init.call_once(|| {
-                    captured_val.push_str(&uuid.to_string());
-                    println!("i:{}; j:{}; uuid:{}", i, j, uuid.to_string());
-                });
-                record.set_ser_key(_gen_tag(20, 3, 'e'));
-                record.set_payload(_gen_data_binary());
-                engine.add_record(&record);
-            }
-            let e = &mut engine;
-            println!("flushed result is:{:?}", e.flush());
-        }
-
-        let (reader, index) = engine.reader().unwrap();
-        let query_parser =
-            QueryParser::for_index(index, vec![engine.schema.get_field(TRACE_ID).unwrap()]);
-        let searcher = reader.searcher();
-        let query = query_parser.parse_query(&captured_val).unwrap();
-        let search_res = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
-        println!("Search result is:{:?}", search_res);
-        println!("captured value:{}", captured_val);
+        // let query = query_parser.parse_query(&captured_val).unwrap();
+        // let search_res = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
+        // println!("Search result is:{:?}", search_res);
+        // println!("captured value:{}", captured_val);
     }
 
     #[test]
     fn test_read_traceid() {
-        let mut engine = TracingTagEngine::new(
-            (150202 as i64).with_index_addr().unwrap(),
-            Box::new("/tmp".to_string()),
-            init_tracing_schema(),
-        );
-        println!("Init result is:{:?}", engine.init());
-        let (reader, index) = engine.reader().unwrap();
-        let query_parser =
-            QueryParser::for_index(index, vec![engine.schema.get_field(TRACE_ID).unwrap()]);
-        let searcher = reader.searcher();
-        let query = query_parser
-            .parse_query("d9d3c657-41c9-494a-8269-8422f2d107e5")
-            .unwrap();
-        let search_res = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
-        println!("search res is:{:?}", search_res);
+        // let mut engine = TracingTagEngine::new(
+        //     (150202 as i64).with_index_addr().unwrap(),
+        //     Box::new("/tmp".to_string()),
+        //     init_tracing_schema(),
+        // );
+        // println!("Init result is:{:?}", engine.init());
+        // let (reader, index) = engine.reader().unwrap();
+        // let query_parser =
+        //     QueryParser::for_index(index, vec![engine.schema.get_field(TRACE_ID).unwrap()]);
+        // let searcher = reader.searcher();
+        // let query = query_parser
+        //     .parse_query("d9d3c657-41c9-494a-8269-8422f2d107e5")
+        //     .unwrap();
+        // let search_res = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
+        // println!("search res is:{:?}", search_res);
 
-        for (_score, doc_address) in search_res {
-            let retrieved_doc = searcher.doc(doc_address).unwrap();
-            println!("search result is: {:?}", retrieved_doc);
-        }
+        // for (_score, doc_address) in search_res {
+        //     let retrieved_doc = searcher.doc(doc_address).unwrap();
+        //     println!("search result is: {:?}", retrieved_doc);
+        // }
     }
 }

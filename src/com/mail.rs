@@ -13,6 +13,15 @@ pub struct BasicMailbox<Owner: Fsm> {
     pub(crate) state: Arc<FsmState<Owner>>,
 }
 
+impl<Owner: Fsm> Clone for BasicMailbox<Owner> {
+    fn clone(&self) -> Self {
+        BasicMailbox {
+            sender: self.sender.clone(),
+            state: self.state.clone(),
+        }
+    }
+}
+
 impl<Owner: Fsm> BasicMailbox<Owner> {
     pub fn new(
         sender: Sender<Owner::Message>,

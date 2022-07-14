@@ -4,6 +4,7 @@ use tokio::sync::oneshot::Sender;
 
 use super::pkt::PktHeader;
 
+#[derive(Debug)]
 pub enum CallbackStat {
     Handshake(i32),
     Ok(PktHeader),

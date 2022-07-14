@@ -1,6 +1,6 @@
 #![feature(test)]
 #![feature(array_into_iter_constructors)]
-
+#![feature(cell_leak)]
 extern crate rand;
 extern crate tantivy;
 extern crate test;

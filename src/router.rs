@@ -1,10 +1,14 @@
 use crate::com::index::{IndexAddr, MailKeyAddress};
 use crate::com::mail::BasicMailbox;
 use crate::com::util::{CountTracker, LruCache};
+use crate::conf::GlobalConfig;
 use crate::fsm::Fsm;
-use crate::sched::FsmScheduler;
+use crate::sched::{FsmScheduler, NormalScheduler};
+use crate::tag::engine::{TagEngineError, TracingTagEngine};
+use crate::tag::fsm::TagFsm;
 use anyhow::Error as AnyError;
-use crossbeam_channel::TrySendError;
+use crossbeam_channel::Sender;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::hash_map::Iter;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,10 +16,18 @@ use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, sync::atomic::AtomicUsize};
 use tracing::info;
 
-pub trait RouteMsg<L, N: Fsm> {
+#[derive(Debug)]
+pub struct RouteErr<Msg>(pub Msg, pub TagEngineError);
+
+pub trait RouteMsg<N: Fsm> {
     type Addr;
 
-    fn route_msg(&self, addr: Self::Addr, msg: N::Message) -> Either<L, N::Message>;
+    fn route_msg(
+        &self,
+        addr: Self::Addr,
+        msg: N::Message,
+        f: fn(MailKeyAddress, &str) -> Result<(N, Sender<N::Message>), TagEngineError>,
+    ) -> Result<(), RouteErr<N::Message>>;
 
     fn register(&self, addr: IndexAddr, mailbox: BasicMailbox<N>);
 
@@ -27,80 +39,76 @@ pub struct NormalMailMap<N: Fsm> {
     alive_cnt: Arc<AtomicUsize>,
 }
 
-enum CheckDoResult<T> {
-    NotExist,
-    Invalid,
-    Valid(T),
-}
-
 pub struct Router<N: Fsm, S> {
     pub normals: Arc<Mutex<NormalMailMap<N>>>,
-    caches: RefCell<LruCache<IndexAddr, BasicMailbox<N>, CountTracker>>,
+    pub caches: RefCell<LruCache<IndexAddr, BasicMailbox<N>, CountTracker>>,
     pub(crate) normal_scheduler: S,
     state_cnt: Arc<AtomicUsize>,
     shutdown: Arc<AtomicBool>,
+    conf: Arc<GlobalConfig>,
 }
 
-pub enum Either<L, R> {
-    Left(L),
-    Right(R),
-}
-
-impl<L, R> Either<L, R> {
-    pub fn as_ref(&self) -> Either<&L, &R> {
-        match self {
-            Either::Left(ref l) => Either::Left(l),
-            Either::Right(ref r) => Either::Right(r),
-        }
-    }
-
-    pub fn as_mut(&mut self) -> Either<&mut L, &mut R> {
-        match self {
-            Either::Left(ref mut l) => Either::Left(l),
-            Either::Right(ref mut r) => Either::Right(r),
-        }
-    }
-
-    pub fn left(self) -> Option<L> {
-        match self {
-            Either::Left(l) => Some(l),
-            _ => None,
-        }
-    }
-
-    pub fn right(self) -> Option<R> {
-        match self {
-            Either::Right(r) => Some(r),
-            _ => None,
-        }
+impl Router<TagFsm, NormalScheduler<TagFsm>> {
+    pub fn create_tag_fsm(
+        addr: MailKeyAddress,
+        dir: &str,
+    ) -> Result<(TagFsm, crossbeam::channel::Sender<<TagFsm as Fsm>::Message>), TagEngineError>
+    {
+        let engine = TracingTagEngine::new(addr, dir)?;
+        let (s, r) = crossbeam_channel::unbounded();
+        Ok((TagFsm::new(r, None, engine), s))
     }
 }
 
-impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<Result<(), TrySendError<N::Message>>, N>
-    for Router<N, S>
+impl<N, S> Router<N, S>
+where
+    N: Fsm,
+    S: FsmScheduler<F = N> + Clone,
 {
+    fn create_mailbox(&self, fsm: N, fsm_sender: Sender<N::Message>) -> BasicMailbox<N> {
+        let state_cnt = Arc::new(AtomicUsize::new(0));
+        let mailbox = BasicMailbox::new(fsm_sender, Box::new(fsm), state_cnt);
+
+        let fsm = mailbox.take_fsm();
+        if let Some(mut f) = fsm {
+            f.set_mailbox(Cow::Borrowed(&mailbox));
+            mailbox.release(f);
+        }
+
+        mailbox
+    }
+}
+
+impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
     type Addr = MailKeyAddress;
 
     fn route_msg(
         &self,
         addr: Self::Addr,
         msg: N::Message,
-    ) -> Either<Result<(), TrySendError<N::Message>>, N::Message> {
-        let mut msg = Some(msg);
-        let res = self.check_do(addr.into(), |mailbox| {
-            let m = msg.take().unwrap();
-            match mailbox.send(m, &self.normal_scheduler) {
-                Ok(()) => Some(()),
-                Err(send_err) => {
-                    msg = Some(send_err.0);
-                    None
+        create_fsm: fn(MailKeyAddress, &str) -> Result<(N, Sender<N::Message>), TagEngineError>,
+    ) -> Result<(), RouteErr<N::Message>> {
+        info!("Start to retrieve mailbox");
+        let res = self.send_msg(addr.into(), msg, &self.normal_scheduler);
+        match res {
+            Ok(_) => Ok(()),
+            Err(msg) => {
+                let res = create_fsm(addr.clone(), &self.conf.index_dir);
+                if let Err(e) = res {
+                    return Err(RouteErr(msg, e));
+                }
+
+                let (fsm, fsm_sender) = res.unwrap();
+                let mailbox = self.create_mailbox(fsm, fsm_sender);
+
+                self.register(addr.into(), mailbox);
+                let res_send = self.send_msg(addr.into(), msg, &self.normal_scheduler);
+
+                match res_send {
+                    Ok(_) => Ok(()),
+                    Err(msg) => Err(RouteErr(msg, TagEngineError::ReceiverDroppped)),
                 }
             }
-        });
-        match res {
-            CheckDoResult::NotExist => Either::Right(msg.unwrap()),
-            CheckDoResult::Invalid => Either::Left(Err(TrySendError::Disconnected(msg.unwrap()))),
-            CheckDoResult::Valid(_) => Either::Left(Ok(())),
         }
     }
 
@@ -117,12 +125,14 @@ impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<Result<(), TrySendError<N:
 
     fn register_all(&self, mailboxes: Vec<(IndexAddr, BasicMailbox<N>)>) {
         let mut normals = self.normals.lock().unwrap();
+
         normals.map.reserve(mailboxes.len());
         for (addr, mailbox) in mailboxes {
             if let Some(m) = normals.map.insert(addr, mailbox) {
                 m.close();
             }
         }
+
         normals
             .alive_cnt
             .store(normals.map.len(), Ordering::Relaxed);
@@ -133,7 +143,11 @@ impl<N: Fsm, S> Router<N, S>
 where
     S: FsmScheduler<F = N> + Clone,
 {
-    pub fn new(normal_scheduler: S, state_cnt: Arc<AtomicUsize>) -> Router<N, S> {
+    pub fn new(
+        normal_scheduler: S,
+        state_cnt: Arc<AtomicUsize>,
+        conf: Arc<GlobalConfig>,
+    ) -> Router<N, S> {
         Router {
             normals: Arc::new(Mutex::new(NormalMailMap {
                 map: HashMap::default(),
@@ -143,6 +157,7 @@ where
             normal_scheduler,
             state_cnt,
             shutdown: Arc::new(AtomicBool::new(false)),
+            conf,
         }
     }
 
@@ -150,17 +165,23 @@ where
         self.shutdown.load(Ordering::SeqCst)
     }
 
-    fn check_do<F, R>(&self, addr: IndexAddr, mut f: F) -> CheckDoResult<R>
-    where
-        F: FnMut(&BasicMailbox<N>) -> Option<R>,
-    {
-        let mut caches = self.caches.borrow_mut();
-        // 缓存命中，走缓存获取
-        if let Some(mailbox) = caches.get(&addr) {
-            if let Some(r) = f(mailbox) {
-                return CheckDoResult::Valid(r);
-            }
+    pub(crate) fn send_msg(
+        &self,
+        addr: IndexAddr,
+        msg: N::Message,
+        s: &S,
+    ) -> Result<(), N::Message> {
+        let mut caches_ref = self.caches.borrow_mut();
+
+        let mailbox = caches_ref.get(&addr);
+        if let Some(mailbox) = mailbox {
+            let res_send = mailbox.send(msg, s);
+            return match res_send {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e.0),
+            };
         }
+
         let (cnt, mailbox) = {
             let mut boxes = self.normals.lock().unwrap();
             let cnt = boxes.map.len();
@@ -168,24 +189,23 @@ where
             let b = match boxes.map.get_mut(&addr) {
                 Some(mailbox) => mailbox.clone(),
                 None => {
-                    drop(boxes);
-                    return CheckDoResult::NotExist;
+                    return Err(msg);
                 }
             };
             (cnt, b)
         };
-        if cnt > caches.capacity() || cnt < caches.capacity() / 2 {
-            caches.resize(cnt);
+
+        if cnt > caches_ref.capacity() || cnt < caches_ref.capacity() / 2 {
+            caches_ref.resize(cnt);
         }
 
-        let res = f(&mailbox);
-        match res {
-            Some(r) => {
-                caches.insert(addr, mailbox);
-                CheckDoResult::Valid(r)
-            }
-            None => CheckDoResult::Invalid,
+        let res_send = mailbox.send(msg, s);
+        if let Err(e) = res_send {
+            return Err(e.0);
         }
+
+        caches_ref.insert(addr, mailbox);
+        Ok(())
     }
 
     pub fn notify_all_idle_mailbox(&self) -> Result<(), AnyError> {
@@ -205,9 +225,18 @@ where
     pub fn close(&self, addr: IndexAddr) {
         self.caches.borrow_mut().remove(&addr);
         let mut mailboxes = self.normals.lock().unwrap();
+
+        mailboxes.map.iter().for_each(|(k, _)| {
+            tracing::trace!("key is:{}", k);
+        });
+
+        tracing::trace!("map length:{}", mailboxes.map.len());
         if let Some(mb) = mailboxes.map.remove(&addr) {
+            tracing::trace!("Remove success!");
             mb.close();
         }
+
+        tracing::trace!("after remove, length is:{}", mailboxes.map.len());
         mailboxes
             .alive_cnt
             .store(mailboxes.map.len(), Ordering::Relaxed);
@@ -234,6 +263,7 @@ impl<N: Fsm, S: Clone> Clone for Router<N, S> {
             normal_scheduler: self.normal_scheduler.clone(),
             shutdown: self.shutdown.clone(),
             state_cnt: self.state_cnt.clone(),
+            conf: self.conf.clone(),
         }
     }
 }
@@ -241,5 +271,118 @@ impl<N: Fsm, S: Clone> Clone for Router<N, S> {
 impl<N: Fsm> NormalMailMap<N> {
     fn iter(&self) -> Iter<IndexAddr, BasicMailbox<N>> {
         self.map.iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tracing::trace;
+
+    use super::Router;
+    use crate::{
+        batch::FsmTypes,
+        com::{
+            index::ConvertIndexAddr,
+            test_util::{gen_segcallback, gen_valid_mailkeyadd},
+        },
+        log::init_console_logger,
+        router::RouteMsg,
+        sched::NormalScheduler,
+        tag::fsm::{FsmExecutor, TagFsm},
+    };
+    use std::sync::{atomic::AtomicUsize, atomic::Ordering, Arc};
+
+    fn setup() -> Router<TagFsm, NormalScheduler<TagFsm>> {
+        init_console_logger();
+
+        let (send, _recv) = crossbeam_channel::unbounded();
+        let fsm_sche = NormalScheduler { sender: send };
+        let atomic = AtomicUsize::new(1);
+
+        let router = Router::new(fsm_sche, Arc::new(atomic), Arc::new(Default::default()));
+
+        router
+    }
+
+    #[test]
+    fn test_router_basics() {
+        let router = setup();
+
+        let msg = gen_segcallback(1, 1);
+
+        let res = router.route_msg(
+            1234u64.with_index_addr().unwrap(),
+            msg.0,
+            Router::create_tag_fsm,
+        );
+
+        match res {
+            Ok(_) => {
+                assert!(router.alive_cnt().load(Ordering::Relaxed) == 1);
+            }
+            Err(_) => {
+                panic!();
+            }
+        }
+        router.close(1234i64.with_index_addr().unwrap().into());
+
+        assert_eq!(0, router.alive_cnt().load(Ordering::Relaxed));
+
+        // Test regist
+        let mail_addr = gen_valid_mailkeyadd();
+        let (tag_fsm, fsm_sender) = Router::create_tag_fsm(mail_addr.clone(), "/tmp").unwrap();
+        let mailbox = router.create_mailbox(tag_fsm, fsm_sender);
+        router.register(mail_addr.into(), mailbox);
+        trace!(
+            "router caches ref count:{}",
+            router.caches.try_borrow_mut().is_ok()
+        );
+
+        let (s, r) = crossbeam_channel::unbounded::<FsmTypes<TagFsm>>();
+        let fsm_sche = NormalScheduler { sender: s };
+
+        let msg = gen_segcallback(1, 1);
+        let res_send = router.send_msg(mail_addr.into(), msg.0, &fsm_sche);
+
+        assert!(res_send.is_ok());
+        let res_fsm = r.recv();
+        assert!(res_fsm.is_ok());
+
+        let fsm_types = res_fsm.unwrap();
+        match fsm_types {
+            FsmTypes::Empty => {
+                panic!();
+            }
+            FsmTypes::Normal(box_fsm) => {
+                assert!(box_fsm.remain_msgs() == 1);
+            }
+        }
+
+        router.close(mail_addr.into());
+        assert_eq!(0, router.alive_cnt().load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_regist_all() {
+        let router = setup();
+        let m1 = gen_valid_mailkeyadd();
+        let (fsm1, sender1) = Router::create_tag_fsm(m1.clone(), "/tmp").unwrap();
+        let box1 = router.create_mailbox(fsm1, sender1);
+
+        let m2 = gen_valid_mailkeyadd();
+        let (fsm2, sender2) = Router::create_tag_fsm(m2.clone(), "/tmp").unwrap();
+        let box2 = router.create_mailbox(fsm2, sender2);
+
+        let m3 = gen_valid_mailkeyadd();
+        let (fsm3, sender3) = Router::create_tag_fsm(m3.clone(), "/tmp").unwrap();
+        let box3 = router.create_mailbox(fsm3, sender3);
+
+        router.register_all(vec![
+            (m1.into(), box1),
+            (m2.into(), box2),
+            (m3.into(), box3),
+        ]);
+
+        assert_eq!(router.alive_cnt().load(Ordering::Relaxed), 3);
     }
 }

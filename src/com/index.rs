@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Error as AnyError;
-use chrono::{prelude::*, Duration};
+use chrono::prelude::*;
 use chrono::{TimeZone, Utc};
 
 pub type IndexAddr = i64;
@@ -24,20 +24,15 @@ impl ConvertIndexAddr for i64 {
     fn with_index_addr(self) -> Result<MailKeyAddress, AnyError> {
         assert!(self > 0);
         assert!(self < i64::MAX);
-        let now = Utc::now();
         let d = Utc.timestamp_millis(self);
 
-        // We only need biz data 30 days ago
-        if now - Duration::days(30) > d {
-            return Err(AnyError::msg("Data biztime has exceeded 30 days"));
-        }
-
+        let month = d.month();
         let day = d.day();
         let hour = d.hour();
         let minute = d.minute() / 15;
 
-        // Only reserve last 30 days segment data
-        let s = format!("{}{:0>2}{:0>2}", day, hour, minute);
+        let s = format!("{:0>2}{:0>2}{:0>2}{:0>2}", month, day, hour, minute);
+        tracing::trace!("addr: {}", s);
         let val = s.parse::<i64>()?;
 
         Ok(MailKeyAddress {
@@ -54,20 +49,17 @@ impl ConvertIndexAddr for u64 {
     fn with_index_addr(self) -> Result<MailKeyAddress, AnyError> {
         assert!(self > 0);
         assert!(self < i64::MAX as u64);
-        let now = Utc::now();
         let d = Utc.timestamp_millis(self as i64);
 
-        // We only need biz data 30 days ago
-        if now - Duration::days(30) > d {
-            return Err(AnyError::msg("Data biztime has exceeded 30 days"));
-        }
-
+        let month = d.month();
         let day = d.day();
         let hour = d.hour();
         let minute = d.minute() / 15;
 
         // Only reserve last 30 days segment data
-        let s = format!("{}{:0>2}{:0>2}", day, hour, minute);
+        let s = format!("{:0>2}{:0>2}{:0>2}{:0>2}", month, day, hour, minute);
+        tracing::trace!("Add is:{}", s);
+
         let val = s.parse::<i64>()?;
 
         Ok(MailKeyAddress {
@@ -90,10 +82,5 @@ impl MailKeyAddress {
     pub fn get_idx_path(&self, dir: &str) -> PathBuf {
         let dir_path: &Path = dir.as_ref();
         dir_path.join(<String as AsRef<Path>>::as_ref(&self.val.to_string()))
-    }
-
-    //TODO
-    pub fn check_expire(&self) -> bool {
-        true
     }
 }
