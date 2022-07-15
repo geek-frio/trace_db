@@ -3,7 +3,6 @@ use crate::router::Router;
 use crate::sched::FsmScheduler;
 use crate::tag::fsm::{FsmExecutor, TagFsm};
 use crossbeam_channel::Receiver;
-use std::borrow::Cow;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{
@@ -12,113 +11,10 @@ use std::{
     thread::ThreadId,
     time::Instant,
 };
-use tracing::{info, info_span, trace, trace_span, warn};
-
-pub struct Batch<N> {
-    pub normals: Vec<Option<NormalFsm<N>>>,
-}
-
-impl<N: Fsm> Batch<N> {
-    pub fn with_capacity(cap: usize) -> Batch<N> {
-        Batch {
-            normals: Vec::with_capacity(cap),
-        }
-    }
-    fn push(&mut self, fsm: FsmTypes<N>) -> bool {
-        if let FsmTypes::Normal(f) = fsm {
-            self.normals.push(Some(NormalFsm::new(f)));
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.normals.is_empty()
-    }
-
-    fn clear(&mut self) {
-        self.normals.clear();
-    }
-
-    fn release(&mut self, mut fsm: NormalFsm<N>, checked_len: usize) -> Option<NormalFsm<N>> {
-        let mailbox = fsm.as_mut().take_mailbox().unwrap();
-        mailbox.release(fsm.fsm);
-        if mailbox.len() == checked_len {
-            None
-        } else {
-            match mailbox.take_fsm() {
-                None => None,
-                Some(mut s) => {
-                    s.set_mailbox(Cow::Owned(mailbox));
-                    fsm.fsm = s;
-                    Some(fsm)
-                }
-            }
-        }
-    }
-
-    // It will check the sender lenth of this fsm's mailbox
-    // if there are no messsages waiting to be processed, fsm should be reset to mailbox
-    // (It means this fsm is waiting for new schedualed operation)
-    fn remove(&mut self, mut fsm: NormalFsm<N>) -> Option<NormalFsm<N>> {
-        let mailbox = fsm.as_mut().take_mailbox().unwrap();
-        if mailbox.is_empty() {
-            mailbox.release(fsm.fsm);
-            None
-        } else {
-            fsm.as_mut().set_mailbox(Cow::Owned(mailbox));
-            Some(fsm)
-        }
-    }
-
-    pub fn schedule<S: FsmScheduler<F = N>>(
-        &mut self,
-        router: &Router<N, S>,
-        index: usize,
-        inplace: bool,
-    ) {
-        let to_schedule = match self.normals[index].take() {
-            Some(f) => f,
-            None => {
-                if !inplace {
-                    self.normals.swap_remove(index);
-                }
-                return;
-            }
-        };
-        let mut res = match to_schedule.policy {
-            Some(ReschedulePolicy::Release(l)) => self.release(to_schedule, l),
-            // The prerequisite for removing the fsm in the batch is that, the sender in the tag fsm's mailbox is empty
-            // If it is not empty, we need to reschedual the batch
-            Some(ReschedulePolicy::Remove) => self.remove(to_schedule),
-            Some(ReschedulePolicy::Schedule) => {
-                router.normal_scheduler.schedule(to_schedule.fsm);
-                None
-            }
-            None => Some(to_schedule),
-        };
-        if let Some(f) = &mut res {
-            f.policy.take();
-            self.normals[index] = res;
-        } else if !inplace {
-            self.normals.swap_remove(index);
-        }
-    }
-}
-
-// 控制Fsm重新调度状态
-#[derive(Debug)]
-enum ReschedulePolicy {
-    Release(usize),
-    Remove,
-    Schedule,
-}
+use tracing::{info, info_span, trace, trace_span};
 
 pub struct NormalFsm<N> {
     fsm: Box<N>,
-    timer: Instant,
-    policy: Option<ReschedulePolicy>,
 }
 
 impl<N> AsRef<N> for NormalFsm<N> {
@@ -135,11 +31,7 @@ impl<N> AsMut<N> for NormalFsm<N> {
 
 impl<N> NormalFsm<N> {
     fn new(fsm: Box<N>) -> NormalFsm<N> {
-        NormalFsm {
-            fsm,
-            timer: Instant::now(),
-            policy: None,
-        }
+        NormalFsm { fsm }
     }
 }
 
@@ -182,6 +74,7 @@ where
             last_time: None,
             msg_cnt: 0,
         };
+
         let mut poller = Poller::new(
             &self.receiver,
             handler,
@@ -189,6 +82,7 @@ where
             self.router.clone(),
             self.joinable_workers.clone(),
         );
+
         info!(%max_batch_size, %name, "Create poller");
         let t = thread::Builder::new()
             .name(name)
@@ -196,14 +90,15 @@ where
                 poller.poll();
             })
             .unwrap();
+
         self.workers.lock().unwrap().push(t);
-        info!("Poller is started");
     }
 
     pub fn spawn(&mut self, name_prefix: String) {
         let _span = info_span!("spawn", %name_prefix, pool_size = self.pool_size);
         self.name_prefix = name_prefix.clone();
         for i in 0..self.pool_size {
+            info!("Starting Index: {} poller", i);
             self.start_poller(format!("{}-{}", name_prefix, i), self.max_batch_size);
         }
     }
@@ -241,123 +136,74 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
         }
     }
 
-    fn fetch_fsm(&mut self, batch: &mut Batch<N>) -> bool {
-        if let Ok(fsm) = self.fsm_receiver.try_recv() {
-            return batch.push(fsm);
-        }
-        if batch.is_empty() {
-            self.handler.pause();
-            // block wait
-            if let Ok(fsm) = self.fsm_receiver.recv() {
-                return batch.push(fsm);
-            }
-        }
-        !batch.is_empty()
-    }
-
     pub fn poll(&mut self) {
-        let _poll_span = info_span!("poll").entered();
-        let mut batch: Batch<N> = Batch::with_capacity(self.max_batch_size);
-        let mut reschedule_fsms: Vec<usize> = Vec::with_capacity(self.max_batch_size);
-        // 控制是否要在handler进行end之前release对应的fsm
-        // 在调用end之前进行了schedual操作
-        let mut to_skip_end = Vec::with_capacity(self.max_batch_size);
-        let mut run = true;
+        // let mut batch: Batch<N> = Batch::with_capacity(self.max_batch_size);
+        let batch = &mut Vec::with_capacity(self.max_batch_size);
+        // Use flag to avoid waiting for long time to batch is ok
+        let mut flag = true;
 
-        while run && self.fetch_fsm(&mut batch) {
-            let max_batch_size = std::cmp::max(self.max_batch_size, batch.normals.len());
-            trace!(batch_size = batch.normals.len(), "Has fetched a new fsm");
-            self.handler.begin(max_batch_size);
+        'a: loop {
+            info!("loop");
 
-            let mut hot_fsm_count = 0;
-            trace!("Start to enumerate fsm and do handle logic");
-            for (i, p) in batch.normals.iter_mut().enumerate() {
-                let p = p.as_mut().unwrap();
-                let res = self.handler.handle(p);
+            for _ in 0..self.max_batch_size {
+                let fsm = if let Ok(fsm) = self.fsm_receiver.try_recv() {
+                    fsm
+                } else if flag {
+                    flag = false;
 
-                trace!(handle_result = ?res, "Fsm handle logic execute complete");
-                if p.as_ref().is_stopped() {
-                    p.policy = Some(ReschedulePolicy::Remove);
-                    warn!(policy = ?p.policy, "Fsm is stopped!Set fsm policy");
-                    reschedule_fsms.push(i);
+                    let res_fsm = self.fsm_receiver.recv();
+                    match res_fsm {
+                        Ok(fsm) => fsm,
+                        Err(_e) => break 'a,
+                    }
                 } else {
-                    if p.timer.elapsed() >= self.reschedule_duration {
-                        hot_fsm_count += 1;
-                        if hot_fsm_count % 2 == 0 {
-                            info!(policy = ?p.policy, "Fsm execute too long");
-                            p.policy = Some(ReschedulePolicy::Schedule);
-                            // 记录需要重新调度第fsm第下标
-                            reschedule_fsms.push(i);
-                        }
-                    }
-                    if let HandleResult::StopAt { progress, skip_end } = res {
-                        p.policy = Some(ReschedulePolicy::Release(progress));
-                        reschedule_fsms.push(i);
-                        if skip_end {
-                            to_skip_end.push(i);
-                        }
-                    }
-                }
-            }
-
-            let mut fsm_cnt = batch.normals.len();
-            trace!("Start to fill new received fsm into batch");
-            while batch.normals.len() < max_batch_size {
-                if let Ok(fsm) = self.fsm_receiver.try_recv() {
-                    run = batch.push(fsm);
-                }
-                if !run || fsm_cnt == batch.normals.len() {
-                    info!(%run, batch_size = batch.normals.len(), "break fill operation");
+                    flag = true;
                     break;
-                }
-                let p = batch.normals[fsm_cnt].as_mut().unwrap();
-                info!("Get new fsm and start to handle it");
-                let res = self.handler.handle(p);
-                if p.as_ref().is_stopped() {
-                    p.policy = Some(ReschedulePolicy::Remove);
-                    warn!(policy = ?p.policy, "Fsm is stopped!Set fsm policy");
-                    reschedule_fsms.push(fsm_cnt);
-                } else if let HandleResult::StopAt { progress, skip_end } = res {
-                    p.policy = Some(ReschedulePolicy::Release(progress));
-                    reschedule_fsms.push(fsm_cnt);
-                    if skip_end {
-                        to_skip_end.push(fsm_cnt);
+                };
+
+                match fsm {
+                    FsmTypes::Normal(fsm) => {
+                        let mut normal_fsm = NormalFsm::new(fsm);
+                        let res = self.handler.handle(&mut normal_fsm);
+
+                        if normal_fsm.as_ref().is_stopped() && normal_fsm.as_ref().chan_msgs() > 0 {
+                            self.router.normal_scheduler.schedule(normal_fsm.fsm);
+                        } else if let HandleResult::StopAt {
+                            remain_size: progress,
+                        } = res
+                        {
+                            info!(
+                                "remain_size:{}, progres:{}",
+                                progress,
+                                normal_fsm.as_ref().chan_msgs()
+                            );
+                            if normal_fsm.as_ref().chan_msgs() > progress {
+                                self.router.normal_scheduler.schedule(normal_fsm.fsm);
+                            } else {
+                                batch.push(normal_fsm);
+                            }
+                        } else {
+                            batch.push(normal_fsm);
+                        }
+                    }
+                    FsmTypes::Empty => {
+                        if self.fsm_receiver.len() > 0 {
+                            self.router.normal_scheduler.shutdown();
+                        } else {
+                            break 'a;
+                        }
                     }
                 }
-                fsm_cnt += 1;
             }
 
-            self.handler.light_end(&mut batch.normals);
-            trace!(to_skip_end = ?to_skip_end, "Start to do skip end operation");
-            for offset in &to_skip_end {
-                // 这里的操作会将batch中对应的fsm设置为None
-                batch.schedule(&self.router, *offset, true);
-            }
-            to_skip_end.clear();
-            self.handler.end(&mut batch.normals);
-            trace!(reschedule_fsms = ?reschedule_fsms, "Start to do reschedule fsms operation");
-            while let Some(r) = reschedule_fsms.pop() {
-                batch.schedule(&self.router, r, false);
-            }
+            let mut fsm_vec = batch
+                .into_iter()
+                .map(|normal_fsm| &mut normal_fsm.fsm)
+                .collect();
+            self.handler.end(&mut fsm_vec);
 
-            let left_fsm_cnt = batch.normals.len();
-            trace!(
-                batch_size = batch.normals.len(),
-                "One loop finally, start to do left fsm operation"
-            );
-            if left_fsm_cnt > 0 {
-                for i in 0..left_fsm_cnt {
-                    let to_schedule = match batch.normals[i].take() {
-                        Some(f) => f,
-                        None => continue,
-                    };
-                    trace!(idx = i, "normal_scheduler start to reschedule this fsm");
-                    self.router.normal_scheduler.schedule(to_schedule.fsm);
-                }
-            }
             batch.clear();
         }
-        info!("Batch system poll exit");
     }
 }
 
@@ -368,7 +214,7 @@ impl<N: Fsm, H, S> Drop for Poller<N, H, S> {
 #[derive(Debug, PartialEq)]
 pub enum HandleResult {
     KeepProcessing,
-    StopAt { progress: usize, skip_end: bool },
+    StopAt { remain_size: usize },
 }
 
 pub trait PollHandler<N>: Send + 'static
@@ -377,8 +223,7 @@ where
 {
     fn begin(&mut self, batch_size: usize);
     fn handle(&mut self, normal: &mut impl AsMut<N>) -> HandleResult;
-    fn light_end(&mut self, batch: &mut [Option<impl AsMut<N>>]);
-    fn end(&mut self, batch: &mut [Option<impl AsMut<N>>]);
+    fn end(&mut self, batch: &mut Vec<impl AsMut<N>>);
     fn pause(&mut self);
 }
 
@@ -423,15 +268,12 @@ where
             HandleResult::KeepProcessing
         } else {
             HandleResult::StopAt {
-                progress: normal.remain_msgs(),
-                skip_end: false,
+                remain_size: normal.chan_msgs(),
             }
         }
     }
 
-    fn light_end(&mut self, _batch: &mut [Option<impl AsMut<N>>]) {}
-
-    fn end(&mut self, _batch: &mut [Option<impl AsMut<N>>]) {}
+    fn end(&mut self, _batch: &mut Vec<impl AsMut<N>>) {}
 
     // We just sleep to wait for more data to be processed.
     fn pause(&mut self) {}
@@ -443,8 +285,14 @@ mod test_batch_system {
 }
 
 #[cfg(test)]
-mod test_poll_handler {
-    use crate::tag::fsm::FsmExecutor;
+mod tests {
+    use std::{
+        borrow::Cow,
+        panic, process,
+        sync::{atomic::AtomicUsize, Once},
+    };
+
+    use crate::{log::init_console_logger, sched::NormalScheduler, tag::fsm::FsmExecutor};
 
     use super::*;
 
@@ -460,16 +308,18 @@ mod test_poll_handler {
         }
     }
 
+    #[derive(Clone)]
     struct MockFsm {
         tick: bool,
         is_commit: bool,
+        called_num: Arc<std::sync::atomic::AtomicI32>,
     }
 
     impl Fsm for MockFsm {
         type Message = MockMsg;
 
         fn is_stopped(&self) -> bool {
-            todo!()
+            false
         }
 
         fn set_mailbox(&mut self, _mailbox: Cow<'_, crate::com::mail::BasicMailbox<Self>>)
@@ -496,6 +346,10 @@ mod test_poll_handler {
         fn is_tick(&self) -> bool {
             self.tick
         }
+
+        fn chan_msgs(&self) -> usize {
+            10
+        }
     }
 
     impl FsmExecutor for MockFsm {
@@ -514,6 +368,9 @@ mod test_poll_handler {
         }
 
         fn commit(&mut self, _: &mut Vec<Self::Msg>) {
+            info!("Plus 1");
+            self.called_num
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.is_commit = true;
         }
 
@@ -522,7 +379,9 @@ mod test_poll_handler {
         }
     }
 
-    fn init() -> (TagPollHandler<MockFsm>, NormalFsm<MockFsm>) {
+    fn init(
+        counter: Arc<std::sync::atomic::AtomicI32>,
+    ) -> (TagPollHandler<MockFsm>, NormalFsm<MockFsm>) {
         let poll_handler = TagPollHandler::<MockFsm> {
             msg_buf: Vec::new(),
             counter: 0,
@@ -532,20 +391,24 @@ mod test_poll_handler {
         let mock_fsm = MockFsm {
             tick: false,
             is_commit: false,
+            called_num: counter,
         };
         let normal_fsm = NormalFsm::new(Box::new(mock_fsm));
         (poll_handler, normal_fsm)
     }
+
     #[test]
     fn test_handle_keep_processing() {
-        let (mut poll_handler, mut normal_fsm) = init();
+        let (mut poll_handler, mut normal_fsm) =
+            init(Arc::new(std::sync::atomic::AtomicI32::new(0)));
         let handle_res = poll_handler.handle(&mut normal_fsm);
         assert!(handle_res == HandleResult::KeepProcessing);
     }
 
     #[test]
     fn test_tick() {
-        let (mut poll_handler, mut normal_fsm) = init();
+        let (mut poll_handler, mut normal_fsm) =
+            init(Arc::new(std::sync::atomic::AtomicI32::new(0)));
         poll_handler.msg_buf.push(MockMsg { val: 0 });
         normal_fsm.as_mut().tag_tick();
         let _ = poll_handler.handle(&mut normal_fsm);
@@ -553,5 +416,144 @@ mod test_poll_handler {
         assert!(!normal_fsm.as_ref().is_tick());
         assert!(poll_handler.msg_cnt == 0);
         assert!(normal_fsm.as_mut().is_commit);
+    }
+
+    macro_rules! poll_handler_create {
+        ($end_fsm_size:expr, $remain_size:expr) => {
+            fn init_poller(
+                recevier: &Receiver<FsmTypes<MockFsm>>,
+                sender: crossbeam_channel::Sender<FsmTypes<MockFsm>>,
+                batch_size: usize,
+            ) -> Poller<MockFsm, MockPollHandler, NormalScheduler<MockFsm>> {
+                let mockpoll_handler = MockPollHandler { stop_times: 1 };
+
+                let normal_sched = NormalScheduler { sender };
+                let static_cnt = Arc::new(AtomicUsize::new(0));
+                let router = Router::new(normal_sched, static_cnt, Default::default());
+
+                Poller::new(
+                    recevier,
+                    mockpoll_handler,
+                    batch_size,
+                    router,
+                    Arc::new(Mutex::new(vec![])),
+                )
+            }
+
+            static CALL_ONCE: Once = Once::new();
+            struct MockPollHandler {
+                stop_times: usize,
+            }
+
+            impl PollHandler<MockFsm> for MockPollHandler {
+                fn begin(&mut self, _batch_size: usize) {}
+
+                fn handle(&mut self, normal: &mut impl AsMut<MockFsm>) -> HandleResult {
+                    info!("Plus 1");
+                    normal
+                        .as_mut()
+                        .called_num
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                    let l = normal.as_mut().chan_msgs();
+                    if $remain_size == 0 || self.stop_times == 0 {
+                        HandleResult::StopAt { remain_size: l }
+                    } else {
+                        self.stop_times = 0;
+                        HandleResult::StopAt {
+                            remain_size: $remain_size,
+                        }
+                    }
+                }
+
+                fn end(&mut self, batch: &mut Vec<impl AsMut<MockFsm>>) {
+                    CALL_ONCE.call_once(|| {
+                        assert_eq!($end_fsm_size, batch.len());
+                    });
+                }
+
+                fn pause(&mut self) {}
+            }
+        };
+    }
+
+    fn setup() {
+        init_console_logger();
+
+        let orig_hook = panic::take_hook();
+        panic::set_hook(Box::new(move |panic_info| {
+            // invoke the default handler and exit the process
+            orig_hook(panic_info);
+            process::exit(1);
+        }));
+    }
+
+    #[test]
+    fn test_poller_basics() {
+        setup();
+
+        //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        let (fsm_sender, fsm_receiver) = crossbeam_channel::unbounded();
+
+        let sender = fsm_sender.clone();
+        let (event_sender, event_receiver) = std::sync::mpsc::channel();
+
+        poll_handler_create!(5, 0);
+
+        let join = std::thread::spawn(move || {
+            let mut poller = init_poller(&fsm_receiver, sender, 5);
+            let _ = event_receiver.recv();
+            poller.poll();
+        });
+
+        let counter = Arc::new(std::sync::atomic::AtomicI32::new(0));
+
+        let m = MockFsm {
+            tick: true,
+            is_commit: true,
+            called_num: counter,
+        };
+
+        for _ in 0..5 {
+            let f = FsmTypes::Normal(Box::new(m.clone()));
+            let _ = fsm_sender.send(f);
+        }
+
+        let _ = fsm_sender.send(FsmTypes::Empty);
+        let _ = event_sender.send(());
+        let _ = join.join();
+    }
+
+    #[test]
+    fn test_remain_msgs_logic() {
+        setup();
+
+        let counter = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (fsm_sender, fsm_receiver) = crossbeam_channel::unbounded();
+
+        let sender = fsm_sender.clone();
+        let (event_sender, event_receiver) = std::sync::mpsc::channel();
+
+        poll_handler_create!(5, 1);
+
+        let join = std::thread::spawn(move || {
+            let mut poller = init_poller(&fsm_receiver, sender, 5);
+            let _ = event_receiver.recv();
+            poller.poll();
+        });
+
+        let b = Box::new(MockFsm {
+            tick: true,
+            is_commit: true,
+            called_num: counter.clone(),
+        });
+
+        let f = FsmTypes::Normal(b);
+        let _ = fsm_sender.send(f);
+        let _ = fsm_sender.send(FsmTypes::Empty);
+        let _ = event_sender.send(());
+        let _ = join.join();
+
+        assert_eq!(2, counter.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

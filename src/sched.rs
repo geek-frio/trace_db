@@ -31,8 +31,6 @@ where
     }
 
     fn shutdown(&self) {
-        for _ in 0..256 {
-            let _ = self.sender.send(FsmTypes::Empty);
-        }
+        let _ = self.sender.send(FsmTypes::Empty);
     }
 }
