@@ -286,11 +286,6 @@ mod tests {
         let mut cnt = 0;
         tag_fsm.handle_tasks(&mut batch, &mut cnt);
 
-        let engine = tag_fsm.get_mut_engine();
-        let _ = engine.get_mut_index_writer();
-
-        tag_fsm.commit(&mut batch);
-
         for r in callbacks.into_iter() {
             let res = r.blocking_recv();
             assert!(res.is_ok());
@@ -307,5 +302,38 @@ mod tests {
         }
 
         scen.teardown();
+    }
+
+    #[test]
+    fn test_commit_ok() {
+        let (mut tag_fsm, sender) = setup(10);
+        let mut callbacks = Vec::new();
+
+        for _ in 0..10 {
+            let (seg, callback_rev) = gen_segcallback(1, 10);
+            let _ = sender.send(seg);
+
+            callbacks.push(callback_rev);
+        }
+
+        let mut batch = Vec::new();
+        let mut counter = 0;
+
+        tag_fsm.try_fill_batch(&mut batch, &mut counter);
+
+        let mut cnt = 0;
+        tag_fsm.handle_tasks(&mut batch, &mut cnt);
+
+        tag_fsm.commit(&mut batch);
+
+        for r in callbacks.into_iter() {
+            let res = r.blocking_recv();
+            assert!(res.is_ok());
+
+            match res.unwrap() {
+                CallbackStat::Ok(_) => {}
+                _ => panic!(),
+            }
+        }
     }
 }
