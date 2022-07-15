@@ -1,5 +1,4 @@
 use crate::com::index::MailKeyAddress;
-use fail::fail_point;
 use lazy_static::__Deref;
 use skproto::tracing::SegmentData;
 use tantivy::directory::MmapDirectory;
