@@ -146,15 +146,15 @@ impl TracingTagEngine {
     }
 
     pub fn flush(&mut self) -> Result<u64, TagEngineError> {
-        fail_point!("read-dir");
-        tracing::info!("flush is called!");
         let res = self.index_writer.commit();
+
+        // only for unittest
         fail::fail_point!("flush-err", |_| {
-            tracing::info!("dfasfdasfasfdsfsafdasfasfdasfdsfsaf");
             Err(TagEngineError::RecordsCommitError(
                 "failed to flush".to_string(),
             ))
         });
+
         match res {
             Ok(commit_idx) => return Ok(commit_idx),
             Err(e) => return Err(TagEngineError::RecordsCommitError(e.to_string())),
