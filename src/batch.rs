@@ -143,6 +143,8 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
         let mut flag = true;
 
         'a: loop {
+            info!("loop");
+
             for _ in 0..self.max_batch_size {
                 let fsm = if let Ok(fsm) = self.fsm_receiver.try_recv() {
                     fsm
@@ -170,15 +172,26 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                             remain_size: progress,
                         } = res
                         {
+                            info!(
+                                "remain_size:{}, progres:{}",
+                                progress,
+                                normal_fsm.as_ref().chan_msgs()
+                            );
                             if normal_fsm.as_ref().chan_msgs() > progress {
                                 self.router.normal_scheduler.schedule(normal_fsm.fsm);
+                            } else {
+                                batch.push(normal_fsm);
                             }
                         } else {
                             batch.push(normal_fsm);
                         }
                     }
                     FsmTypes::Empty => {
-                        break;
+                        if self.fsm_receiver.len() > 0 {
+                            self.router.normal_scheduler.shutdown();
+                        } else {
+                            break 'a;
+                        }
                     }
                 }
             }
@@ -187,8 +200,8 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 .into_iter()
                 .map(|normal_fsm| &mut normal_fsm.fsm)
                 .collect();
-            // All the fsms need to be
             self.handler.end(&mut fsm_vec);
+
             batch.clear();
         }
     }
@@ -272,10 +285,14 @@ mod test_batch_system {
 }
 
 #[cfg(test)]
-mod test_poll_handler {
-    use std::borrow::Cow;
+mod tests {
+    use std::{
+        borrow::Cow,
+        panic, process,
+        sync::{atomic::AtomicUsize, Once},
+    };
 
-    use crate::tag::fsm::FsmExecutor;
+    use crate::{log::init_console_logger, sched::NormalScheduler, tag::fsm::FsmExecutor};
 
     use super::*;
 
@@ -291,16 +308,18 @@ mod test_poll_handler {
         }
     }
 
+    #[derive(Clone)]
     struct MockFsm {
         tick: bool,
         is_commit: bool,
+        called_num: Arc<std::sync::atomic::AtomicI32>,
     }
 
     impl Fsm for MockFsm {
         type Message = MockMsg;
 
         fn is_stopped(&self) -> bool {
-            todo!()
+            false
         }
 
         fn set_mailbox(&mut self, _mailbox: Cow<'_, crate::com::mail::BasicMailbox<Self>>)
@@ -329,7 +348,7 @@ mod test_poll_handler {
         }
 
         fn chan_msgs(&self) -> usize {
-            todo!()
+            10
         }
     }
 
@@ -349,6 +368,9 @@ mod test_poll_handler {
         }
 
         fn commit(&mut self, _: &mut Vec<Self::Msg>) {
+            info!("Plus 1");
+            self.called_num
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.is_commit = true;
         }
 
@@ -357,7 +379,9 @@ mod test_poll_handler {
         }
     }
 
-    fn init() -> (TagPollHandler<MockFsm>, NormalFsm<MockFsm>) {
+    fn init(
+        counter: Arc<std::sync::atomic::AtomicI32>,
+    ) -> (TagPollHandler<MockFsm>, NormalFsm<MockFsm>) {
         let poll_handler = TagPollHandler::<MockFsm> {
             msg_buf: Vec::new(),
             counter: 0,
@@ -367,20 +391,24 @@ mod test_poll_handler {
         let mock_fsm = MockFsm {
             tick: false,
             is_commit: false,
+            called_num: counter,
         };
         let normal_fsm = NormalFsm::new(Box::new(mock_fsm));
         (poll_handler, normal_fsm)
     }
+
     #[test]
     fn test_handle_keep_processing() {
-        let (mut poll_handler, mut normal_fsm) = init();
+        let (mut poll_handler, mut normal_fsm) =
+            init(Arc::new(std::sync::atomic::AtomicI32::new(0)));
         let handle_res = poll_handler.handle(&mut normal_fsm);
         assert!(handle_res == HandleResult::KeepProcessing);
     }
 
     #[test]
     fn test_tick() {
-        let (mut poll_handler, mut normal_fsm) = init();
+        let (mut poll_handler, mut normal_fsm) =
+            init(Arc::new(std::sync::atomic::AtomicI32::new(0)));
         poll_handler.msg_buf.push(MockMsg { val: 0 });
         normal_fsm.as_mut().tag_tick();
         let _ = poll_handler.handle(&mut normal_fsm);
@@ -388,5 +416,144 @@ mod test_poll_handler {
         assert!(!normal_fsm.as_ref().is_tick());
         assert!(poll_handler.msg_cnt == 0);
         assert!(normal_fsm.as_mut().is_commit);
+    }
+
+    macro_rules! poll_handler_create {
+        ($end_fsm_size:expr, $remain_size:expr) => {
+            fn init_poller(
+                recevier: &Receiver<FsmTypes<MockFsm>>,
+                sender: crossbeam_channel::Sender<FsmTypes<MockFsm>>,
+                batch_size: usize,
+            ) -> Poller<MockFsm, MockPollHandler, NormalScheduler<MockFsm>> {
+                let mockpoll_handler = MockPollHandler { stop_times: 1 };
+
+                let normal_sched = NormalScheduler { sender };
+                let static_cnt = Arc::new(AtomicUsize::new(0));
+                let router = Router::new(normal_sched, static_cnt, Default::default());
+
+                Poller::new(
+                    recevier,
+                    mockpoll_handler,
+                    batch_size,
+                    router,
+                    Arc::new(Mutex::new(vec![])),
+                )
+            }
+
+            static CALL_ONCE: Once = Once::new();
+            struct MockPollHandler {
+                stop_times: usize,
+            }
+
+            impl PollHandler<MockFsm> for MockPollHandler {
+                fn begin(&mut self, _batch_size: usize) {}
+
+                fn handle(&mut self, normal: &mut impl AsMut<MockFsm>) -> HandleResult {
+                    info!("Plus 1");
+                    normal
+                        .as_mut()
+                        .called_num
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                    let l = normal.as_mut().chan_msgs();
+                    if $remain_size == 0 || self.stop_times == 0 {
+                        HandleResult::StopAt { remain_size: l }
+                    } else {
+                        self.stop_times = 0;
+                        HandleResult::StopAt {
+                            remain_size: $remain_size,
+                        }
+                    }
+                }
+
+                fn end(&mut self, batch: &mut Vec<impl AsMut<MockFsm>>) {
+                    CALL_ONCE.call_once(|| {
+                        assert_eq!($end_fsm_size, batch.len());
+                    });
+                }
+
+                fn pause(&mut self) {}
+            }
+        };
+    }
+
+    fn setup() {
+        init_console_logger();
+
+        let orig_hook = panic::take_hook();
+        panic::set_hook(Box::new(move |panic_info| {
+            // invoke the default handler and exit the process
+            orig_hook(panic_info);
+            process::exit(1);
+        }));
+    }
+
+    #[test]
+    fn test_poller_basics() {
+        setup();
+
+        //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        let (fsm_sender, fsm_receiver) = crossbeam_channel::unbounded();
+
+        let sender = fsm_sender.clone();
+        let (event_sender, event_receiver) = std::sync::mpsc::channel();
+
+        poll_handler_create!(5, 0);
+
+        let join = std::thread::spawn(move || {
+            let mut poller = init_poller(&fsm_receiver, sender, 5);
+            let _ = event_receiver.recv();
+            poller.poll();
+        });
+
+        let counter = Arc::new(std::sync::atomic::AtomicI32::new(0));
+
+        let m = MockFsm {
+            tick: true,
+            is_commit: true,
+            called_num: counter,
+        };
+
+        for _ in 0..5 {
+            let f = FsmTypes::Normal(Box::new(m.clone()));
+            let _ = fsm_sender.send(f);
+        }
+
+        let _ = fsm_sender.send(FsmTypes::Empty);
+        let _ = event_sender.send(());
+        let _ = join.join();
+    }
+
+    #[test]
+    fn test_remain_msgs_logic() {
+        setup();
+
+        let counter = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (fsm_sender, fsm_receiver) = crossbeam_channel::unbounded();
+
+        let sender = fsm_sender.clone();
+        let (event_sender, event_receiver) = std::sync::mpsc::channel();
+
+        poll_handler_create!(5, 1);
+
+        let join = std::thread::spawn(move || {
+            let mut poller = init_poller(&fsm_receiver, sender, 5);
+            let _ = event_receiver.recv();
+            poller.poll();
+        });
+
+        let b = Box::new(MockFsm {
+            tick: true,
+            is_commit: true,
+            called_num: counter.clone(),
+        });
+
+        let f = FsmTypes::Normal(b);
+        let _ = fsm_sender.send(f);
+        let _ = fsm_sender.send(FsmTypes::Empty);
+        let _ = event_sender.send(());
+        let _ = join.join();
+
+        assert_eq!(2, counter.load(std::sync::atomic::Ordering::Relaxed));
     }
 }
