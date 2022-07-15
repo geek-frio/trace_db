@@ -56,7 +56,28 @@ impl Router<TagFsm, NormalScheduler<TagFsm>> {
     {
         let engine = TracingTagEngine::new(addr, dir)?;
         let (s, r) = crossbeam_channel::unbounded();
-        Ok((TagFsm::new(r, None, engine), s))
+        Ok((TagFsm::new(r, None, engine, 5000), s))
+    }
+
+    pub fn create_tag_fsm_with_size(
+        addr: MailKeyAddress,
+        dir: &str,
+        batch_size: usize,
+    ) -> Result<(TagFsm, crossbeam::channel::Sender<<TagFsm as Fsm>::Message>), TagEngineError>
+    {
+        let engine = TracingTagEngine::new(addr, dir)?;
+        let (s, r) = crossbeam_channel::unbounded();
+        Ok((TagFsm::new(r, None, engine, batch_size), s))
+    }
+
+    #[cfg(test)]
+    pub fn create_test_tag_fsm_with_size(
+        batch_size: usize,
+    ) -> Result<(TagFsm, crossbeam::channel::Sender<<TagFsm as Fsm>::Message>), TagEngineError>
+    {
+        let engine = TracingTagEngine::new_for_test()?;
+        let (s, r) = crossbeam_channel::unbounded();
+        Ok((TagFsm::new(r, None, engine, batch_size), s))
     }
 }
 

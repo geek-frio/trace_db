@@ -1344,6 +1344,7 @@ dependencies = [
  "crossbeam",
  "crossbeam-channel",
  "ctrlc",
+ "fail",
  "futures 0.3.21",
  "futures-sink",
  "futures-util",
