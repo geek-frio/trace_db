@@ -1,3 +1,4 @@
+use super::schema::{API_ID, BIZTIME, PAYLOAD, SEGID, SERVICE, TRACE_ID, TRACING_SCHEMA, ZONE};
 use crate::com::index::MailKeyAddress;
 use lazy_static::__Deref;
 use skproto::tracing::SegmentData;
@@ -5,8 +6,6 @@ use tantivy::directory::MmapDirectory;
 use tantivy::schema::*;
 use tantivy::{Document, Index, IndexReader, IndexWriter};
 use tracing::error;
-
-use super::schema::{API_ID, BIZTIME, PAYLOAD, SEGID, SERVICE, TRACE_ID, TRACING_SCHEMA, ZONE};
 
 pub struct TracingTagEngine {
     index_writer: IndexWriter,
@@ -170,11 +169,21 @@ impl TracingTagEngine {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
-    // use crate::com::gen::{_gen_data_binary, _gen_tag};
-    // use crate::com::index::*;
-    // use std::sync::Once;
-    // use tantivy::{chrono::Local, collector::TopDocs, query::QueryParser};
+    use super::TracingTagEngine;
+    use super::*;
+    use crate::{
+        com::gen::{_gen_data_binary, _gen_tag},
+        log::init_console_logger,
+        tag::schema::TRACING_SCHEMA,
+    };
+    use chrono::Local;
+    use skproto::tracing::SegmentData;
+    use std::sync::Once;
+    use tantivy::{collector::TopDocs, query::QueryParser};
+
+    fn setup() {
+        init_console_logger();
+    }
 
     #[test]
     fn create_multiple_dir_test() {
@@ -190,73 +199,61 @@ mod tests {
 
     #[test]
     fn test_normal_write() {
-        // let mut engine = TracingTagEngine::new(
-        //     123i64.with_index_addr().unwrap(),
-        //     Box::new("/tmp/tantivy_records".to_string()),
-        //     init_tracing_schema(),
-        // );
+        setup();
 
-        // println!("{:?}", engine.init());
+        let mut engine = TracingTagEngine::new_for_test().unwrap();
 
-        // // let (reader, index) = engine.reader().unwrap();
-        // // let query_parser = QueryParser::for_index(index, vec![engine.get_field(TagField::ApiId)]);
-        // // let searcher = reader.searcher();
+        let init: Once = Once::new();
+        let mut captured_val = String::new();
+        let mut checked_trace_id = String::new();
 
-        // let init: Once = Once::new();
-        // let mut captured_val = String::new();
-        // for i in 0..10 {
-        //     for j in 0..100 {
-        //         let now = Local::now();
-        //         let mut record = SegmentData::new();
-        //         let uuid = uuid::Uuid::new_v4();
-        //         record.set_api_id(j);
-        //         record.set_biz_timestamp(now.timestamp_nanos() as u64);
-        //         record.set_zone(_gen_tag(3, 3, 'a'));
-        //         record.set_seg_id(uuid.to_string());
-        //         record.set_trace_id(uuid.to_string());
-        //         init.call_once(|| {
-        //             captured_val.push_str(&uuid.to_string());
-        //             println!("i:{}; j:{}; uuid:{}", i, j, uuid.to_string());
-        //         });
-        //         record.set_ser_key(_gen_tag(20, 3, 'e'));
-        //         record.set_payload(_gen_data_binary());
-        //         engine.add_record(&record);
-        //     }
-        //     let e = &mut engine;
-        //     println!("flushed result is:{:?}", e.flush());
-        // }
+        for i in 0..10 {
+            for j in 0..100 {
+                let now = Local::now();
+                let mut record = SegmentData::new();
+                let uuid = uuid::Uuid::new_v4();
+                record.set_api_id(j);
+                record.set_biz_timestamp(now.timestamp_nanos() as u64);
+                record.set_zone(_gen_tag(3, 3, 'a'));
+                record.set_seg_id(uuid.to_string());
+                record.set_trace_id(uuid.to_string());
+                init.call_once(|| {
+                    captured_val.push_str(&uuid.to_string());
+                    println!("i:{}; j:{}; uuid:{}", i, j, uuid.to_string());
 
-        // let (reader, index) = engine.reader().unwrap();
-        // let query_parser =
-        //     QueryParser::for_index(index, vec![engine.schema.get_field(TRACE_ID).unwrap()]);
-        // let searcher = reader.searcher();
-        // let query = query_parser.parse_query(&captured_val).unwrap();
-        // let search_res = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
-        // println!("Search result is:{:?}", search_res);
-        // println!("captured value:{}", captured_val);
-    }
+                    checked_trace_id = uuid.to_string();
+                });
+                record.set_ser_key(_gen_tag(20, 3, 'e'));
+                record.set_payload(_gen_data_binary());
+                engine.add_record(&record);
+            }
+        }
 
-    #[test]
-    fn test_read_traceid() {
-        // let mut engine = TracingTagEngine::new(
-        //     (150202 as i64).with_index_addr().unwrap(),
-        //     Box::new("/tmp".to_string()),
-        //     init_tracing_schema(),
-        // );
-        // println!("Init result is:{:?}", engine.init());
-        // let (reader, index) = engine.reader().unwrap();
-        // let query_parser =
-        //     QueryParser::for_index(index, vec![engine.schema.get_field(TRACE_ID).unwrap()]);
-        // let searcher = reader.searcher();
-        // let query = query_parser
-        //     .parse_query("d9d3c657-41c9-494a-8269-8422f2d107e5")
-        //     .unwrap();
-        // let search_res = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
-        // println!("search res is:{:?}", search_res);
+        let _ = engine.flush();
 
-        // for (_score, doc_address) in search_res {
-        //     let retrieved_doc = searcher.doc(doc_address).unwrap();
-        //     println!("search result is: {:?}", retrieved_doc);
-        // }
+        let (reader, index) = engine.reader().unwrap();
+        let query_parser =
+            QueryParser::for_index(index, vec![TRACING_SCHEMA.get_field(TRACE_ID).unwrap()]);
+
+        let searcher = reader.searcher();
+        let query = query_parser.parse_query(&captured_val).unwrap();
+        let mut search_res = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
+
+        assert_eq!(1, search_res.len());
+        let (_score, addr) = search_res.pop().unwrap();
+
+        let document = searcher.doc(addr).unwrap();
+        let val = document
+            .get_first(TRACING_SCHEMA.get_field(TRACE_ID).unwrap())
+            .unwrap();
+
+        match val {
+            Value::Str(s) => {
+                assert_eq!(s, &checked_trace_id);
+            }
+            _ => {
+                unreachable!();
+            }
+        }
     }
 }
