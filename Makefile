@@ -19,3 +19,6 @@ endif
 local-server-run: test-start-local-redis
 	cd cmd/skdb-server/; \
 		cargo run -- --config ../../skdb_config.yaml 
+
+test: 
+	cargo test $(name) --features fail/failpoints -- --nocapture

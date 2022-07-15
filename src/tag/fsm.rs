@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use crate::com::{
     ack::{AckCallback, CallbackStat},
     mail::BasicMailbox,
@@ -7,6 +5,7 @@ use crate::com::{
 use crate::fsm::Fsm;
 use crossbeam_channel::Receiver;
 use skproto::tracing::SegmentData;
+use std::borrow::Cow;
 use tracing::{error, trace, Span};
 
 use super::engine::TracingTagEngine;
@@ -35,6 +34,7 @@ pub struct TagFsm {
     mailbox: Option<BasicMailbox<TagFsm>>,
     engine: TracingTagEngine,
     tick: bool,
+    batch_size: usize,
 }
 
 impl TagFsm {
@@ -42,13 +42,23 @@ impl TagFsm {
         receiver: Receiver<SegmentDataCallback>,
         mailbox: Option<BasicMailbox<TagFsm>>,
         engine: TracingTagEngine,
+        batch_size: usize,
     ) -> TagFsm {
         TagFsm {
             receiver,
             mailbox,
             engine,
             tick: false,
+            batch_size,
         }
+    }
+
+    pub fn get_engine(&self) -> &TracingTagEngine {
+        &self.engine
+    }
+
+    pub fn get_mut_engine(&mut self) -> &mut TracingTagEngine {
+        &mut self.engine
     }
 }
 
@@ -69,14 +79,16 @@ impl FsmExecutor for TagFsm {
 
     fn try_fill_batch(&mut self, msg_buf: &mut Vec<Self::Msg>, counter: &mut usize) -> bool {
         let mut keep_process = false;
-        const TAG_POLLER_BATCH_SIZE: usize = 5000;
+
         loop {
             match self.receiver.try_recv() {
                 Ok(msg) => {
                     *counter += 1;
+
                     trace!("Received a new msg");
                     msg_buf.push(msg);
-                    if msg_buf.len() >= TAG_POLLER_BATCH_SIZE {
+
+                    if msg_buf.len() >= self.batch_size {
                         trace!("Batch max has overceeded");
                         keep_process = self.receiver.len() > 0;
                         break;
@@ -186,5 +198,114 @@ impl Fsm for TagFsm {
 
     fn chan_msgs(&self) -> usize {
         self.receiver.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SegmentDataCallback;
+    use super::*;
+    use crate::{
+        com::test_util::gen_segcallback, log::init_console_logger, router::Router,
+        tag::engine::TagEngineError,
+    };
+    use crossbeam_channel::Sender;
+
+    fn setup(batch_size: usize) -> (TagFsm, Sender<SegmentDataCallback>) {
+        init_console_logger();
+
+        Router::create_test_tag_fsm_with_size(batch_size).unwrap()
+    }
+
+    #[test]
+    fn test_fsm_exec_fill_batch() {
+        let mut batch = Vec::new();
+        let mut counter = 0;
+
+        let (mut tag_fsm, sender) = setup(2);
+
+        for _ in 0..3 {
+            let seg = gen_segcallback(1, 10);
+            let _ = sender.send(seg.0);
+        }
+
+        let keep_processing = tag_fsm.try_fill_batch(&mut batch, &mut counter);
+        assert!(keep_processing);
+    }
+
+    #[test]
+    fn test_tag_fsm_handle_tasks() {
+        let mut batch = Vec::new();
+        let mut counter = 0;
+
+        let (mut tag_fsm, sender) = setup(10);
+
+        for _ in 0..10 {
+            let seg = gen_segcallback(1, 10);
+            let _ = sender.send(seg.0);
+        }
+
+        tag_fsm.try_fill_batch(&mut batch, &mut counter);
+
+        let mut cnt = 5;
+        tag_fsm.handle_tasks(&mut batch, &mut cnt);
+
+        let engine = tag_fsm.get_mut_engine();
+        let writer = engine.get_mut_index_writer();
+
+        let res = writer.commit();
+        assert!(res.is_ok());
+
+        let res = writer.delete_all_documents();
+        assert!(res.is_ok());
+    }
+
+    // #[cfg(feature = "fail_test")]
+    #[test]
+    fn test_commit_error() {
+        use fail::FailScenario;
+
+        let scen = FailScenario::setup();
+        fail::cfg("flush-err", "return").unwrap();
+
+        let (mut tag_fsm, sender) = setup(10);
+        let mut callbacks = Vec::new();
+
+        for _ in 0..10 {
+            let (seg, callback_rev) = gen_segcallback(1, 10);
+            let _ = sender.send(seg);
+
+            callbacks.push(callback_rev);
+        }
+
+        let mut batch = Vec::new();
+        let mut counter = 0;
+
+        tag_fsm.try_fill_batch(&mut batch, &mut counter);
+
+        let mut cnt = 0;
+        tag_fsm.handle_tasks(&mut batch, &mut cnt);
+
+        let engine = tag_fsm.get_mut_engine();
+        let _ = engine.get_mut_index_writer();
+
+        tag_fsm.commit(&mut batch);
+
+        for r in callbacks.into_iter() {
+            let res = r.blocking_recv();
+            assert!(res.is_ok());
+
+            match res.unwrap() {
+                CallbackStat::IOErr(tag_e, _) => {
+                    if let TagEngineError::RecordsCommitError(_) = tag_e {
+                    } else {
+                        panic!();
+                    }
+                }
+                _ => panic!(),
+            }
+        }
+
+        scen.teardown();
     }
 }

@@ -1,4 +1,5 @@
 use crate::com::index::MailKeyAddress;
+use fail::fail_point;
 use lazy_static::__Deref;
 use skproto::tracing::SegmentData;
 use tantivy::directory::MmapDirectory;
@@ -11,6 +12,15 @@ use super::schema::{API_ID, BIZTIME, PAYLOAD, SEGID, SERVICE, TRACE_ID, TRACING_
 pub struct TracingTagEngine {
     index_writer: IndexWriter,
     index: Index,
+}
+
+impl TracingTagEngine {
+    pub fn get_index_writer(&self) -> &IndexWriter {
+        &self.index_writer
+    }
+    pub fn get_mut_index_writer(&mut self) -> &mut IndexWriter {
+        &mut self.index_writer
+    }
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
@@ -52,6 +62,37 @@ impl TracingTagEngine {
                 Err(TagEngineError::IndexDirCreateFailed)
             }
         }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test() -> Result<TracingTagEngine, TagEngineError> {
+        let res_index = Self::index_ram_dir_create();
+
+        match res_index {
+            Ok(index) => {
+                let res_writer = index.writer(100_100_000);
+                match res_writer {
+                    Ok(writer) => Ok(TracingTagEngine {
+                        index_writer: writer,
+                        index,
+                    }),
+                    Err(e) => {
+                        error!("Index writer create failed!e:{:?}", e);
+                        Err(TagEngineError::IndexDirCreateFailed)
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Create index directory failed!e:{:?}", e);
+                Err(TagEngineError::IndexDirCreateFailed)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn index_ram_dir_create() -> Result<Index, anyhow::Error> {
+        let schema = (&TRACING_SCHEMA).deref().clone();
+        Ok(Index::create_in_ram(schema.clone()))
     }
 
     fn index_dir_create(addr: MailKeyAddress, data_dir: &str) -> Result<Index, anyhow::Error> {
@@ -105,7 +146,15 @@ impl TracingTagEngine {
     }
 
     pub fn flush(&mut self) -> Result<u64, TagEngineError> {
+        fail_point!("read-dir");
+        tracing::info!("flush is called!");
         let res = self.index_writer.commit();
+        fail::fail_point!("flush-err", |_| {
+            tracing::info!("dfasfdasfasfdsfsafdasfasfdasfdsfsaf");
+            Err(TagEngineError::RecordsCommitError(
+                "failed to flush".to_string(),
+            ))
+        });
         match res {
             Ok(commit_idx) => return Ok(commit_idx),
             Err(e) => return Err(TagEngineError::RecordsCommitError(e.to_string())),
