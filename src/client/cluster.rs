@@ -136,6 +136,7 @@ pub fn make_service() -> (
 ) {
     let (send, recv) = tokio::sync::mpsc::channel(1024);
     let (broken_notify, broken_recv) = tokio::sync::mpsc::channel::<i32>(1024);
+
     let passive = ClusterPassive::new(recv, broken_notify);
     let s = make_service_with(passive);
     (s, send, broken_recv)
@@ -209,7 +210,7 @@ impl Watch for ClusterActiveWatcher {
         &self,
         mut obj: Observer,
         mut chg_notify: Receiver<i32>,
-        config: Arc<GlobalConfig>,
+        _config: Arc<GlobalConfig>,
         shutdown_signal: ShutdownSignal,
     ) -> Result<(), anyhow::Error> {
         let r = self.watcher_started.compare_exchange(
@@ -226,17 +227,22 @@ impl Watch for ClusterActiveWatcher {
         let mut old_addrs = HashMap::<String, i32>::new();
         let mut b_recv = shutdown_signal.recv;
         let drop_notify = shutdown_signal.drop_notify;
+
         loop {
             select! {
                 _ = sleep(Duration::from_secs(5)) => {
-                    let current_addrs = Self::query_redis_cur_addrs(redis_client.clone(), &config);
+                    let current_addrs = Self::query_redis_cur_addrs(redis_client.clone());
                     match current_addrs {
                         Ok(current_addrs) => {
                             let (del_addrs, add_addrs) = self.compare_diff_addrs(&old_addrs, &current_addrs);
+
                             let del_events = Self::gen_del_events(&del_addrs, &old_addrs);
                             let add_events = Self::gen_add_events(&add_addrs);
+
                             Self::update_addrs(&mut old_addrs, add_addrs, del_addrs);
+
                             let events = del_events.into_iter().chain(add_events.into_iter());
+
                             events.for_each(|e| {
                                 obj.notify_all(e);
                             });
@@ -274,17 +280,16 @@ impl ClusterActiveWatcher {
             .collect::<Vec<(SkyTracingClient, i32)>>()
     }
 
-    fn query_redis_cur_addrs(
-        redis_cli: RedisClient,
-        config: &Arc<GlobalConfig>,
-    ) -> Result<HashSet<String>, anyhow::Error> {
+    fn query_redis_cur_addrs(redis_cli: RedisClient) -> Result<HashSet<String>, anyhow::Error> {
         let redis_ttl: RedisTTLSet = Default::default();
         let mut conn = redis_cli.get_connection()?;
         let addrs = redis_ttl.query_all(&mut conn)?;
+
         let addrs: Vec<String> = addrs
             .into_iter()
-            .map(|addr| format!("{}:{}", addr.sub_key, config.grpc_port))
+            .map(|addr| format!("{}", addr.sub_key))
             .collect();
+
         Ok(HashSet::from_iter(addrs.into_iter()))
     }
 
