@@ -68,9 +68,7 @@ pub(crate) mod redis {
         let mut start_num = 0;
         let mut ip_vec = Vec::new();
 
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        let mut conn = client.get_connection().unwrap();
-
+        let mut conn = create_redis_conn();
         for _ in 0..num {
             let mut gen_ip = || {
                 start_num += 1;
@@ -87,6 +85,34 @@ pub(crate) mod redis {
         }
 
         ip_vec
+    }
+
+    pub(crate) fn offline_some_servers(num: usize) {
+        let conn = &mut create_redis_conn();
+
+        let val = redis::cmd("HGETALL").arg(KEY).query::<Value>(conn).unwrap();
+        match val {
+            Value::Bulk(vals) => {
+                for i in 0..usize::min(num, vals.len()) {
+                    if i % 2 == 1 {
+                        continue;
+                    }
+
+                    let ip_port = vals.get(i).unwrap();
+
+                    if let Value::Data(byts) = ip_port {
+                        let s = String::from_utf8(byts.to_vec()).unwrap();
+                        redis::cmd("HDEL")
+                            .arg(KEY)
+                            .arg(s)
+                            .query::<Value>(conn)
+                            .unwrap();
+                    }
+                    let _ = vals.get(i + 1).unwrap();
+                }
+            }
+            _ => {}
+        }
     }
 
     pub(crate) fn gen_expired_virtual_servers(num: usize) -> Vec<String> {

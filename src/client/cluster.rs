@@ -9,7 +9,6 @@ use std::time::Duration;
 use tower::util::BoxCloneService;
 use tracing::{error, info};
 
-use crate::client::trans::Transport;
 use crate::conf::GlobalConfig;
 use crate::redis::RedisTTLSet;
 use crate::serv::ShutdownSignal;
@@ -27,7 +26,7 @@ use tower::ServiceBuilder;
 
 use super::grpc_cli::split_client;
 use super::service::EndpointService;
-use super::trans::TransportErr;
+use super::trans::{Transport, TransportErr};
 
 pub struct ClusterPassive {
     recv: Receiver<ClientEvent>,
@@ -353,13 +352,16 @@ mod tests {
     use regex::Regex;
 
     use crate::{
-        com::test_util::redis::{create_redis_client, gen_virtual_servers},
+        com::test_util::redis::{create_redis_client, gen_virtual_servers, offline_some_servers},
+        conf::GlobalConfig,
         log::*,
+        serv::{ShutdownEvent, ShutdownSignal},
     };
     use std::collections::HashMap;
     use std::collections::HashSet;
 
-    use super::{ClientEvent, ClusterActiveWatcher};
+    use super::{ClientEvent, ClusterActiveWatcher, Observe, Observer, Watch};
+    use tokio::sync::mpsc::{Receiver, Sender};
 
     fn setup() {
         init_console_logger();
@@ -453,6 +455,114 @@ mod tests {
         assert_eq!(3, clients.len());
     }
 
-    #[test]
-    fn test_block_watch() {}
+    struct Context {
+        observer: Observer,
+
+        events_recv: Receiver<ClientEvent>,
+
+        chg_recv: Receiver<i32>,
+        _chg_sender: Sender<i32>,
+
+        shutdown_signal: ShutdownSignal,
+        conf: std::sync::Arc<GlobalConfig>,
+
+        cluster: ClusterActiveWatcher,
+    }
+
+    fn setup_context() -> Context {
+        let client = create_redis_client();
+        let cluster = ClusterActiveWatcher::new(client);
+
+        let mut observer = Observer::new();
+
+        let (events_sender, events_receiver) = tokio::sync::mpsc::channel(256);
+        observer.regist(events_sender.clone());
+
+        let (chg_sender, chg_recv) = tokio::sync::mpsc::channel(256);
+        let config: GlobalConfig = Default::default();
+
+        let (shutdown_sender, _) = tokio::sync::broadcast::channel(1);
+        let (shutdown_signal, _receiver) = ShutdownSignal::chan(shutdown_sender);
+
+        Context {
+            observer,
+            events_recv: events_receiver,
+            chg_recv,
+            _chg_sender: chg_sender,
+
+            shutdown_signal,
+            conf: std::sync::Arc::new(config),
+            cluster,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Need to mock redis service in local machine"]
+    async fn test_block_watch() {
+        setup();
+
+        let ctx = setup_context();
+
+        let cluster = ctx.cluster;
+        let shutdown_signal = ctx.shutdown_signal;
+
+        let s = shutdown_signal.subscribe();
+        let mut events_recv = ctx.events_recv;
+
+        let (panic_sender, mut panic_recv) = tokio::sync::mpsc::channel(1);
+
+        tokio::spawn(async move {
+            gen_virtual_servers(5);
+            offline_some_servers(2);
+            gen_virtual_servers(2);
+        });
+
+        tokio::spawn(async move {
+            let mut events = Vec::new();
+
+            while let Some(e) = events_recv.recv().await {
+                events.push(e);
+            }
+            assert_eq!(5, events.len());
+
+            events.clear();
+
+            /////////////////////////////////////////////////////////////////////////////////
+            while let Some(e) = events_recv.recv().await {
+                events.push(e);
+            }
+            assert_eq!(2, events.len());
+
+            for e in events.iter() {
+                match e {
+                    ClientEvent::DropEvent(_) => {}
+                    _ => {
+                        tracing::error!("There is not only drop event!");
+
+                        let _ = panic_sender
+                            .send("Not only drop event, unexpected!".to_string())
+                            .await;
+                        break;
+                    }
+                }
+            }
+            events.clear();
+            ////////////////////////////////////////////////////////////////////////////////////
+            while let Some(e) = events_recv.recv().await {
+                events.push(e);
+            }
+
+            assert_eq!(2, events.len());
+
+            let _ = s.sender.send(ShutdownEvent::ForceStop);
+        });
+
+        let _ = cluster.block_watch(ctx.observer, ctx.chg_recv, ctx.conf, shutdown_signal);
+
+        let msg = panic_recv.try_recv();
+        if msg.is_ok() {
+            let msg = msg.unwrap();
+            panic!("{}", msg);
+        }
+    }
 }
