@@ -277,6 +277,7 @@ impl ClusterActiveWatcher {
             .map(|(addr, id)| {
                 let env = Environment::new(3);
                 let channel = ChannelBuilder::new(Arc::new(env)).connect(addr);
+
                 (SkyTracingClient::new(channel), id)
             })
             .collect::<Vec<(SkyTracingClient, i32)>>()
@@ -358,7 +359,7 @@ mod tests {
     use std::collections::HashMap;
     use std::collections::HashSet;
 
-    use super::ClusterActiveWatcher;
+    use super::{ClientEvent, ClusterActiveWatcher};
 
     fn setup() {
         init_console_logger();
@@ -412,5 +413,46 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_active_watcher_basics() {}
+    fn test_gen_del_events() {
+        setup();
+
+        let mut old = HashMap::new();
+
+        old.insert("192.168.0.1:9999".to_string(), 1);
+        old.insert("192.168.0.2:9999".to_string(), 2);
+        old.insert("192.168.0.3:9999".to_string(), 3);
+
+        let cur_addrs = vec![
+            "192.168.0.2:9999".to_string(),
+            "192.168.0.3:9999".to_string(),
+            "192.168.0.10:9999".to_string(),
+        ];
+
+        let events = ClusterActiveWatcher::gen_del_events(&cur_addrs, &old);
+        for event in events.into_iter() {
+            match event {
+                ClientEvent::DropEvent(_) => {}
+                ClientEvent::NewClient(_) => {
+                    panic!("The should not new clients");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cluster_active_watcher_basics() {
+        setup();
+
+        let v = vec![
+            ("192.168.0.1:9999".to_string(), 1),
+            ("192.168.0.1:9999".to_string(), 2),
+            ("192.168.0.1:9999".to_string(), 3),
+        ];
+
+        let clients = ClusterActiveWatcher::gen_add_events(&v);
+        assert_eq!(3, clients.len());
+    }
+
+    #[test]
+    fn test_block_watch() {}
 }
