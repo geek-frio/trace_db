@@ -54,6 +54,16 @@ pub(crate) mod redis {
 
     use crate::redis::{Record, RedisTTLSet, KEY};
 
+    pub(crate) fn create_redis_client() -> redis::Client {
+        redis::Client::open("redis://127.0.0.1:6379").unwrap()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn create_redis_conn() -> redis::Connection {
+        let client = create_redis_client();
+        client.get_connection().unwrap()
+    }
+
     pub(crate) fn gen_virtual_servers(num: usize) -> Vec<String> {
         let mut start_num = 0;
         let mut ip_vec = Vec::new();

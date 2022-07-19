@@ -269,7 +269,9 @@ impl Watch for ClusterActiveWatcher {
 }
 
 impl ClusterActiveWatcher {
-    fn create_grpc_conns<'a>(addrs: Vec<(&'a str, i32)>) -> Vec<(SkyTracingClient, i32)> {
+    pub(crate) fn create_grpc_conns<'a>(
+        addrs: Vec<(&'a str, i32)>,
+    ) -> Vec<(SkyTracingClient, i32)> {
         addrs
             .into_iter()
             .map(|(addr, id)| {
@@ -280,7 +282,9 @@ impl ClusterActiveWatcher {
             .collect::<Vec<(SkyTracingClient, i32)>>()
     }
 
-    fn query_redis_cur_addrs(redis_cli: RedisClient) -> Result<HashSet<String>, anyhow::Error> {
+    pub(crate) fn query_redis_cur_addrs(
+        redis_cli: RedisClient,
+    ) -> Result<HashSet<String>, anyhow::Error> {
         let redis_ttl: RedisTTLSet = Default::default();
         let mut conn = redis_cli.get_connection()?;
         let addrs = redis_ttl.query_all(&mut conn)?;
@@ -293,7 +297,7 @@ impl ClusterActiveWatcher {
         Ok(HashSet::from_iter(addrs.into_iter()))
     }
 
-    fn compare_diff_addrs(
+    pub(crate) fn compare_diff_addrs(
         &self,
         old: &HashMap<String, i32>,
         addrs: &HashSet<String>,
@@ -311,7 +315,10 @@ impl ClusterActiveWatcher {
         (del, add)
     }
 
-    fn gen_del_events(addrs: &Vec<String>, old: &HashMap<String, i32>) -> Vec<ClientEvent> {
+    pub(crate) fn gen_del_events(
+        addrs: &Vec<String>,
+        old: &HashMap<String, i32>,
+    ) -> Vec<ClientEvent> {
         addrs
             .into_iter()
             .filter(|addr| old.contains_key(*addr))
@@ -320,7 +327,7 @@ impl ClusterActiveWatcher {
             .collect()
     }
 
-    fn gen_add_events(addrs: &Vec<(String, i32)>) -> Vec<ClientEvent> {
+    pub(crate) fn gen_add_events(addrs: &Vec<(String, i32)>) -> Vec<ClientEvent> {
         let addrs: Vec<(&str, i32)> = addrs.into_iter().map(|(s, id)| (s.as_str(), *id)).collect();
         Self::create_grpc_conns(addrs)
             .into_iter()
@@ -328,7 +335,11 @@ impl ClusterActiveWatcher {
             .collect()
     }
 
-    fn update_addrs(old: &mut HashMap<String, i32>, add: Vec<(String, i32)>, del: Vec<String>) {
+    pub(crate) fn update_addrs(
+        old: &mut HashMap<String, i32>,
+        add: Vec<(String, i32)>,
+        del: Vec<String>,
+    ) {
         for (addr, id) in add.into_iter() {
             old.insert(addr, id);
         }
@@ -338,47 +349,68 @@ impl ClusterActiveWatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::log::*;
-    use crate::serv::MainServer;
-    use crate::serv::ShutdownEvent;
-    use crate::TOKIO_RUN;
+    use regex::Regex;
 
-    const GRPC_TEST_PORT: u32 = 6666;
+    use crate::{
+        com::test_util::redis::{create_redis_client, gen_virtual_servers},
+        log::*,
+    };
+    use std::collections::HashMap;
+    use std::collections::HashSet;
 
-    async fn block_create_mock_grpc_server(
-        cfg: Arc<GlobalConfig>,
-        sender: tokio::sync::broadcast::Sender<ShutdownEvent>,
-    ) {
-        let mut main_server = MainServer::new(cfg, "127.0.0.1".to_string());
-        main_server.block_start(sender).await;
+    use super::ClusterActiveWatcher;
+
+    fn setup() {
+        init_console_logger();
     }
 
-    #[tokio::test]
+    #[test]
     #[ignore]
-    async fn test_basic_func() {
-        let config = Arc::new(GlobalConfig {
-            grpc_port: GRPC_TEST_PORT,
-            redis_addr: format!("127.0.0.1:{}", 6379),
-            index_dir: String::from("/tmp/skdb_test_use"),
-            env: String::from("local"),
-            log_path: String::from("./"),
-            app_name: String::from("test"),
-            server_ip: String::from("127.0.0.1"),
-        });
+    fn test_cluster_active_watcher_query_redis() {
+        setup();
+        gen_virtual_servers(3);
 
-        let (shutdown_sender, _recv) = tokio::sync::broadcast::channel(1);
+        let client = create_redis_client();
+        let hashset = ClusterActiveWatcher::query_redis_cur_addrs(client).unwrap();
 
-        let (shutdown_signal, _recv) = ShutdownSignal::chan(shutdown_sender);
-        let (shutdown_sender, _) = tokio::sync::broadcast::channel(1);
+        assert_eq!(3, hashset.len());
 
-        init_tracing_logger(config.clone(), shutdown_signal);
+        let re = Regex::new(r"\d+\.\d+\.\d+\.\d+:\d+").unwrap();
 
-        let s = shutdown_sender.clone();
-        TOKIO_RUN.spawn(async move {
-            sleep(Duration::from_secs(1)).await;
-            let _ = s.send(ShutdownEvent::ForceStop);
-        });
-        block_create_mock_grpc_server(config, shutdown_sender).await;
+        for text in hashset.into_iter() {
+            assert!(re.is_match(text.as_str()));
+        }
     }
+
+    #[test]
+    fn test_compare_diff_addrs() {
+        setup();
+
+        let client = create_redis_client();
+        let cluster = ClusterActiveWatcher::new(client);
+
+        let mut old = HashMap::new();
+
+        old.insert("192.168.0.1:9999".to_string(), 1);
+        old.insert("192.168.0.2:9999".to_string(), 2);
+        old.insert("192.168.0.3:9999".to_string(), 3);
+
+        let mut new = HashSet::new();
+
+        new.insert("192.168.0.1:9999".to_string());
+        new.insert("192.168.0.2:9999".to_string());
+
+        new.insert("192.168.0.8:9999".to_string());
+
+        let (del, add) = cluster.compare_diff_addrs(&old, &new);
+
+        assert!(del.contains(&"192.168.0.3:9999".to_string()));
+        assert_eq!(add.len(), 1);
+
+        let v = add.into_iter().map(|t| t.0).collect::<Vec<String>>();
+        assert!(v.contains(&"192.168.0.8:9999".to_string()));
+    }
+
+    #[test]
+    fn test_cluster_active_watcher_basics() {}
 }
