@@ -363,7 +363,7 @@ mod tests {
     use crate::{
         com::test_util::redis::{
             create_redis_client, gen_virtual_servers, gen_virtual_servers_with_ip,
-            offline_some_servers,
+            offline_some_servers, redis_servers_clear,
         },
         conf::GlobalConfig,
         log::*,
@@ -380,6 +380,7 @@ mod tests {
 
     fn setup() {
         init_console_logger();
+        redis_servers_clear();
     }
 
     #[test]

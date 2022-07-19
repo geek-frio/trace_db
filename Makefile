@@ -24,4 +24,4 @@ test:
 	cargo test $(name) --features fail/failpoints -- --nocapture
 
 testi: 
-	cargo test $(name) --features fail/failpoints -- --nocapture --ignored
+	cargo test $(name) --features fail/failpoints -- --nocapture --ignored --test-threads 1

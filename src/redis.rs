@@ -265,6 +265,8 @@ mod tests {
     #[test]
     #[ignore]
     fn test_ttlset_set_get_all() {
+        setup();
+
         let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
         let mut con = client.get_connection().unwrap();
         let redis = RedisTTLSet { ttl: 5 };
