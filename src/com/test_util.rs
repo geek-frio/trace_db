@@ -65,6 +65,10 @@ pub(crate) mod redis {
     }
 
     pub(crate) fn gen_virtual_servers(num: usize) -> Vec<String> {
+        gen_virtual_servers_with_ip(num, "192.168.0")
+    }
+
+    pub(crate) fn gen_virtual_servers_with_ip(num: usize, ip_prefix: &str) -> Vec<String> {
         let mut start_num = 0;
         let mut ip_vec = Vec::new();
 
@@ -72,7 +76,7 @@ pub(crate) mod redis {
         for _ in 0..num {
             let mut gen_ip = || {
                 start_num += 1;
-                format!("192.168.0.{}", start_num)
+                format!("{}.{}", ip_prefix, start_num)
             };
 
             let ip = gen_ip();
@@ -93,7 +97,7 @@ pub(crate) mod redis {
         let val = redis::cmd("HGETALL").arg(KEY).query::<Value>(conn).unwrap();
         match val {
             Value::Bulk(vals) => {
-                for i in 0..usize::min(num, vals.len()) {
+                for i in 0..usize::min(num * 2, vals.len()) {
                     if i % 2 == 1 {
                         continue;
                     }

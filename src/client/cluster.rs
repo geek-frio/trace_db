@@ -171,7 +171,11 @@ impl Observe for Observer {
 impl Observer {
     fn notify_all(&mut self, event: ClientEvent) {
         for s in self.vec.iter_mut() {
-            let _ = s.try_send(event.clone());
+            let res = s.try_send(event.clone());
+
+            if let Err(_e) = res {
+                tracing::error!("Notify events failed!");
+            }
         }
     }
 }
@@ -229,7 +233,7 @@ impl Watch for ClusterActiveWatcher {
 
         loop {
             select! {
-                _ = sleep(Duration::from_secs(5)) => {
+                _ = sleep(Duration::from_secs(1)) => {
                     let current_addrs = Self::query_redis_cur_addrs(redis_client.clone());
                     match current_addrs {
                         Ok(current_addrs) => {
@@ -238,6 +242,10 @@ impl Watch for ClusterActiveWatcher {
                             let del_events = Self::gen_del_events(&del_addrs, &old_addrs);
                             let add_events = Self::gen_add_events(&add_addrs);
 
+                            if add_events.len() > 0 || del_events.len() > 0 {
+                                tracing::trace!("add events length:{:?}, del events length:{:?}", add_events.len(), del_events.len());
+                            }
+
                             Self::update_addrs(&mut old_addrs, add_addrs, del_addrs);
 
                             let events = del_events.into_iter().chain(add_events.into_iter());
@@ -245,6 +253,7 @@ impl Watch for ClusterActiveWatcher {
                             events.for_each(|e| {
                                 obj.notify_all(e);
                             });
+                            tracing::trace!("old addrs is:{:?}", old_addrs);
                         }
                         Err(e) => {
                             error!(%e,"Query cluster info from redis failed!Wait to next retry.");
@@ -352,7 +361,10 @@ mod tests {
     use regex::Regex;
 
     use crate::{
-        com::test_util::redis::{create_redis_client, gen_virtual_servers, offline_some_servers},
+        com::test_util::redis::{
+            create_redis_client, gen_virtual_servers, gen_virtual_servers_with_ip,
+            offline_some_servers,
+        },
         conf::GlobalConfig,
         log::*,
         serv::{ShutdownEvent, ShutdownSignal},
@@ -361,7 +373,10 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{ClientEvent, ClusterActiveWatcher, Observe, Observer, Watch};
-    use tokio::sync::mpsc::{Receiver, Sender};
+    use tokio::{
+        sync::mpsc::{Receiver, Sender},
+        time::sleep,
+    };
 
     fn setup() {
         init_console_logger();
@@ -476,7 +491,7 @@ mod tests {
         let mut observer = Observer::new();
 
         let (events_sender, events_receiver) = tokio::sync::mpsc::channel(256);
-        observer.regist(events_sender.clone());
+        observer.regist(events_sender);
 
         let (chg_sender, chg_recv) = tokio::sync::mpsc::channel(256);
         let config: GlobalConfig = Default::default();
@@ -513,22 +528,34 @@ mod tests {
 
         tokio::spawn(async move {
             gen_virtual_servers(5);
+            sleep(std::time::Duration::from_secs(2)).await;
+
+            tracing::info!("Start to offline 2 server");
             offline_some_servers(2);
-            gen_virtual_servers(2);
+
+            sleep(std::time::Duration::from_secs(2)).await;
+
+            tracing::info!("Startto add new 2 server");
+            gen_virtual_servers_with_ip(2, "192.168.1");
         });
 
         tokio::spawn(async move {
             let mut events = Vec::new();
 
-            while let Some(e) = events_recv.recv().await {
+            sleep(std::time::Duration::from_secs(2)).await;
+
+            for _ in 0..5 {
+                let e = events_recv.recv().await.unwrap();
                 events.push(e);
             }
             assert_eq!(5, events.len());
 
             events.clear();
 
-            /////////////////////////////////////////////////////////////////////////////////
-            while let Some(e) = events_recv.recv().await {
+            // /////////////////////////////////////////////////////////////////////////////////
+            for _ in 0..2 {
+                let e = events_recv.recv().await.unwrap();
+
                 events.push(e);
             }
             assert_eq!(2, events.len());
@@ -548,7 +575,8 @@ mod tests {
             }
             events.clear();
             ////////////////////////////////////////////////////////////////////////////////////
-            while let Some(e) = events_recv.recv().await {
+            for _ in 0..2 {
+                let e = events_recv.recv().await.unwrap();
                 events.push(e);
             }
 
@@ -557,12 +585,32 @@ mod tests {
             let _ = s.sender.send(ShutdownEvent::ForceStop);
         });
 
-        let _ = cluster.block_watch(ctx.observer, ctx.chg_recv, ctx.conf, shutdown_signal);
+        let _ = cluster
+            .block_watch(ctx.observer, ctx.chg_recv, ctx.conf, shutdown_signal)
+            .await;
 
         let msg = panic_recv.try_recv();
         if msg.is_ok() {
             let msg = msg.unwrap();
             panic!("{}", msg);
         }
+    }
+
+    #[tokio::test]
+    async fn test_observer() {
+        init_console_logger();
+
+        let (send, mut recv) = tokio::sync::mpsc::channel(1024);
+
+        let mut ob = Observer::new();
+        ob.regist(send);
+
+        tokio::spawn(async move {
+            ob.notify_all(ClientEvent::DropEvent(1));
+        });
+
+        let e = recv.recv().await;
+        tracing::info!("Has received event:{}", e.is_some());
+        assert!(e.is_some());
     }
 }

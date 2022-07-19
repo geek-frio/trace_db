@@ -64,7 +64,6 @@ impl MetaInfo {
     pub fn is_expired(&self, ttl: Secs) -> bool {
         let local = Local::now().timestamp();
 
-        tracing::trace!("self.expired_time:{}", self.expire_time);
         local - self.expire_time >= ttl
     }
 }
