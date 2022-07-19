@@ -50,3 +50,4 @@ name = "server"
 
 [[bin]]
 name = "client"
+
