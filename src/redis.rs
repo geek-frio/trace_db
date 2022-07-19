@@ -64,6 +64,7 @@ impl MetaInfo {
     fn is_expired(&self, ttl: Secs) -> bool {
         let local = Local::now().timestamp();
 
+        tracing::trace!("self.expired_time:{}", self.expire_time);
         local - self.expire_time >= ttl
     }
 }
@@ -164,9 +165,6 @@ impl RedisTTLSet {
         <T as TryInto<Record>>::Error: std::error::Error + Send + Sync + 'static,
     {
         let record = <T as TryInto<Record>>::try_into(val)?;
-        if record.meta.is_expired(self.ttl) {
-            return Err(AnyError::msg("Value has already expired!"));
-        }
 
         let _ = redis::cmd("HSET")
             .arg(KEY)
@@ -201,8 +199,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::{com::gen, log::init_console_logger};
-    use rand::Rng;
+    use crate::log::init_console_logger;
 
     fn gen_virtual_servers(num: usize) -> Vec<String> {
         let mut start_num = 0;
@@ -256,18 +253,56 @@ mod tests {
         ip_vec
     }
 
+    fn clear() {
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let conn = &mut client.get_connection().unwrap();
+
+        let val = redis::cmd("HGETALL").arg(KEY).query::<Value>(conn).unwrap();
+        match val {
+            Value::Bulk(vals) => {
+                for i in 0..vals.len() {
+                    if i % 2 == 1 {
+                        continue;
+                    }
+
+                    let ip_port = vals.get(i).unwrap();
+
+                    if let Value::Data(byts) = ip_port {
+                        let s = String::from_utf8(byts.to_vec()).unwrap();
+                        redis::cmd("HDEL")
+                            .arg(KEY)
+                            .arg(s)
+                            .query::<Value>(conn)
+                            .unwrap();
+                    }
+                    let _ = vals.get(i + 1).unwrap();
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn setup() {
         init_console_logger();
+
+        clear();
     }
 
     #[test]
+    #[ignore]
     fn test_ttlset_dump_del() {
         setup();
 
         let _virs = gen_expired_virtual_servers(3);
 
-        let is_err = Arc::new(AtomicBool::new(false));
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let mut conn = &mut client.get_connection().unwrap();
+        let redis_ttl: RedisTTLSet = Default::default();
+        let recs = redis_ttl.query_all(&mut conn).unwrap();
+        assert_eq!(recs.len(), 0);
 
+        let _ = gen_expired_virtual_servers(3);
+        let is_err = Arc::new(AtomicBool::new(false));
         let spawn_num = 3;
         let mut handles = Vec::new();
 
@@ -306,53 +341,16 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[test]
     #[ignore]
-    async fn test_ttlset_set_get_all() -> Result<(), AnyError> {
-        let client = redis::Client::open("redis://127.0.0.1:6379")?;
-        let mut con = client.get_connection()?;
+    fn test_ttlset_set_get_all() {
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let mut con = client.get_connection().unwrap();
         let redis = RedisTTLSet { ttl: 5 };
-        println!("result: {:?}", redis.query_all(&mut con));
-        Ok(())
-    }
 
-    #[tokio::test]
-    #[ignore]
-    async fn test_ttlset_set_push() -> Result<(), AnyError> {
-        let client = redis::Client::open("redis://127.0.0.1:6379")?;
-        let mut conn = client.get_connection()?;
+        let virts = gen_virtual_servers(5);
 
-        let redis = RedisTTLSet { ttl: 5 };
-        println!(
-            "Push result is :{:?}",
-            redis.push(&mut conn, rand_gen_record())
-        );
-        println!(
-            "Push result is :{:?}",
-            redis.push(&mut conn, rand_gen_record())
-        );
-        println!(
-            "Push result is :{:?}",
-            redis.push(&mut conn, rand_gen_record())
-        );
-        println!(
-            "Push result is :{:?}",
-            redis.push(&mut conn, rand_gen_record())
-        );
-        println!("After push result is:{:?}", redis);
-        println!("Query all result is:{:?}", redis.query_all(&mut conn));
-        Ok(())
-    }
-
-    fn rand_gen_record() -> Record {
-        let local = Local::now();
-        let mut rand = rand::thread_rng();
-        let i = rand.gen_range(1..30);
-        Record {
-            meta: MetaInfo {
-                expire_time: local.timestamp() + (i as i64),
-            },
-            sub_key: gen::_gen_tag(3, 5, 'a'),
-        }
+        let recs = redis.query_all(&mut con).unwrap();
+        assert_eq!(recs.len(), virts.len());
     }
 }
