@@ -7,7 +7,7 @@ use regex::Regex;
 type Secs = i64;
 
 pub const LEASE_TIME_OUT: i64 = 15;
-const KEY: &'static str = "SK_DB_SERVER_ADDR";
+pub(crate) const KEY: &'static str = "SK_DB_SERVER_ADDR";
 
 pub struct RedisAddr {
     addr: String,
@@ -51,7 +51,7 @@ pub(crate) struct RedisTTLSet {
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub(crate) struct MetaInfo {
-    expire_time: i64,
+    pub(crate) expire_time: i64,
 }
 
 #[derive(Debug, Eq, Hash, PartialEq)]
@@ -61,10 +61,9 @@ pub(crate) struct Record {
 }
 
 impl MetaInfo {
-    fn is_expired(&self, ttl: Secs) -> bool {
+    pub fn is_expired(&self, ttl: Secs) -> bool {
         let local = Local::now().timestamp();
 
-        tracing::trace!("self.expired_time:{}", self.expire_time);
         local - self.expire_time >= ttl
     }
 }
@@ -199,93 +198,15 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::com::test_util::redis::{
+        gen_expired_virtual_servers, gen_virtual_servers, redis_servers_clear,
+    };
     use crate::log::init_console_logger;
-
-    fn gen_virtual_servers(num: usize) -> Vec<String> {
-        let mut start_num = 0;
-        let mut ip_vec = Vec::new();
-
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        let mut conn = client.get_connection().unwrap();
-
-        for _ in 0..num {
-            let mut gen_ip = || {
-                start_num += 1;
-                format!("192.168.0.{}", start_num)
-            };
-
-            let ip = gen_ip();
-            ip_vec.push(ip.clone());
-
-            let meta_s = format!("{}:{}", ip, 9999);
-
-            let redis_ttl: RedisTTLSet = Default::default();
-            let _ = redis_ttl.push(&mut conn, meta_s);
-        }
-
-        ip_vec
-    }
-
-    fn gen_expired_virtual_servers(num: usize) -> Vec<String> {
-        let mut start_num = 0;
-        let mut ip_vec = Vec::new();
-
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        let mut conn = client.get_connection().unwrap();
-
-        for _ in 0..num {
-            let mut gen_ip = || {
-                start_num += 1;
-                format!("192.168.0.{}", start_num)
-            };
-
-            let ip = gen_ip();
-            ip_vec.push(ip.clone());
-
-            let meta_s = format!("{}:{}", ip, 9999);
-            let mut record: Record = meta_s.try_into().unwrap();
-            record.meta.expire_time = -1;
-
-            let redis_ttl: RedisTTLSet = Default::default();
-            let _ = redis_ttl.push(&mut conn, record);
-        }
-
-        ip_vec
-    }
-
-    fn clear() {
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        let conn = &mut client.get_connection().unwrap();
-
-        let val = redis::cmd("HGETALL").arg(KEY).query::<Value>(conn).unwrap();
-        match val {
-            Value::Bulk(vals) => {
-                for i in 0..vals.len() {
-                    if i % 2 == 1 {
-                        continue;
-                    }
-
-                    let ip_port = vals.get(i).unwrap();
-
-                    if let Value::Data(byts) = ip_port {
-                        let s = String::from_utf8(byts.to_vec()).unwrap();
-                        redis::cmd("HDEL")
-                            .arg(KEY)
-                            .arg(s)
-                            .query::<Value>(conn)
-                            .unwrap();
-                    }
-                    let _ = vals.get(i + 1).unwrap();
-                }
-            }
-            _ => {}
-        }
-    }
 
     fn setup() {
         init_console_logger();
 
-        clear();
+        redis_servers_clear();
     }
 
     #[test]
@@ -344,6 +265,8 @@ mod tests {
     #[test]
     #[ignore]
     fn test_ttlset_set_get_all() {
+        setup();
+
         let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
         let mut con = client.get_connection().unwrap();
         let redis = RedisTTLSet { ttl: 5 };

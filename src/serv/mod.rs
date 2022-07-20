@@ -69,7 +69,7 @@ impl ShutdownSignal {
         (shut, d_recv)
     }
 
-    fn subscribe(&self) -> ShutdownSignal {
+    pub fn subscribe(&self) -> ShutdownSignal {
         ShutdownSignal {
             sender: self.sender.clone(),
             recv: self.sender.subscribe(),

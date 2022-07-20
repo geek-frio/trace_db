@@ -22,3 +22,6 @@ local-server-run: test-start-local-redis
 
 test: 
 	cargo test $(name) --features fail/failpoints -- --nocapture
+
+testi: 
+	cargo test $(name) --features fail/failpoints -- --nocapture --ignored --test-threads 1

@@ -9,7 +9,6 @@ use std::time::Duration;
 use tower::util::BoxCloneService;
 use tracing::{error, info};
 
-use crate::client::trans::Transport;
 use crate::conf::GlobalConfig;
 use crate::redis::RedisTTLSet;
 use crate::serv::ShutdownSignal;
@@ -27,7 +26,7 @@ use tower::ServiceBuilder;
 
 use super::grpc_cli::split_client;
 use super::service::EndpointService;
-use super::trans::TransportErr;
+use super::trans::{Transport, TransportErr};
 
 pub struct ClusterPassive {
     recv: Receiver<ClientEvent>,
@@ -172,7 +171,11 @@ impl Observe for Observer {
 impl Observer {
     fn notify_all(&mut self, event: ClientEvent) {
         for s in self.vec.iter_mut() {
-            let _ = s.try_send(event.clone());
+            let res = s.try_send(event.clone());
+
+            if let Err(_e) = res {
+                tracing::error!("Notify events failed!");
+            }
         }
     }
 }
@@ -230,7 +233,7 @@ impl Watch for ClusterActiveWatcher {
 
         loop {
             select! {
-                _ = sleep(Duration::from_secs(5)) => {
+                _ = sleep(Duration::from_secs(1)) => {
                     let current_addrs = Self::query_redis_cur_addrs(redis_client.clone());
                     match current_addrs {
                         Ok(current_addrs) => {
@@ -239,6 +242,10 @@ impl Watch for ClusterActiveWatcher {
                             let del_events = Self::gen_del_events(&del_addrs, &old_addrs);
                             let add_events = Self::gen_add_events(&add_addrs);
 
+                            if add_events.len() > 0 || del_events.len() > 0 {
+                                tracing::trace!("add events length:{:?}, del events length:{:?}", add_events.len(), del_events.len());
+                            }
+
                             Self::update_addrs(&mut old_addrs, add_addrs, del_addrs);
 
                             let events = del_events.into_iter().chain(add_events.into_iter());
@@ -246,6 +253,7 @@ impl Watch for ClusterActiveWatcher {
                             events.for_each(|e| {
                                 obj.notify_all(e);
                             });
+                            tracing::trace!("old addrs is:{:?}", old_addrs);
                         }
                         Err(e) => {
                             error!(%e,"Query cluster info from redis failed!Wait to next retry.");
@@ -269,18 +277,23 @@ impl Watch for ClusterActiveWatcher {
 }
 
 impl ClusterActiveWatcher {
-    fn create_grpc_conns<'a>(addrs: Vec<(&'a str, i32)>) -> Vec<(SkyTracingClient, i32)> {
+    pub(crate) fn create_grpc_conns<'a>(
+        addrs: Vec<(&'a str, i32)>,
+    ) -> Vec<(SkyTracingClient, i32)> {
         addrs
             .into_iter()
             .map(|(addr, id)| {
                 let env = Environment::new(3);
                 let channel = ChannelBuilder::new(Arc::new(env)).connect(addr);
+
                 (SkyTracingClient::new(channel), id)
             })
             .collect::<Vec<(SkyTracingClient, i32)>>()
     }
 
-    fn query_redis_cur_addrs(redis_cli: RedisClient) -> Result<HashSet<String>, anyhow::Error> {
+    pub(crate) fn query_redis_cur_addrs(
+        redis_cli: RedisClient,
+    ) -> Result<HashSet<String>, anyhow::Error> {
         let redis_ttl: RedisTTLSet = Default::default();
         let mut conn = redis_cli.get_connection()?;
         let addrs = redis_ttl.query_all(&mut conn)?;
@@ -293,7 +306,7 @@ impl ClusterActiveWatcher {
         Ok(HashSet::from_iter(addrs.into_iter()))
     }
 
-    fn compare_diff_addrs(
+    pub(crate) fn compare_diff_addrs(
         &self,
         old: &HashMap<String, i32>,
         addrs: &HashSet<String>,
@@ -311,7 +324,10 @@ impl ClusterActiveWatcher {
         (del, add)
     }
 
-    fn gen_del_events(addrs: &Vec<String>, old: &HashMap<String, i32>) -> Vec<ClientEvent> {
+    pub(crate) fn gen_del_events(
+        addrs: &Vec<String>,
+        old: &HashMap<String, i32>,
+    ) -> Vec<ClientEvent> {
         addrs
             .into_iter()
             .filter(|addr| old.contains_key(*addr))
@@ -320,7 +336,7 @@ impl ClusterActiveWatcher {
             .collect()
     }
 
-    fn gen_add_events(addrs: &Vec<(String, i32)>) -> Vec<ClientEvent> {
+    pub(crate) fn gen_add_events(addrs: &Vec<(String, i32)>) -> Vec<ClientEvent> {
         let addrs: Vec<(&str, i32)> = addrs.into_iter().map(|(s, id)| (s.as_str(), *id)).collect();
         Self::create_grpc_conns(addrs)
             .into_iter()
@@ -328,7 +344,11 @@ impl ClusterActiveWatcher {
             .collect()
     }
 
-    fn update_addrs(old: &mut HashMap<String, i32>, add: Vec<(String, i32)>, del: Vec<String>) {
+    pub(crate) fn update_addrs(
+        old: &mut HashMap<String, i32>,
+        add: Vec<(String, i32)>,
+        del: Vec<String>,
+    ) {
         for (addr, id) in add.into_iter() {
             old.insert(addr, id);
         }
@@ -338,47 +358,260 @@ impl ClusterActiveWatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::log::*;
-    use crate::serv::MainServer;
-    use crate::serv::ShutdownEvent;
-    use crate::TOKIO_RUN;
+    use regex::Regex;
 
-    const GRPC_TEST_PORT: u32 = 6666;
+    use crate::{
+        com::test_util::redis::{
+            create_redis_client, gen_virtual_servers, gen_virtual_servers_with_ip,
+            offline_some_servers, redis_servers_clear,
+        },
+        conf::GlobalConfig,
+        log::*,
+        serv::{ShutdownEvent, ShutdownSignal},
+    };
+    use std::collections::HashMap;
+    use std::collections::HashSet;
 
-    async fn block_create_mock_grpc_server(
-        cfg: Arc<GlobalConfig>,
-        sender: tokio::sync::broadcast::Sender<ShutdownEvent>,
-    ) {
-        let mut main_server = MainServer::new(cfg, "127.0.0.1".to_string());
-        main_server.block_start(sender).await;
+    use super::{ClientEvent, ClusterActiveWatcher, Observe, Observer, Watch};
+    use tokio::{
+        sync::mpsc::{Receiver, Sender},
+        time::sleep,
+    };
+
+    fn setup() {
+        init_console_logger();
+        redis_servers_clear();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_cluster_active_watcher_query_redis() {
+        setup();
+        gen_virtual_servers(3);
+
+        let client = create_redis_client();
+        let hashset = ClusterActiveWatcher::query_redis_cur_addrs(client).unwrap();
+
+        assert_eq!(3, hashset.len());
+
+        let re = Regex::new(r"\d+\.\d+\.\d+\.\d+:\d+").unwrap();
+
+        for text in hashset.into_iter() {
+            assert!(re.is_match(text.as_str()));
+        }
+    }
+
+    #[test]
+    fn test_compare_diff_addrs() {
+        setup();
+
+        let client = create_redis_client();
+        let cluster = ClusterActiveWatcher::new(client);
+
+        let mut old = HashMap::new();
+
+        old.insert("192.168.0.1:9999".to_string(), 1);
+        old.insert("192.168.0.2:9999".to_string(), 2);
+        old.insert("192.168.0.3:9999".to_string(), 3);
+
+        let mut new = HashSet::new();
+
+        new.insert("192.168.0.1:9999".to_string());
+        new.insert("192.168.0.2:9999".to_string());
+
+        new.insert("192.168.0.8:9999".to_string());
+
+        let (del, add) = cluster.compare_diff_addrs(&old, &new);
+
+        assert!(del.contains(&"192.168.0.3:9999".to_string()));
+        assert_eq!(add.len(), 1);
+
+        let v = add.into_iter().map(|t| t.0).collect::<Vec<String>>();
+        assert!(v.contains(&"192.168.0.8:9999".to_string()));
+    }
+
+    #[test]
+    fn test_gen_del_events() {
+        setup();
+
+        let mut old = HashMap::new();
+
+        old.insert("192.168.0.1:9999".to_string(), 1);
+        old.insert("192.168.0.2:9999".to_string(), 2);
+        old.insert("192.168.0.3:9999".to_string(), 3);
+
+        let cur_addrs = vec![
+            "192.168.0.2:9999".to_string(),
+            "192.168.0.3:9999".to_string(),
+            "192.168.0.10:9999".to_string(),
+        ];
+
+        let events = ClusterActiveWatcher::gen_del_events(&cur_addrs, &old);
+        for event in events.into_iter() {
+            match event {
+                ClientEvent::DropEvent(_) => {}
+                ClientEvent::NewClient(_) => {
+                    panic!("The should not new clients");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cluster_active_watcher_basics() {
+        setup();
+
+        let v = vec![
+            ("192.168.0.1:9999".to_string(), 1),
+            ("192.168.0.1:9999".to_string(), 2),
+            ("192.168.0.1:9999".to_string(), 3),
+        ];
+
+        let clients = ClusterActiveWatcher::gen_add_events(&v);
+        assert_eq!(3, clients.len());
+    }
+
+    struct Context {
+        observer: Observer,
+
+        events_recv: Receiver<ClientEvent>,
+
+        chg_recv: Receiver<i32>,
+        _chg_sender: Sender<i32>,
+
+        shutdown_signal: ShutdownSignal,
+        conf: std::sync::Arc<GlobalConfig>,
+
+        cluster: ClusterActiveWatcher,
+    }
+
+    fn setup_context() -> Context {
+        let client = create_redis_client();
+        let cluster = ClusterActiveWatcher::new(client);
+
+        let mut observer = Observer::new();
+
+        let (events_sender, events_receiver) = tokio::sync::mpsc::channel(256);
+        observer.regist(events_sender);
+
+        let (chg_sender, chg_recv) = tokio::sync::mpsc::channel(256);
+        let config: GlobalConfig = Default::default();
+
+        let (shutdown_sender, _) = tokio::sync::broadcast::channel(1);
+        let (shutdown_signal, _receiver) = ShutdownSignal::chan(shutdown_sender);
+
+        Context {
+            observer,
+            events_recv: events_receiver,
+            chg_recv,
+            _chg_sender: chg_sender,
+
+            shutdown_signal,
+            conf: std::sync::Arc::new(config),
+            cluster,
+        }
     }
 
     #[tokio::test]
-    #[ignore]
-    async fn test_basic_func() {
-        let config = Arc::new(GlobalConfig {
-            grpc_port: GRPC_TEST_PORT,
-            redis_addr: format!("127.0.0.1:{}", 6379),
-            index_dir: String::from("/tmp/skdb_test_use"),
-            env: String::from("local"),
-            log_path: String::from("./"),
-            app_name: String::from("test"),
-            server_ip: String::from("127.0.0.1"),
+    #[ignore = "Need to mock redis service in local machine"]
+    async fn test_block_watch() {
+        setup();
+
+        let ctx = setup_context();
+
+        let cluster = ctx.cluster;
+        let shutdown_signal = ctx.shutdown_signal;
+
+        let s = shutdown_signal.subscribe();
+        let mut events_recv = ctx.events_recv;
+
+        let (panic_sender, mut panic_recv) = tokio::sync::mpsc::channel(1);
+
+        tokio::spawn(async move {
+            gen_virtual_servers(5);
+            sleep(std::time::Duration::from_secs(2)).await;
+
+            tracing::info!("Start to offline 2 server");
+            offline_some_servers(2);
+
+            sleep(std::time::Duration::from_secs(2)).await;
+
+            tracing::info!("Startto add new 2 server");
+            gen_virtual_servers_with_ip(2, "192.168.1");
         });
 
-        let (shutdown_sender, _recv) = tokio::sync::broadcast::channel(1);
+        tokio::spawn(async move {
+            let mut events = Vec::new();
 
-        let (shutdown_signal, _recv) = ShutdownSignal::chan(shutdown_sender);
-        let (shutdown_sender, _) = tokio::sync::broadcast::channel(1);
+            sleep(std::time::Duration::from_secs(2)).await;
 
-        init_tracing_logger(config.clone(), shutdown_signal);
+            for _ in 0..5 {
+                let e = events_recv.recv().await.unwrap();
+                events.push(e);
+            }
+            assert_eq!(5, events.len());
 
-        let s = shutdown_sender.clone();
-        TOKIO_RUN.spawn(async move {
-            sleep(Duration::from_secs(1)).await;
-            let _ = s.send(ShutdownEvent::ForceStop);
+            events.clear();
+
+            // /////////////////////////////////////////////////////////////////////////////////
+            for _ in 0..2 {
+                let e = events_recv.recv().await.unwrap();
+
+                events.push(e);
+            }
+            assert_eq!(2, events.len());
+
+            for e in events.iter() {
+                match e {
+                    ClientEvent::DropEvent(_) => {}
+                    _ => {
+                        tracing::error!("There is not only drop event!");
+
+                        let _ = panic_sender
+                            .send("Not only drop event, unexpected!".to_string())
+                            .await;
+                        break;
+                    }
+                }
+            }
+            events.clear();
+            ////////////////////////////////////////////////////////////////////////////////////
+            for _ in 0..2 {
+                let e = events_recv.recv().await.unwrap();
+                events.push(e);
+            }
+
+            assert_eq!(2, events.len());
+
+            let _ = s.sender.send(ShutdownEvent::ForceStop);
         });
-        block_create_mock_grpc_server(config, shutdown_sender).await;
+
+        let _ = cluster
+            .block_watch(ctx.observer, ctx.chg_recv, ctx.conf, shutdown_signal)
+            .await;
+
+        let msg = panic_recv.try_recv();
+        if msg.is_ok() {
+            let msg = msg.unwrap();
+            panic!("{}", msg);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_observer() {
+        init_console_logger();
+
+        let (send, mut recv) = tokio::sync::mpsc::channel(1024);
+
+        let mut ob = Observer::new();
+        ob.regist(send);
+
+        tokio::spawn(async move {
+            ob.notify_all(ClientEvent::DropEvent(1));
+        });
+
+        let e = recv.recv().await;
+        tracing::info!("Has received event:{}", e.is_some());
+        assert!(e.is_some());
     }
 }
