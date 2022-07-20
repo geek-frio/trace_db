@@ -40,6 +40,10 @@ impl<N: Fsm> FsmState<N> {
         }
     }
 
+    pub fn is_busy(&self) -> bool {
+        self.status.load(std::sync::atomic::Ordering::Relaxed) == 0
+    }
+
     pub fn take_fsm(&self) -> Option<Box<N>> {
         let res = self.status.compare_exchange(
             NOTIFYSTATE_IDLE,

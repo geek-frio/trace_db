@@ -1,4 +1,5 @@
 use super::ShutdownSignal;
+use crate::com::index::EXPIRED_DAYS;
 use crate::router::Router;
 use crate::tag::fsm::TagFsm;
 use crate::{
@@ -45,17 +46,15 @@ where
                             .entered();
                             trace!(parent: &segment_callback.span, "Has received the segment, try to route to mailbox.");
 
-                            let res_addr = segment_callback.data.biz_timestamp.with_index_addr();
-                            match res_addr {
-                                Ok(addr) => {
-                                    if let Err(stat) = self.router.route_msg(addr, segment_callback, Router::create_tag_fsm) {
-                                        let seg = stat.0;
-                                        seg.callback.callback(CallbackStat::IOErr(stat.1, seg.data.into()));
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!("invalid segment! data time expire 30 days,e:{:?}", e);
-                                    segment_callback.callback.callback(CallbackStat::ExpiredData(segment_callback.data.into()));
+                            let mailkey_addr = segment_callback.data.biz_timestamp.with_index_addr();
+
+                            if mailkey_addr.is_expired(EXPIRED_DAYS) {
+                                tracing::warn!("invalid segment! data time expire {} days", EXPIRED_DAYS);
+                                segment_callback.callback.callback(CallbackStat::ExpiredData(segment_callback.data.into()));
+                            } else {
+                                if let Err(stat) = self.router.route_msg(mailkey_addr, segment_callback, Router::create_tag_fsm) {
+                                    let seg = stat.0;
+                                    seg.callback.callback(CallbackStat::IOErr(stat.1, seg.data.into()));
                                 }
                             }
 
@@ -71,7 +70,7 @@ where
                             while let Ok(segment_callback) = self.receiver.try_recv() {
                                 info!("loop consume all the segments waiting in the channel");
 
-                                let addr = segment_callback.data.biz_timestamp.with_index_addr().unwrap();
+                                let addr = segment_callback.data.biz_timestamp.with_index_addr();
                                 if let Err(stat) = self.router.route_msg(addr, segment_callback, Router::create_tag_fsm) {
                                     let seg = stat.0;
                                     seg.callback.callback(CallbackStat::IOErr(stat.1, seg.data.into()));
