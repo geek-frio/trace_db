@@ -1,7 +1,7 @@
 use chrono::prelude::*;
 use chrono::{TimeZone, Utc};
+use std::fs::ReadDir;
 use std::path::{Path, PathBuf};
-use tokio::fs::DirEntry;
 
 pub type IndexAddr = i64;
 pub const EXPIRED_DAYS: i64 = 15;
@@ -118,9 +118,75 @@ impl MailKeyAddress {
                 bound_start.minute() / 15
             );
 
+            tracing::info!("left: {}, right:{}", name, bound_start_file_name);
             name < bound_start_file_name.as_str()
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicI32;
+
+    use crate::log::init_console_logger;
+
+    use super::MailKeyAddress;
+
+    static DIR_PATH: AtomicI32 = AtomicI32::new(0);
+
+    fn setup() {
+        init_console_logger()
+    }
+
+    fn create_expired_dir_name(expired_days: i64) -> String {
+        let datetime = chrono::Utc::now();
+        let datetime = datetime
+            .checked_sub_signed(chrono::Duration::days(expired_days))
+            .unwrap();
+
+        tracing::trace!("Created expired datetime:{}", datetime);
+        MailKeyAddress::format_dir(datetime.timestamp_millis()).unwrap()
+    }
+
+    fn teardown<T: AsRef<std::path::Path>>(root_dir: T) {
+        let r = std::fs::remove_dir_all(root_dir.as_ref());
+        if r.is_ok() {
+            tracing::info!("Remove all temp directory success!");
+        }
+    }
+
+    #[test]
+    fn test_list_expired_dir_items() {
+        setup();
+
+        let temp = std::env::temp_dir();
+
+        let root_dir_name = format!(
+            "{}",
+            DIR_PATH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+
+        let root_dir = temp.join(root_dir_name);
+        tracing::info!("root dir is:{:?}", root_dir);
+
+        std::fs::create_dir(&root_dir).unwrap();
+
+        let expired_dir1 = create_expired_dir_name(16);
+        let _ = std::fs::create_dir(root_dir.join(expired_dir1));
+
+        let expired_dir2 = create_expired_dir_name(17);
+        let _ = std::fs::create_dir(root_dir.join(expired_dir2));
+
+        let not_expired_dir3 = create_expired_dir_name(1);
+        let _ = std::fs::create_dir(root_dir.join(not_expired_dir3));
+
+        let _ = std::fs::create_dir(root_dir.join("12345"));
+
+        let expired_items = MailKeyAddress::list_expired_dir_items(&root_dir).unwrap();
+        assert_eq!(expired_items.len(), 2);
+
+        teardown(&root_dir);
     }
 }
