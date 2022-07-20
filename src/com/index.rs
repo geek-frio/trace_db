@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 pub type IndexAddr = i64;
 pub const EXPIRED_DAYS: i64 = 15;
 
-#[allow(dead_code)]
 #[derive(Debug, Copy, Clone)]
 pub struct MailKeyAddress {
     pub timestamp: i64,
@@ -19,16 +18,6 @@ impl ConvertIndexAddr for i64 {
     fn with_index_addr(self) -> MailKeyAddress {
         assert!(self > 0);
         assert!(self < i64::MAX);
-        // let d = Utc.timestamp_millis(self);
-
-        // let month = d.month();
-        // let day = d.day();
-        // let hour = d.hour();
-        // let minute = d.minute() / 15;
-
-        // let s = format!("{:0>2}{:0>2}{:0>2}{:0>2}", month, day, hour, minute);
-        // tracing::trace!("addr: {}", s);
-        // let val = s.parse::<i64>()?;
 
         MailKeyAddress { timestamp: self }
     }
