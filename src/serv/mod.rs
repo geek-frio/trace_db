@@ -6,6 +6,7 @@ pub mod service;
 use std::error::Error;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Once};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::batch::{BatchSystem, FsmTypes};
@@ -258,7 +259,7 @@ impl MainServer {
     fn clear_mailbox<T: AsRef<std::path::Path> + Send + 'static>(
         res_v: Result<Vec<BasicMailbox<TagFsm>>, anyhow::Error>,
         index_dir: T,
-    ) {
+    ) -> JoinHandle<()> {
         // It's a blocking operation, so we have to do it in new thread while not in tokio runtime
         std::thread::spawn(move || {
             if let Ok(v) = res_v {
@@ -301,7 +302,7 @@ impl MainServer {
                     }
                 }
             }
-        });
+        })
     }
 
     pub fn start_bridge_channel(

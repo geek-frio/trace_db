@@ -335,7 +335,7 @@ mod tests {
         batch::FsmTypes,
         com::{
             index::ConvertIndexAddr,
-            test_util::{gen_segcallback, gen_valid_mailkeyadd},
+            test_util::{gen_expired_mailkeyadd, gen_segcallback, gen_valid_mailkeyadd},
         },
         log::init_console_logger,
         router::RouteMsg,
@@ -413,24 +413,50 @@ mod tests {
     #[test]
     fn test_regist_all() {
         let router = setup();
-        let m1 = gen_valid_mailkeyadd();
-        let (fsm1, sender1) = Router::create_tag_fsm(m1.clone(), "/tmp").unwrap();
-        let box1 = router.create_mailbox(fsm1, sender1);
 
-        let m2 = gen_valid_mailkeyadd();
-        let (fsm2, sender2) = Router::create_tag_fsm(m2.clone(), "/tmp").unwrap();
-        let box2 = router.create_mailbox(fsm2, sender2);
+        let mut v = Vec::new();
+        for _ in 0..3 {
+            let m1 = gen_valid_mailkeyadd();
+            let (fsm1, sender1) = Router::create_tag_fsm(m1.clone(), "/tmp").unwrap();
+            let box1 = router.create_mailbox(fsm1, sender1);
 
-        let m3 = gen_valid_mailkeyadd();
-        let (fsm3, sender3) = Router::create_tag_fsm(m3.clone(), "/tmp").unwrap();
-        let box3 = router.create_mailbox(fsm3, sender3);
-
-        router.register_all(vec![
-            (m1.into(), box1),
-            (m2.into(), box2),
-            (m3.into(), box3),
-        ]);
+            v.push((m1.into(), box1));
+        }
+        router.register_all(v);
 
         assert_eq!(router.alive_cnt().load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn test_remove_expired_mailboxes() {
+        let mut router = setup();
+
+        // Create 3 valid Fsm
+        for _ in 0..3 {
+            let m1 = gen_valid_mailkeyadd();
+            let (fsm1, sender1) = Router::create_tag_fsm(m1.clone(), "/tmp").unwrap();
+            let box1 = router.create_mailbox(fsm1, sender1);
+
+            router.register(m1.into(), box1);
+        }
+
+        // Create 4 expired Fsm
+        for _ in 0..4 {
+            let m1 = gen_expired_mailkeyadd();
+            let (fsm1, sender1) = Router::create_tag_fsm(m1.clone(), "/tmp").unwrap();
+            let box1 = router.create_mailbox(fsm1, sender1);
+
+            router.register(m1.into(), box1);
+        }
+
+        let res = router.remove_expired_mailbox();
+        match res {
+            Ok(v) => {
+                assert_eq!(4, v.len());
+            }
+            Err(e) => {
+                panic!("{:?}", e);
+            }
+        }
     }
 }

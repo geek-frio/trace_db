@@ -8,7 +8,7 @@ use crate::tag::fsm::SegmentDataCallback;
 
 use super::{
     ack::{AckCallback, CallbackStat},
-    index::{ConvertIndexAddr, MailKeyAddress},
+    index::{ConvertIndexAddr, MailKeyAddress, EXPIRED_DAYS},
 };
 
 pub fn gen_segcallback(days: i64, secs: i64) -> (SegmentDataCallback, Receiver<CallbackStat>) {
@@ -35,7 +35,25 @@ pub fn gen_valid_mailkeyadd() -> MailKeyAddress {
 
     let mut rng = rand::thread_rng();
 
-    let before_days = rng.gen_range(1i64..30i64);
+    let before_days = rng.gen_range(1i64..(EXPIRED_DAYS - 1));
+    let before_seconds = rng.gen_range(1i64..3600 * 12i64);
+
+    let date_time = cur
+        .checked_sub_signed(chrono::Duration::days(before_days))
+        .unwrap();
+    date_time
+        .checked_sub_signed(chrono::Duration::seconds(before_seconds))
+        .unwrap()
+        .timestamp_millis()
+        .with_index_addr()
+}
+
+pub fn gen_expired_mailkeyadd() -> MailKeyAddress {
+    let cur = Local::now();
+
+    let mut rng = rand::thread_rng();
+
+    let before_days = rng.gen_range(EXPIRED_DAYS..(EXPIRED_DAYS + 10));
     let before_seconds = rng.gen_range(1i64..3600 * 12i64);
 
     let date_time = cur
