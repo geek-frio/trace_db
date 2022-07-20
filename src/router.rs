@@ -331,11 +331,7 @@ mod tests {
 
         let msg = gen_segcallback(1, 1);
 
-        let res = router.route_msg(
-            1234u64.with_index_addr().unwrap(),
-            msg.0,
-            Router::create_tag_fsm,
-        );
+        let res = router.route_msg(1234u64.with_index_addr(), msg.0, Router::create_tag_fsm);
 
         match res {
             Ok(_) => {
@@ -345,7 +341,7 @@ mod tests {
                 panic!();
             }
         }
-        router.close(1234i64.with_index_addr().unwrap().into());
+        router.close(1234i64.with_index_addr().into());
 
         assert_eq!(0, router.alive_cnt().load(Ordering::Relaxed));
 

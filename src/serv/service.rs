@@ -3,6 +3,8 @@ use super::ShutdownSignal;
 use crate::client::trans::TransportErr;
 use crate::com::index::ConvertIndexAddr;
 use crate::com::index::IndexAddr;
+use crate::com::index::MailKeyAddress;
+use crate::com::index::EXPIRED_DAYS;
 use crate::conf::GlobalConfig;
 use crate::tag::fsm::SegmentDataCallback;
 use crate::tag::schema::API_ID;
@@ -41,7 +43,7 @@ use tracing::error;
 #[derive(Clone)]
 pub struct SkyTracingService {
     sender: UnboundedSender<SegmentDataCallback>,
-    config: Arc<GlobalConfig>,
+    _config: Arc<GlobalConfig>,
     tracing_schema: Schema,
     index_map: Arc<Mutex<HashMap<IndexAddr, Index>>>,
     service: BoxCloneService<
@@ -69,7 +71,7 @@ impl SkyTracingService {
         let index_map = Arc::new(Mutex::new(HashMap::default()));
         let service = SkyTracingService {
             sender: batch_system_sender,
-            config,
+            _config: config,
             tracing_schema: schema.clone(),
             index_map: index_map.clone(),
             service,
@@ -148,13 +150,15 @@ impl SkyTracing for SkyTracingService {
             .ok()
             .unwrap_or_else(|| {
                 let mail_addr = addr.with_index_addr();
-                match mail_addr {
-                    Ok(mail_key_addr) => Index::create_in_dir(
-                        mail_key_addr.get_idx_path(self.config.index_dir.as_str()),
+
+                if mail_addr.is_expired(EXPIRED_DAYS) {
+                    None
+                } else {
+                    Index::create_in_dir(
+                        MailKeyAddress::format_dir(mail_addr.timestamp).unwrap(),
                         self.tracing_schema.clone(),
                     )
-                    .ok(),
-                    Err(_) => None,
+                    .ok()
                 }
             });
         match idx {

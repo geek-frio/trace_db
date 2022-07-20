@@ -94,7 +94,7 @@ impl TracingTagEngine {
     }
 
     fn index_dir_create(addr: MailKeyAddress, data_dir: &str) -> Result<Index, anyhow::Error> {
-        let path = addr.get_idx_path(data_dir);
+        let path = addr.get_idx_path(data_dir).unwrap();
 
         std::fs::create_dir_all(path.as_path())?;
 

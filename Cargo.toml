@@ -41,6 +41,7 @@ tantivy-query-grammar = "0.15.0"
 ctrlc = "3.2.2"
 once_cell = "1.13"
 fail = "0.4"
+num-traits = "0.2"
 
 [dev-dependencies]
 pretty_assertions = "1"

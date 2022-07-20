@@ -1350,6 +1350,7 @@ dependencies = [
  "futures-util",
  "grpcio",
  "lazy_static",
+ "num-traits",
  "once_cell",
  "pin-project",
  "pretty_assertions",

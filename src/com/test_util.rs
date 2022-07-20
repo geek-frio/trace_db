@@ -46,7 +46,6 @@ pub fn gen_valid_mailkeyadd() -> MailKeyAddress {
         .unwrap()
         .timestamp_millis()
         .with_index_addr()
-        .unwrap()
 }
 
 pub(crate) mod redis {
