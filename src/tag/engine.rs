@@ -10,6 +10,8 @@ use tracing::error;
 pub struct TracingTagEngine {
     index_writer: IndexWriter,
     index: Index,
+
+    pub mailkey: MailKeyAddress,
 }
 
 impl TracingTagEngine {
@@ -48,6 +50,7 @@ impl TracingTagEngine {
                     Ok(writer) => Ok(TracingTagEngine {
                         index_writer: writer,
                         index,
+                        mailkey: addr,
                     }),
                     Err(e) => {
                         error!("Index writer create failed!e:{:?}", e);
@@ -64,6 +67,8 @@ impl TracingTagEngine {
 
     #[cfg(test)]
     pub fn new_for_test() -> Result<TracingTagEngine, TagEngineError> {
+        use crate::com::index::ConvertIndexAddr;
+
         let res_index = Self::index_ram_dir_create();
 
         match res_index {
@@ -73,6 +78,7 @@ impl TracingTagEngine {
                     Ok(writer) => Ok(TracingTagEngine {
                         index_writer: writer,
                         index,
+                        mailkey: 123i64.with_index_addr(),
                     }),
                     Err(e) => {
                         error!("Index writer create failed!e:{:?}", e);

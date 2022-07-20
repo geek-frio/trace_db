@@ -48,7 +48,7 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
         scheduler: &S,
     ) -> Result<(), SendError<Owner::Message>> {
         if self.sender.len() > 5000 {
-            println!(
+            tracing::warn!(
                 "Channel has the risk of being full, sender's length:{}",
                 self.sender.len()
             );
@@ -71,6 +71,10 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
     }
 
     pub fn is_empty(&self) -> bool {
-        return self.sender.is_empty();
+        self.sender.is_empty()
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.state.is_busy()
     }
 }

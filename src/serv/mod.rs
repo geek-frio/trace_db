@@ -13,6 +13,7 @@ use crate::client::cluster::{
     make_service, ClientEvent, ClusterActiveWatcher, Observe, Observer, Watch,
 };
 use crate::client::trans::TransportErr;
+use crate::com::mail::BasicMailbox;
 use crate::conf::GlobalConfig;
 use crate::log::init_tracing_logger;
 use crate::redis::{RedisAddr, RedisTTLSet};
@@ -219,15 +220,23 @@ impl MainServer {
 
         let mut batch_system = BatchSystem::new(router.clone(), r, 1, 500);
         batch_system.spawn("Tag Poller".to_string());
-        let router_tick = router.clone();
+        let mut router_tick = router.clone();
         let mut recv = shutdown_signal.recv;
         let send = shutdown_signal.drop_notify;
+
+        let index_dir = router.conf.index_dir.clone();
         TOKIO_RUN.spawn(
             async move {
                 loop {
                     tokio::select! {
                         _ = sleep(Duration::from_secs(10)) => {
                             trace!("Sent tick event to TagPollHandler");
+
+                            // 1: Periodically check fsm life scope
+                            let res_v = (&mut router_tick).remove_expired_mailbox();
+                            Self::clear_mailbox(res_v, index_dir.clone());
+
+                            // 2: Periodically Tick Notify fsm mailbox
                             let _ = router_tick.notify_all_idle_mailbox();
                         }
                         _ = recv.recv() => {
@@ -244,6 +253,55 @@ impl MainServer {
             .instrument(info_span!("tick_event")),
         );
         return router;
+    }
+
+    fn clear_mailbox<T: AsRef<std::path::Path> + Send + 'static>(
+        res_v: Result<Vec<BasicMailbox<TagFsm>>, anyhow::Error>,
+        index_dir: T,
+    ) {
+        // It's a blocking operation, so we have to do it in new thread while not in tokio runtime
+        std::thread::spawn(move || {
+            if let Ok(v) = res_v {
+                for mailbox in v.into_iter() {
+                    info!("Have found expired fsm dir need to be removed ");
+                    // We only operate not busy fsm
+                    if !mailbox.state.is_busy() {
+                        let o_fsm = mailbox.take_fsm();
+
+                        if let Some(mut fsm) = o_fsm {
+                            let engine = fsm.get_mut_engine();
+                            let index_writer = engine.get_mut_index_writer();
+
+                            // 1.flush all the pending writes
+                            let _ = index_writer.commit();
+
+                            let _ = index_writer.garbage_collect_files();
+
+                            // 2.delete all the documents
+                            let _ = index_writer.delete_all_documents();
+
+                            drop(index_writer);
+
+                            // 3. Try to delete directory
+                            if let Ok(dir) = engine.mailkey.get_idx_path(&index_dir) {
+                                let res = std::fs::remove_dir_all(&dir);
+                                match res {
+                                    Ok(_) => {
+                                        tracing::info!(
+                                            "Remove dir:{:?} success, it's a expired mailkey dir",
+                                            dir
+                                        )
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Remove dir:{:?} failed, it's expired, but we can't remove it, reason is:{:?}", dir, e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 
     pub fn start_bridge_channel(

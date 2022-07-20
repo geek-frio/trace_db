@@ -45,7 +45,7 @@ pub struct Router<N: Fsm, S> {
     pub(crate) normal_scheduler: S,
     state_cnt: Arc<AtomicUsize>,
     shutdown: Arc<AtomicBool>,
-    conf: Arc<GlobalConfig>,
+    pub conf: Arc<GlobalConfig>,
 }
 
 impl Router<TagFsm, NormalScheduler<TagFsm>> {
@@ -238,6 +238,37 @@ where
                     mail.notify(&self.normal_scheduler);
                 }
                 Ok(())
+            }
+            Err(e) => Err(AnyError::msg(format!("lock has been poisoned, e:{:?}", e))),
+        }
+    }
+
+    pub fn remove_expired_mailbox(&mut self) -> Result<Vec<BasicMailbox<N>>, anyhow::Error> {
+        let res = self.normals.lock();
+        let bound_start = MailKeyAddress::get_not_expired_bound_start()
+            .parse::<i64>()
+            .unwrap();
+
+        match res {
+            Ok(mut r) => {
+                let iter = r.iter();
+
+                let mut ids = Vec::new();
+                for (id, _) in iter {
+                    if *id < bound_start {
+                        ids.push(*id);
+                    }
+                }
+
+                Ok(ids
+                    .iter()
+                    .map(move |id| {
+                        let mailbox = r.map.remove(id);
+                        mailbox
+                    })
+                    .filter(|m| m.is_some())
+                    .map(|m| m.unwrap())
+                    .collect::<Vec<_>>())
             }
             Err(e) => Err(AnyError::msg(format!("lock has been poisoned, e:{:?}", e))),
         }

@@ -43,7 +43,7 @@ impl Into<i64> for MailKeyAddress {
 }
 
 impl MailKeyAddress {
-    pub fn get_idx_path(&self, dir: &str) -> Result<PathBuf, anyhow::Error> {
+    pub fn get_idx_path<T: AsRef<Path>>(&self, dir: T) -> Result<PathBuf, anyhow::Error> {
         let dir_path: &Path = dir.as_ref();
         Ok(dir_path.join(Self::format_dir(self.timestamp)?))
     }
@@ -122,6 +122,16 @@ impl MailKeyAddress {
         } else {
             false
         }
+    }
+
+    pub(crate) fn get_not_expired_bound_start() -> String {
+        let now = Utc::now();
+
+        let bound_start = now
+            .checked_sub_signed(chrono::Duration::days(EXPIRED_DAYS))
+            .unwrap();
+
+        Self::format_dir(bound_start.timestamp_millis()).unwrap()
     }
 }
 
