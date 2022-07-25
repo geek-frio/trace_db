@@ -188,13 +188,7 @@ impl MainServer {
         searcher: Searcher<SkyTracingClient>,
         shutdown_signal: ShutdownSignal,
     ) {
-        let skytracing = SkyTracingService::new(
-            self.global_config.clone(),
-            sender,
-            service,
-            searcher,
-            shutdown_signal,
-        );
+        let skytracing = SkyTracingService::new(sender, service, searcher, shutdown_signal);
 
         let service = create_sky_tracing(skytracing);
         let env = Environment::new(1);

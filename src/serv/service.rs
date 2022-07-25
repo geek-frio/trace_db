@@ -5,15 +5,8 @@ use crate::com::index::ConvertIndexAddr;
 use crate::com::index::IndexAddr;
 use crate::com::index::MailKeyAddress;
 use crate::com::index::EXPIRED_DAYS;
-use crate::conf::GlobalConfig;
 use crate::tag::fsm::SegmentDataCallback;
-use crate::tag::schema::API_ID;
-use crate::tag::schema::BIZTIME;
-use crate::tag::schema::PAYLOAD;
-use crate::tag::schema::SEGID;
-use crate::tag::schema::SERVICE;
-use crate::tag::schema::TRACE_ID;
-use crate::tag::schema::ZONE;
+use crate::tag::schema::TRACING_SCHEMA;
 use crate::tag::search::Searcher;
 use crate::*;
 use anyhow::Error as AnyError;
@@ -43,7 +36,6 @@ use tracing::error;
 #[derive(Clone)]
 pub struct SkyTracingService {
     sender: UnboundedSender<SegmentDataCallback>,
-    _config: Arc<GlobalConfig>,
     tracing_schema: Schema,
     index_map: Arc<Mutex<HashMap<IndexAddr, Index>>>,
     service: BoxCloneService<
@@ -57,7 +49,6 @@ pub struct SkyTracingService {
 
 impl SkyTracingService {
     pub fn new(
-        config: Arc<GlobalConfig>,
         batch_system_sender: UnboundedSender<SegmentDataCallback>,
         service: BoxCloneService<
             SegmentData,
@@ -67,30 +58,16 @@ impl SkyTracingService {
         searcher: Searcher<SkyTracingClient>,
         shutdown_signal: ShutdownSignal,
     ) -> SkyTracingService {
-        let schema = Self::init_sk_schema();
         let index_map = Arc::new(Mutex::new(HashMap::default()));
         let service = SkyTracingService {
             sender: batch_system_sender,
-            _config: config,
-            tracing_schema: schema.clone(),
+            tracing_schema: TRACING_SCHEMA.clone(),
             index_map: index_map.clone(),
             service,
             searcher,
             shutdown_signal: shutdown_signal,
         };
         service
-    }
-
-    pub fn init_sk_schema() -> Schema {
-        let mut schema_builder = Schema::builder();
-        schema_builder.add_text_field(ZONE, STRING);
-        schema_builder.add_i64_field(API_ID, INDEXED);
-        schema_builder.add_text_field(SERVICE, TEXT);
-        schema_builder.add_u64_field(BIZTIME, STORED);
-        schema_builder.add_text_field(TRACE_ID, STRING | STORED);
-        schema_builder.add_text_field(SEGID, STRING);
-        schema_builder.add_text_field(PAYLOAD, STRING);
-        schema_builder.build()
     }
 }
 

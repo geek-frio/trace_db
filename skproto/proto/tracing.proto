@@ -6,7 +6,7 @@ service SkyTracing {
     rpc PushSegments(stream SegmentData) returns (stream SegmentRes) {}
     rpc QuerySkySegments(SkyQueryParam) returns (SkySegmentRes) {}
     rpc DistQuerySkySegments(SkyQueryParam) returns (SkySegmentRes) {}
-
+    rpc DistQueryByTQuery(SkyQueryParam) returns (NormalSegmentsRes) {}
     rpc BatchReqSegments(BatchSegmentData) returns (Stat) {}
 }
 
@@ -44,6 +44,21 @@ message SegRange {
 
 message SkySegmentRes {
     repeated ScoreDoc score_doc = 1;
+}
+
+message NormalSegmentsRes {
+    Stat stat = 1;
+    repeated NormalSegment segments = 2;
+}
+
+message NormalSegment {
+    string trace_id = 1;
+    string zone = 2;
+    string ser_key = 3;
+    int32 api_id = 4;
+    string payload = 5;
+    uint64 biz_timestamp = 6;
+    string seg_id = 7;
 }
 
 message ScoreDoc {
