@@ -76,6 +76,7 @@ impl RemoteClient for SkyTracingClient {
     ) -> Result<Vec<ScoreDocument>, ()> {
         let mut param = SkyQueryParam::new();
         let mut range = SegRange::new();
+
         range.set_addr(addr);
         param.set_limit(limit as i32);
         param.set_offset(offset as i32);
@@ -121,7 +122,7 @@ impl<T: RemoteClient> DistSearchManager<T> {
         addr: IndexAddr,
         offset: usize,
         limit: usize,
-    ) -> Result<Vec<ScoreDocument>, ()> {
+    ) -> Result<Vec<ScoreDocument>, anyhow::Error> {
         // Collect query result data from different remote client
         let res: Vec<Result<Vec<ScoreDocument>, ()>> = self
             .remotes
@@ -132,12 +133,14 @@ impl<T: RemoteClient> DistSearchManager<T> {
                 res
             })
             .collect();
+
         let mut merged_docs = res
             .into_iter()
             .filter(|r| r.is_ok())
             .map(|r| r.unwrap())
             .flatten()
             .collect::<Vec<ScoreDocument>>();
+
         // Sort data by score, only get the top ${limit} documents
         merged_docs.sort_by(|a, b| {
             if a.score < b.score {
@@ -153,97 +156,5 @@ impl<T: RemoteClient> DistSearchManager<T> {
     }
 }
 
-// pub struct AddrsConfigWatcher {
-//     redis_client: RedisClient,
-//     config: Arc<GlobalConfig>,
-// }
-
-// impl AddrsConfigWatcher {
-//     pub fn new(client: RedisClient, config: Arc<GlobalConfig>) -> AddrsConfigWatcher {
-//         AddrsConfigWatcher {
-//             redis_client: client,
-//             config,
-//         }
-//     }
-// }
-
-// impl<T> ConfigWatcher<T> for AddrsConfigWatcher
-// where
-//     T: Sync + Send + 'static + Clone,
-// {
-//     fn watch<F>(&self, cb: F, sender: Sender<Vec<T>>)
-//     where
-//         F: FnOnce(Vec<String>) -> Vec<T> + Send + 'static + Copy,
-//     {
-//         // Logic to pull addrs
-//         let redis_client = self.redis_client.clone();
-//         let redis_ttl = RedisTTLSet { ttl: 5 };
-//         let redis_addr = self.config.redis_addr.clone();
-//         let grpc_port = self.config.grpc_port;
-//         thread::spawn(move || {
-//             let mut last: Vec<String> = Vec::new();
-//             let mut conn = redis_client.get_connection();
-//             loop {
-//                 if let Ok(mut c) = conn.as_mut() {
-//                     let _ = redis_ttl.push(&mut c, &redis_addr);
-//                     let res = redis_ttl.query_all(&mut c);
-//                     match res {
-//                         Ok(records) => {
-//                             let addrs = records
-//                                 .into_iter()
-//                                 .map(|r| format!("{}:{}", r.sub_key, grpc_port).to_string())
-//                                 .collect::<Vec<String>>();
-
-//                             if last != addrs {
-//                                 last = addrs.clone();
-//                                 let clients = cb(addrs);
-//                                 let _ = sender.send(clients);
-//                             }
-//                             sleep(Duration::from_secs(5));
-//                         }
-//                         Err(_) => continue,
-//                     }
-//                 } else {
-//                     println!("Get connection failed!Continue to next loop");
-//                     continue;
-//                 }
-//             }
-//         });
-//     }
-// }
-
 #[cfg(test)]
-mod tests {
-    // use super::*;
-    // use crate::com::config::ConfigManager;
-    use anyhow::Error as AnyError;
-    // use grpcio::{ChannelBuilder, Environment};
-
-    #[test]
-    fn test_xxx() -> Result<(), AnyError> {
-        // let client = redis::Client::open("redis://127.0.0.1:6379")?;
-        // let config = Arc::new(ConfigManager::load("/tmp/skdb_test.yaml".into()));
-        // let addrs_watcher = AddrsConfigWatcher {
-        //     redis_client: client.clone(),
-        //     config: config.clone(),
-        // };
-        // let _ = SearchBuilder::<SkyTracingClient>::new_init(
-        //     addrs_watcher,
-        //     |v: Vec<String>| {
-        //         let mut clients = Vec::new();
-        //         for addr in v {
-        //             let env = Environment::new(3);
-        //             // TODO: config change
-        //             let channel = ChannelBuilder::new(Arc::new(env)).connect(addr.as_str());
-        //             let client = SkyTracingClient::new(channel);
-        //             clients.push(client);
-        //         }
-        //         clients
-        //     },
-        //     client,
-        //     config,
-        // );
-        // let search_builder = SearchBuilder::new();
-        Ok(())
-    }
-}
+mod tests {}

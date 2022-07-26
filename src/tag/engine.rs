@@ -9,7 +9,7 @@ use tracing::error;
 
 pub struct TracingTagEngine {
     index_writer: IndexWriter,
-    index: Index,
+    pub index: Index,
 
     pub mailkey: MailKeyAddress,
 }
@@ -94,13 +94,14 @@ impl TracingTagEngine {
     }
 
     #[cfg(test)]
-    fn index_ram_dir_create() -> Result<Index, anyhow::Error> {
+    pub fn index_ram_dir_create() -> Result<Index, anyhow::Error> {
         let schema = (&TRACING_SCHEMA).deref().clone();
         Ok(Index::create_in_ram(schema.clone()))
     }
 
-    fn index_dir_create(addr: MailKeyAddress, data_dir: &str) -> Result<Index, anyhow::Error> {
+    pub fn index_dir_create(addr: MailKeyAddress, data_dir: &str) -> Result<Index, anyhow::Error> {
         let path = addr.get_idx_path(data_dir).unwrap();
+        tracing::info!("New created path is:{:?}", path);
 
         std::fs::create_dir_all(path.as_path())?;
 
