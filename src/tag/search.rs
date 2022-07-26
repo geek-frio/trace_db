@@ -122,7 +122,7 @@ impl<T: RemoteClient> DistSearchManager<T> {
         addr: IndexAddr,
         offset: usize,
         limit: usize,
-    ) -> Result<Vec<ScoreDocument>, ()> {
+    ) -> Result<Vec<ScoreDocument>, anyhow::Error> {
         // Collect query result data from different remote client
         let res: Vec<Result<Vec<ScoreDocument>, ()>> = self
             .remotes

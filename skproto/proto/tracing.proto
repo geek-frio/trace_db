@@ -5,7 +5,6 @@ package tracing;
 service SkyTracing {
     rpc PushSegments(stream SegmentData) returns (stream SegmentRes) {}
     rpc QuerySkySegments(SkyQueryParam) returns (SkySegmentRes) {}
-    rpc DistQuerySkySegments(SkyQueryParam) returns (SkySegmentRes) {}
     rpc DistQueryByTQuery(SkyQueryParam) returns (NormalSegmentsRes) {}
     rpc BatchReqSegments(BatchSegmentData) returns (Stat) {}
 }

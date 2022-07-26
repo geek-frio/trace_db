@@ -133,6 +133,7 @@ impl MainServer {
             segment_sender.clone(),
             wait_recv,
             service,
+            self.global_config.clone(),
             searcher,
             shutdown_signal,
         )
@@ -185,10 +186,11 @@ impl MainServer {
             Result<(), TransportErr>,
             Box<dyn Error + Send + Sync>,
         >,
+        config: Arc<GlobalConfig>,
         searcher: Searcher<SkyTracingClient>,
         shutdown_signal: ShutdownSignal,
     ) {
-        let skytracing = SkyTracingService::new(sender, service, searcher, shutdown_signal);
+        let skytracing = SkyTracingService::new(sender, service, config, searcher, shutdown_signal);
 
         let service = create_sky_tracing(skytracing);
         let env = Environment::new(1);
