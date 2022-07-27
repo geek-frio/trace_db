@@ -195,7 +195,13 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 .collect();
             self.handler.end(&mut fsm_vec);
 
-            batch.clear();
+            // Release fsm batch to mailbox
+            while let Some(mut item) = batch.pop() {
+                let mailbox = item.fsm.take_mailbox();
+                if let Some(mailbox) = mailbox {
+                    mailbox.release(item.fsm);
+                }
+            }
         }
     }
 }

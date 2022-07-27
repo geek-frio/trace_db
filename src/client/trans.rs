@@ -217,52 +217,77 @@ where
         }
     }
 
-    pub async fn poll_resp(&mut self, item: SegmentRes) {
-        let seq_id = item.get_meta().get_seqId();
-        match item.get_meta().field_type {
+    pub async fn poll_resp(&mut self, resp: SegmentRes) {
+        let seq_id = resp.get_meta().get_seqId();
+
+        match resp.get_meta().field_type {
             Meta_RequestType::NEED_RESEND => {
                 let iter = self.ring.not_ack_iter_mut();
 
+                tracing::info!("resp resp :resp :resp :resp :{:?}", resp);
                 for item in iter {
-                    let mut segment = item.clone();
-                    let mut meta = Meta::new();
+                    if item.1 == seq_id {
+                        let mut segment = item.0.clone();
+                        let mut meta = Meta::new();
 
-                    meta.set_field_type(Meta_RequestType::NEED_RESEND);
-                    meta.set_seqId(seq_id);
+                        meta.set_field_type(Meta_RequestType::NEED_RESEND);
+                        meta.set_seqId(seq_id);
 
-                    let resend_count = meta.resend_count;
-                    if resend_count >= 3 {
-                        let s = self.callback_map.remove(&seq_id);
-                        if let Some(s) = s {
-                            let _ = s.send(Err(TransportErr::RetryLimit));
-                            return;
+                        let resend_count = resp.get_meta().resend_count + 1;
+
+                        tracing::info!(
+                            "Response resend count is:{:?}, seq_id is:{}",
+                            resend_count,
+                            seq_id
+                        );
+
+                        if resend_count >= 3 {
+                            tracing::warn!(
+                                "Has overceed retry limit times, resend count is:{}",
+                                resend_count
+                            );
+
+                            let s = self.callback_map.remove(&seq_id);
+                            if let Some(s) = s {
+                                let _ = s.send(Err(TransportErr::RetryLimit));
+                            }
+
+                            self.ack_seq_id(seq_id, &resp);
+                        } else {
+                            meta.set_resend_count(resend_count + 1);
+                            segment.set_meta(meta);
+
+                            let _ = self.sink.send((segment, WriteFlags::default())).await;
                         }
-                    }
-                    meta.set_resend_count(resend_count + 1);
-                    segment.set_meta(meta);
 
-                    let _ = self.sink.send((segment, WriteFlags::default())).await;
+                        break;
+                    }
                 }
             }
             Meta_RequestType::TRANS_ACK => {
-                let seq_id = item.get_meta().get_seqId();
-                let res = self.ring.ack(seq_id);
+                let seq_id = resp.get_meta().get_seqId();
 
-                match res {
-                    Ok(v) => {
-                        for seq_id in v.into_iter() {
-                            let s = self.callback_map.remove(&seq_id);
-                            if let Some(s) = s {
-                                let _ = s.send(Ok(()));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!(ack_id = seq_id, %e, ?item, "Ack has met some problem");
+                self.ack_seq_id(seq_id, &resp);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn ack_seq_id(&mut self, seq_id: i64, resp: &SegmentRes) {
+        let res = self.ring.ack(seq_id);
+
+        match res {
+            Ok(v) => {
+                for seq_id in v.into_iter() {
+                    let s = self.callback_map.remove(&seq_id);
+                    if let Some(s) = s {
+                        let _ = s.send(Ok(()));
                     }
                 }
             }
-            _ => unreachable!(),
+            Err(e) => {
+                error!(ack_id = seq_id, %e, ?resp, "Ack has met some problem");
+            }
         }
     }
 }

@@ -207,17 +207,17 @@ impl SkyTracing for SkyTracingService {
             return;
         }
 
-        let mailaddr = req.seg_range.unwrap().addr;
+        let biztime = req.seg_range.unwrap().addr;
         let res_index = Self::check_create_idx(
             &self.index_map,
             &self.config.index_dir,
-            mailaddr.with_index_addr(),
+            biztime.with_index_addr(),
         );
 
         match res_index {
             Ok(_) => {
                 let guard = self.index_map.lock().unwrap();
-                let idx = guard.get(&mailaddr).unwrap();
+                let idx = guard.get(&biztime).unwrap();
 
                 let res = search(idx, &self.tracing_schema, &req.query, req.offset, req.limit);
                 match res {

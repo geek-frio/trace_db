@@ -99,7 +99,9 @@ where
             notify.notified().await;
         }
         let id = self.allocate()?;
+
         self.data.push_back(Element(id, el));
+
         Ok(id)
     }
 
@@ -121,16 +123,20 @@ where
 
         let poped_size = ack_id - self.start_id + 1;
         let mut v = Vec::new();
+
         for _ in 0..poped_size {
             let o = self.data.pop_front();
             if let Some(e) = o {
                 v.push(e.0);
             }
         }
+
         if v.len() > 0 && self.notify.is_some() {
             self.notify.as_mut().unwrap().notify_one();
         }
+
         self.start_id = ack_id + 1;
+
         Ok(v)
     }
 
@@ -184,7 +190,7 @@ impl<'a, T> Iterator for RangeIter<'a, T>
 where
     T: std::fmt::Debug,
 {
-    type Item = &'a T;
+    type Item = (&'a T, i64);
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(el) = self.data.next() {
@@ -193,7 +199,7 @@ where
             } else if el.0 > self.end_id {
                 break;
             } else {
-                return Some(&el.1);
+                return Some((&el.1, el.0));
             }
         }
         None
@@ -204,7 +210,7 @@ impl<'a, T> Iterator for RangeIterMut<'a, T>
 where
     T: std::fmt::Debug,
 {
-    type Item = &'a mut T;
+    type Item = (&'a mut T, i64);
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(el) = self.data.next() {
@@ -213,7 +219,7 @@ where
             } else if el.0 > self.end_id {
                 break;
             } else {
-                return Some(&mut el.1);
+                return Some((&mut el.1, el.0));
             }
         }
         None
@@ -266,7 +272,7 @@ mod ring1_test {
             collect.push(seq_id);
         }
         let iter = queue.range_iter(90);
-        let a = iter.collect::<Vec<&i64>>();
+        let a = iter.collect::<Vec<(&i64, i64)>>();
         assert_eq!(a.len(), 11);
 
         let mut queue = RingQueue::<i64>::new(10);

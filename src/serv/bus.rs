@@ -63,9 +63,12 @@ where
 
         meta.set_connId(pkt.conn_id);
         meta.set_seqId(pkt.seq_id);
+        meta.set_resend_count(pkt.resend_count + 1);
         meta.set_field_type(Meta_RequestType::NEED_RESEND);
+
         seg_res.set_meta(meta);
 
+        tracing::info!("retry response is:{:?}", seg_res);
         sink_handle.send_event(SinkEvent::NeedResend((seg_res, WriteFlags::default())));
     }
 
@@ -133,7 +136,7 @@ where
                                     Self::sink_success_response(pkt, sink_handle);
                                 },
                                 CallbackStat::IOErr(e, pkt) => {
-                                    error!(%e, "data flushed to tanvity failed! Notify client to retry");
+                                    error!(%e, "data flushed to tanvity failed! Notify client to retry, pkt:{:?}", pkt);
                                     Self::sink_retry_response(pkt, sink_handle);
                                 },
                                 CallbackStat::ExpiredData(pkt) => {

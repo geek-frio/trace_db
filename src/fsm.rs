@@ -76,6 +76,7 @@ impl<N: Fsm> FsmState<N> {
             match res {
                 Ok(_) => return,
                 Err(NOTIFYSTATE_DROP) => {
+                    tracing::warn!("Notified drop!!!!!!!!!!");
                     let ptr = self.data.swap(ptr::null_mut(), Ordering::AcqRel);
                     unsafe {
                         Box::from_raw(ptr);

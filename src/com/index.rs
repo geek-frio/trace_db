@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 pub type IndexAddr = i64;
 pub const EXPIRED_DAYS: i64 = 30;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
 pub struct MailKeyAddress {
     pub timestamp: i64,
 }
@@ -78,6 +78,21 @@ impl MailKeyAddress {
                 "Timestamp converted to u64 type failed, maybe it's a invalid timestamp value",
             )),
         }
+    }
+
+    pub fn convert_to_index_addr_key(self) -> IndexAddr {
+        let val = self.timestamp as i64;
+
+        let datetime = Utc.timestamp_millis(val);
+        let s = format!(
+            "{:0>2}{:0>2}{:0>2}{}",
+            datetime.month(),
+            datetime.day(),
+            datetime.hour(),
+            datetime.minute() / 15
+        );
+
+        s.parse::<IndexAddr>().unwrap()
     }
 
     pub fn list_expired_dir_items<T: AsRef<Path>>(

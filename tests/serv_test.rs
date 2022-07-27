@@ -15,9 +15,23 @@ fn test_inte_basic_write() {
 
     assert!(res.is_ok());
 
-    std::thread::sleep(Duration::from_secs(5));
+    std::thread::sleep(Duration::from_secs(2));
     teardown(shutdown_sender);
 }
 
 #[test]
-fn test_inte_multi_server() {}
+fn test_inte_too_many_write() {
+    let shutdown_sender = setup();
+
+    let client = get_test_grpc_client();
+
+    for _ in 0..12 {
+        let batch = random_mock_batch(1);
+        let res = client.batch_req_segments(&batch);
+
+        assert!(res.is_ok());
+    }
+
+    std::thread::sleep(Duration::from_secs(2));
+    teardown(shutdown_sender);
+}
