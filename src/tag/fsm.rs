@@ -9,14 +9,7 @@ use std::borrow::Cow;
 use tracing::{error, trace, Span};
 
 use super::engine::TracingTagEngine;
-use backtrace::Backtrace;
 
-impl Drop for TagFsm {
-    fn drop(&mut self) {
-        let bt = Backtrace::new();
-        tracing::info!("Tag Fsm is dropped!bt:{:?}", bt);
-    }
-}
 pub struct SegmentDataCallback {
     pub data: SegmentData,
     pub callback: AckCallback,
