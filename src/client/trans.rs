@@ -1,8 +1,4 @@
-use futures::{
-    future::FutureExt, // for `.fuse()`
-    pin_mut,
-    select,
-};
+use futures::pin_mut;
 use skproto::tracing::Meta;
 use skproto::tracing::Meta_RequestType;
 use std::collections::HashMap;
@@ -23,6 +19,7 @@ use skproto::tracing::{SegmentData, SegmentRes};
 use tokio::sync::oneshot::Sender as OneSender;
 
 use crate::com::ring::RingQueue;
+use crate::com::util::NoneFuture;
 
 pub struct Transport<Si, St> {
     sink: Si,
@@ -79,34 +76,74 @@ impl RequestScheduler {
 impl<Si, St> Transport<Si, St>
 where
     Si: Sink<(SegmentData, WriteFlags)> + Send + Unpin + 'static,
+    Si::Error: Send,
     St: Stream<Item = Result<SegmentRes, grpcio::Error>> + Send + Unpin + 'static,
 {
-    pub fn init(sink: Si, mut st: St) -> RequestScheduler {
+    pub async fn handshake(sink: &mut Si, recv: &mut St) -> Result<SegmentRes, anyhow::Error> {
+        let mut segment = SegmentData::new();
+        segment
+            .mut_meta()
+            .set_field_type(Meta_RequestType::HANDSHAKE);
+
+        let res = sink.send((segment, WriteFlags::default())).await;
+
+        match res {
+            Ok(_) => {
+                let resp = recv.next().await;
+                match resp {
+                    Some(r) => match r {
+                        Ok(resp) => {
+                            tracing::info!("handshake resp is:{:?}", resp);
+                            Ok(resp)
+                        }
+                        Err(e) => Err(e.into()),
+                    },
+                    None => Err(anyhow::Error::msg("Receiving handshake resp failed!")),
+                }
+            }
+            Err(_e) => Err(anyhow::Error::msg("Handshake send failed!")),
+        }
+    }
+
+    pub fn init(mut sink: Si, mut st: St) -> RequestScheduler {
         let (sender, mut recv) = tokio::sync::mpsc::channel(10000);
         let task_stat = Arc::new(AtomicBool::new(false));
         let task_stat_change = task_stat.clone();
+
         tokio::spawn(async move {
+            let res_hand = Self::handshake(&mut sink, &mut st).await;
+
+            if res_hand.is_err() {
+                error!("Hanshake failed, transport quit!");
+                return;
+            }
+
+            let conn_id = res_hand.unwrap().get_meta().get_connId();
+
             let mut trans = Transport {
                 sink,
                 st: PhantomData::<St>,
                 ring: Default::default(),
                 callback_map: HashMap::new(),
             };
-            let t1 = recv.recv().fuse();
-            let t2 = st.next().fuse();
-            pin_mut!(t1, t2);
+
+            let mut stream_close = false;
+            let mut sink_close = false;
 
             loop {
-                let mut stream_close = false;
-                let mut sink_close = false;
+                let t1 = recv.recv();
+                let t2 = NoneFuture::new(st.next(), stream_close);
 
-                select! {
+                pin_mut!(t1, t2);
+
+                tokio::select! {
                     seg_res = t1 => {
                         match seg_res {
                             Some((sender, seg)) => {
-                                trans.request(seg, sender).await;
+                                trans.request(seg, sender, conn_id).await;
                             }
                             None => {
+                                tracing::warn!("sink is closed!");
                                 sink_close = true;
                             }
                         }
@@ -114,12 +151,20 @@ where
                     },
                     resp = t2 => {
                         match Self::unwrap_poll_resp(resp) {
-                            Err(_) => {stream_close =true;},
+                            Err(_) => {
+                                stream_close = true;
+                            },
                             Ok(resp) => {
                                 trans.poll_resp(resp).await;
                             }
                         }
                     },
+                    else => {
+                        tracing::info!("conn_id:{}, transport has closed", conn_id);
+
+                        stream_close = true;
+                        sink_close = true;
+                    }
                 }
 
                 if stream_close {
@@ -145,17 +190,22 @@ where
     ) -> Result<SegmentRes, anyhow::Error> {
         match resp {
             Some(r) => Ok(r?),
-            None => Err(anyhow::Error::msg("")),
+            None => Err(anyhow::Error::msg("shutdown")),
         }
     }
 
     // We don't need response for tracing data request, and only care about the send status of this request
     pub async fn request(
         &mut self,
-        segment: SegmentData,
+        mut segment: SegmentData,
         sender: tokio::sync::oneshot::Sender<Result<(), TransportErr>>,
+        conn_id: i32,
     ) {
+        segment.mut_meta().set_connId(conn_id);
         let seq_id = self.ring.async_push(segment.clone()).await.unwrap();
+
+        segment.mut_meta().set_seqId(seq_id);
+
         let res = self.sink.send((segment, WriteFlags::default())).await;
         match res {
             Err(_e) => {

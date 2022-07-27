@@ -14,9 +14,9 @@ use crate::redis::RedisTTLSet;
 use crate::serv::ShutdownSignal;
 use chashmap::CHashMap;
 use futures::never::Never;
-use futures::{ready, FutureExt, Stream};
+use futures::{ready, Stream};
 use grpcio::{ChannelBuilder, Environment};
-use skproto::tracing::{Meta_RequestType, SegmentData, SkyTracingClient};
+use skproto::tracing::{SegmentData, SkyTracingClient};
 use tokio::select;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
@@ -64,50 +64,28 @@ impl Stream for ClusterPassive {
         match chg_opt {
             Some(chg) => match chg {
                 ClientEvent::NewClient((id, client)) => {
-                    let clients = self.clients.clone();
-                    let mut p = Box::pin(async move {
-                        let res = split_client(client);
-                        if let Ok((conn, client)) = res {
-                            clients.insert(id, client);
-                            let res = conn
-                                .handshake(
-                                    |resp, _req| {
-                                        let conn_id = resp.get_meta().get_connId();
-                                        (true, conn_id)
-                                    },
-                                    || {
-                                        let mut segment = SegmentData::new();
-                                        segment
-                                            .mut_meta()
-                                            .set_field_type(Meta_RequestType::HANDSHAKE);
-                                        Default::default()
-                                    },
-                                )
-                                .await;
-                            match res {
-                                Ok(conn) => {
-                                    let sink = conn.sink.unwrap();
-                                    let stream = conn.recv.unwrap();
+                    let res = split_client(client);
+                    match res {
+                        Ok((conn, client)) => {
+                            self.clients.insert(id, client);
 
-                                    let sched = Transport::init(sink, stream);
-                                    let service = EndpointService::new(
-                                        sched,
-                                        self.conn_broken_notify.clone(),
-                                        id,
-                                    );
-                                    return Some(Ok(Change::Insert(id, service)));
-                                }
-                                Err(_e) => {
-                                    let _ = clients.remove(&id);
-                                    return None;
-                                }
-                            }
+                            let sink = conn.sink.unwrap();
+                            let stream = conn.recv.unwrap();
+
+                            let sched = Transport::init(sink, stream);
+                            let service =
+                                EndpointService::new(sched, self.conn_broken_notify.clone(), id);
+                            return Poll::Ready(Some(Ok(Change::Insert(id, service))));
                         }
-                        None
-                    });
-                    p.poll_unpin(cx)
+                        Err(_e) => {
+                            error!("Handshake error!");
+                            let _ = self.clients.remove(&id);
+                            return Poll::Pending;
+                        }
+                    }
                 }
                 ClientEvent::DropEvent(id) => {
+                    info!("Received client drop event!");
                     let _ = self.clients.remove(&id);
                     return Poll::Ready(Some(Ok(Change::Remove(id))));
                 }
@@ -277,9 +255,7 @@ impl Watch for ClusterActiveWatcher {
 }
 
 impl ClusterActiveWatcher {
-    pub(crate) fn create_grpc_conns<'a>(
-        addrs: Vec<(&'a str, i32)>,
-    ) -> Vec<(SkyTracingClient, i32)> {
+    pub fn create_grpc_conns<'a>(addrs: Vec<(&'a str, i32)>) -> Vec<(SkyTracingClient, i32)> {
         addrs
             .into_iter()
             .map(|(addr, id)| {

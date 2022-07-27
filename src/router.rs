@@ -109,7 +109,6 @@ impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
         msg: N::Message,
         create_fsm: fn(MailKeyAddress, &str) -> Result<(N, Sender<N::Message>), TagEngineError>,
     ) -> Result<(), RouteErr<N::Message>> {
-        info!("Start to retrieve mailbox");
         let res = self.send_msg(addr.into(), msg, &self.normal_scheduler);
         match res {
             Ok(_) => Ok(()),

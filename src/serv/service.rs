@@ -32,6 +32,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::sleep;
 use tower::util::BoxCloneService;
 use tower::Service;
+use tower::ServiceExt;
 use tracing::error;
 
 #[derive(Clone)]
@@ -241,12 +242,13 @@ impl SkyTracing for SkyTracingService {
 
     fn batch_req_segments(
         &mut self,
-        ctx: ::grpcio::RpcContext,
+        _ctx: ::grpcio::RpcContext,
         req: BatchSegmentData,
         sink: ::grpcio::UnarySink<Stat>,
     ) {
         let service = self.service.clone();
-        ctx.spawn(async move {
+
+        TOKIO_RUN.spawn(async move {
             select! {
                 _ = sleep(Duration::from_secs(8)) => {
                     sink.fail(RpcStatus::new(RpcStatusCode::ABORTED));
@@ -325,7 +327,9 @@ async fn batch_req(
     batch: BatchSegmentData,
 ) -> Stat {
     for segment in batch.datas.into_iter() {
+        let service = service.ready().await.unwrap();
         let resp = service.call(segment).await;
+
         if let Err(_e) = resp {
             let stat = gen_err_stat("Unknow err");
             return stat;

@@ -143,8 +143,6 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
         let mut flag = true;
 
         'a: loop {
-            info!("loop");
-
             for _ in 0..self.max_batch_size {
                 let fsm = if let Ok(fsm) = self.fsm_receiver.try_recv() {
                     fsm
@@ -172,11 +170,6 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                             remain_size: progress,
                         } = res
                         {
-                            info!(
-                                "remain_size:{}, progres:{}",
-                                progress,
-                                normal_fsm.as_ref().chan_msgs()
-                            );
                             if normal_fsm.as_ref().chan_msgs() > progress {
                                 self.router.normal_scheduler.schedule(normal_fsm.fsm);
                             } else {

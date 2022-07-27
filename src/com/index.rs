@@ -3,7 +3,7 @@ use chrono::{TimeZone, Utc};
 use std::path::{Path, PathBuf};
 
 pub type IndexAddr = i64;
-pub const EXPIRED_DAYS: i64 = 15;
+pub const EXPIRED_DAYS: i64 = 30;
 
 #[derive(Debug, Copy, Clone)]
 pub struct MailKeyAddress {
@@ -56,7 +56,7 @@ impl MailKeyAddress {
             .checked_sub_signed(chrono::Duration::days(expired_days))
             .unwrap();
 
-        orig >= v
+        orig < v
     }
 
     pub fn format_dir<T: num_traits::cast::ToPrimitive>(

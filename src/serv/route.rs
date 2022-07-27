@@ -49,7 +49,7 @@ where
                             let mailkey_addr = segment_callback.data.biz_timestamp.with_index_addr();
 
                             if mailkey_addr.is_expired(EXPIRED_DAYS) {
-                                tracing::warn!("invalid segment! data time expire {} days", EXPIRED_DAYS);
+                                tracing::warn!("invalid segment! data time expire {} days, mailkey_addr:{:?}", EXPIRED_DAYS, mailkey_addr);
                                 segment_callback.callback.callback(CallbackStat::ExpiredData(segment_callback.data.into()));
                             } else {
                                 if let Err(stat) = self.router.route_msg(mailkey_addr, segment_callback, Router::create_tag_fsm) {

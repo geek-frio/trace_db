@@ -1,11 +1,14 @@
 // Copyright 2019 TiKV Project Authors. Licensed under Apache-2.0.
 
+use futures::Stream;
+use futures_util::stream::Next;
 use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::hash_map::Iter;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::task::Poll;
 use std::time::Duration;
 
 struct Record<K> {
@@ -337,6 +340,45 @@ impl CalcSleepTime for usize {
                 *self = 2;
             }
             time_unit.mul_f32(*self as f32)
+        }
+    }
+}
+
+pub struct NoneFuture<'a, St> {
+    closed: bool,
+    next: Next<'a, St>,
+}
+
+impl<'a, St> NoneFuture<'a, St> {
+    pub fn new(n: Next<'a, St>, closed: bool) -> NoneFuture<'a, St> {
+        NoneFuture { next: n, closed }
+    }
+}
+
+impl<'a, St> futures::Future for NoneFuture<'a, St>
+where
+    St: Stream + Unpin,
+{
+    type Output = Option<St::Item>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let p = std::pin::Pin::new(&mut self.next);
+        let res = p.poll(cx);
+        match res {
+            Poll::Ready(opt) => match opt {
+                None => {
+                    if self.closed {
+                        Poll::Pending
+                    } else {
+                        Poll::Ready(None)
+                    }
+                }
+                Some(x) => Poll::Ready(Some(x)),
+            },
+            Poll::Pending => Poll::Pending,
         }
     }
 }

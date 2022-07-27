@@ -112,12 +112,13 @@ where
             tokio::select! {
                 seg = stream.next() => {
                     if let Some(seg) = seg {
+
                         let (callback_sender, callback_receiver) = tokio::sync::oneshot::channel();
                         let redirect_res = Self::redirect_batch_exec(seg, sender, callback_sender).await;
 
-                        if let Err(_) = redirect_res {
-                            error!("Poll grpc request failed!");
-                            continue;
+                        if let Err(e) = redirect_res {
+                            error!("Poll grpc request failed!e:{:?}", e);
+                            break;
                         }
 
                         let sink_handle = handler.clone();
@@ -237,6 +238,7 @@ where
         while let Some(event) = recv.recv().await {
             match event {
                 SinkEvent::HandshakeSuccess((resp, flags)) => {
+                    info!("Send handshake success to remote client");
                     sink.send((resp, flags)).await?;
                 }
                 SinkEvent::NeedResend((resp, flags)) => {
@@ -383,10 +385,8 @@ where
 mod test_remote_msg_poller {
     use self::mock_handshake::HandshakeStream;
     use super::*;
-    use crate::com::gen::{_gen_data_binary, _gen_tag};
     use crate::log::init_console_logger;
     use crate::tag::engine::TagEngineError;
-    use chrono::Local;
     use futures::Sink;
     use skproto::tracing::{Meta, Meta_RequestType};
     use std::pin::Pin;
@@ -520,32 +520,9 @@ mod test_remote_msg_poller {
     }
 
     mod normal_req {
-        use crate::serv::ShutdownEvent;
+        use crate::{com::test_util::mock_seg, serv::ShutdownEvent};
 
         use super::*;
-
-        pub fn mock_seg(conn_id: i32, api_id: i32, seq_id: i64) -> SegmentData {
-            let mut segment = SegmentData::new();
-            let mut meta = Meta::new();
-            meta.connId = conn_id;
-            meta.field_type = Meta_RequestType::TRANS;
-            meta.seqId = seq_id;
-
-            let now = Local::now();
-            meta.set_send_timestamp(now.timestamp_nanos() as u64);
-
-            let uuid = uuid::Uuid::new_v4();
-
-            segment.set_meta(meta);
-            segment.set_trace_id(uuid.to_string());
-            segment.set_api_id(api_id);
-            segment.set_payload(_gen_data_binary());
-            segment.set_zone(_gen_tag(3, 5, 'a'));
-            segment.set_biz_timestamp(now.timestamp_millis() as u64);
-            segment.set_seg_id(uuid.to_string());
-            segment.set_ser_key(_gen_tag(4, 3, 's'));
-            segment
-        }
 
         pub struct NormalReq {
             is_ready: bool,
