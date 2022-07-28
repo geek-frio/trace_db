@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use tracing::error;
@@ -60,12 +61,25 @@ impl RequestScheduler {
         if self.shutdown.load(Ordering::Relaxed) {
             return Err(TransportErr::Shutdown);
         }
+
+        let seq_id = seg.get_meta().seqId;
+
+        let call_start = Instant::now();
+
         let (s, r) = tokio::sync::oneshot::channel();
         let res = self.sender.send((s, seg)).await;
+
         if let Err(_) = res {
+            tracing::warn!("LocalChanFullOrClosed");
             return Err(TransportErr::LocalChanFullOrClosed);
         }
+
         let r = r.await;
+        tracing::info!(
+            "Call request elapse time is:{}",
+            call_start.elapsed().as_millis()
+        );
+
         match r {
             Ok(r) => r,
             Err(_e) => Err(TransportErr::RecvErr),

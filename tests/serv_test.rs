@@ -25,11 +25,14 @@ fn test_inte_too_many_write() {
 
     let client = get_test_grpc_client();
 
-    for _ in 0..12 {
-        let batch = random_mock_batch(1);
+    for _ in 0..100 {
+        let batch = random_mock_batch(10);
         let res = client.batch_req_segments(&batch);
 
-        assert!(res.is_ok());
+        std::thread::sleep(Duration::from_secs(1));
+
+        println!("res is:{:?}", res);
+        // assert!(res.is_ok());
     }
 
     std::thread::sleep(Duration::from_secs(2));

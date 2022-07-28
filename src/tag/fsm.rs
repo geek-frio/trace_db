@@ -190,7 +190,7 @@ impl Fsm for TagFsm {
     }
 
     fn untag_tick(&mut self) {
-        self.tick = true;
+        self.tick = false;
     }
 
     fn chan_msgs(&self) -> usize {

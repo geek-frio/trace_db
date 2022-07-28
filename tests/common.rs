@@ -10,7 +10,7 @@ use tokio::sync::broadcast::Sender;
 use tracing::metadata::LevelFilter;
 
 pub fn setup() -> Sender<ShutdownEvent> {
-    init_console_logger_with_level(LevelFilter::INFO);
+    init_console_logger_with_level(LevelFilter::TRACE);
 
     let shutdown_handle = start_local_server();
 
