@@ -120,37 +120,47 @@ impl FsmExecutor for TagFsm {
 
             *msg_cnt += 1;
         }
+
+        // FIXME: For performance, we callback data when data is in cache
+        while let Some(msg) = msg_buf.pop() {
+            let span = &msg.span;
+            let _entered = span.enter();
+
+            msg.callback
+                .callback(CallbackStat::Ok(msg.data.clone().into()));
+        }
     }
 
-    fn commit(&mut self, msgs: &mut Vec<Self::Msg>) {
+    fn commit(&mut self, _msgs: &mut Vec<Self::Msg>) {
         let res = self.engine.flush();
         match res {
             Err(e) => {
                 error!(%e, "Flush data failed!");
-                while let Some(msg) = msgs.pop() {
-                    let span = &msg.span;
-                    let _entered = span.enter();
+                // while let Some(msg) = msgs.pop() {
+                //     let span = &msg.span;
+                //     let _entered = span.enter();
 
-                    msg.callback
-                        .callback(CallbackStat::IOErr(e.clone(), msg.data.clone().into()));
+                //     // msg.callback
+                //     //     .callback(CallbackStat::IOErr(e.clone(), msg.data.clone().into()));
 
-                    error!("call back error to client");
-                }
+                //     error!("call back error to client");
+                // }
             }
             Ok(_tantivy_id) => {
-                while let Some(msg) = msgs.pop() {
-                    let span = &msg.span;
-                    let _entered = span.enter();
+                tracing::info!("Flush data success");
+                // while let Some(msg) = msgs.pop() {
+                //     let span = &msg.span;
+                //     let _entered = span.enter();
 
-                    msg.callback
-                        .callback(CallbackStat::Ok(msg.data.clone().into()));
+                //     // msg.callback
+                //     //     .callback(CallbackStat::Ok(msg.data.clone().into()));
 
-                    trace!(
-                        trace_id = msg.data.get_trace_id(),
-                        seq_id = msg.data.get_meta().get_seqId(),
-                        "segment has been callback notify success"
-                    );
-                }
+                //     trace!(
+                //         trace_id = msg.data.get_trace_id(),
+                //         seq_id = msg.data.get_meta().get_seqId(),
+                //         "segment has been callback notify success"
+                //     );
+                // }
             }
         }
     }
@@ -182,6 +192,7 @@ impl Fsm for TagFsm {
     }
 
     fn tag_tick(&mut self) {
+        tracing::info!("tick true fsm");
         self.tick = true;
     }
 
@@ -190,6 +201,7 @@ impl Fsm for TagFsm {
     }
 
     fn untag_tick(&mut self) {
+        tracing::info!("fsm tick is uncommentted");
         self.tick = false;
     }
 

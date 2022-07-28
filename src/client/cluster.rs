@@ -97,7 +97,11 @@ impl Stream for ClusterPassive {
 
 pub fn make_service_with(
     cluster: ClusterPassive,
-) -> BoxCloneService<SegmentData, Result<(), TransportErr>, Box<dyn Error + Send + Sync>> {
+) -> BoxCloneService<
+    SegmentData,
+    tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
+    Box<dyn Error + Send + Sync>,
+> {
     let s = ServiceBuilder::new()
         .buffer(100)
         .concurrency_limit(10)
@@ -107,7 +111,11 @@ pub fn make_service_with(
 }
 
 pub fn make_service() -> (
-    BoxCloneService<SegmentData, Result<(), TransportErr>, Box<dyn Error + Send + Sync>>,
+    BoxCloneService<
+        SegmentData,
+        tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
+        Box<dyn Error + Send + Sync>,
+    >,
     tokio::sync::mpsc::Sender<ClientEvent>,
     tokio::sync::mpsc::Receiver<i32>,
 ) {

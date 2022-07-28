@@ -35,11 +35,11 @@ impl EndpointService {
 }
 
 impl Service<SegmentData> for EndpointService {
-    type Response = Result<(), TransportErr>;
+    type Response = tokio::sync::oneshot::Receiver<Result<(), TransportErr>>;
 
     type Error = String;
 
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, String>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
         return Poll::Ready(Ok(()));
@@ -61,7 +61,7 @@ impl Service<SegmentData> for EndpointService {
                     _ => {}
                 }
             }
-            Ok(r)
+            r.map_err(|e| e.to_string())
         })
     }
 }

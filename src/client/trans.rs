@@ -57,12 +57,13 @@ pub struct RequestScheduler {
 }
 
 impl RequestScheduler {
-    pub async fn request(&mut self, seg: SegmentData) -> Result<(), TransportErr> {
+    pub async fn request(
+        &mut self,
+        seg: SegmentData,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), TransportErr>>, TransportErr> {
         if self.shutdown.load(Ordering::Relaxed) {
             return Err(TransportErr::Shutdown);
         }
-
-        let seq_id = seg.get_meta().seqId;
 
         let call_start = Instant::now();
 
@@ -74,16 +75,17 @@ impl RequestScheduler {
             return Err(TransportErr::LocalChanFullOrClosed);
         }
 
-        let r = r.await;
+        // let r = r.await;
         tracing::info!(
             "Call request elapse time is:{}",
             call_start.elapsed().as_millis()
         );
 
-        match r {
-            Ok(r) => r,
-            Err(_e) => Err(TransportErr::RecvErr),
-        }
+        return Ok(r);
+        // match r {
+        //     Ok(r) => r,
+        //     Err(_e) => Err(TransportErr::RecvErr),
+        // }
     }
 }
 

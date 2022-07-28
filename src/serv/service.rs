@@ -42,7 +42,7 @@ pub struct SkyTracingService {
     index_map: Arc<Mutex<HashMap<IndexAddr, Index>>>,
     service: BoxCloneService<
         SegmentData,
-        Result<(), TransportErr>,
+        tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
         Box<dyn std::error::Error + Send + Sync>,
     >,
     searcher: Searcher<SkyTracingClient>,
@@ -55,7 +55,7 @@ impl SkyTracingService {
         batch_system_sender: UnboundedSender<SegmentDataCallback>,
         service: BoxCloneService<
             SegmentData,
-            Result<(), TransportErr>,
+            tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
             Box<dyn std::error::Error + Send + Sync>,
         >,
         config: Arc<GlobalConfig>,
@@ -321,20 +321,33 @@ impl SkyTracing for SkyTracingService {
 async fn batch_req(
     mut service: BoxCloneService<
         SegmentData,
-        Result<(), TransportErr>,
+        tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
         Box<dyn std::error::Error + Send + Sync>,
     >,
     batch: BatchSegmentData,
 ) -> Stat {
+    let mut recvs = Vec::new();
+
     for segment in batch.datas.into_iter() {
         let service = service.ready().await.unwrap();
         let resp = service.call(segment).await;
 
-        if let Err(_e) = resp {
-            let stat = gen_err_stat("Unknow err");
-            return stat;
+        match resp {
+            Ok(recv) => {
+                recvs.push(recv);
+            }
+            Err(_e) => {
+                error!("Request error, break current batch request");
+                let stat = gen_err_stat("Unknow err");
+                return stat;
+            }
         }
     }
+
+    if recvs.len() > 0 {
+        let _ = recvs.pop().unwrap().await;
+    }
+
     gen_ok_stat()
 }
 

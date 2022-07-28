@@ -183,7 +183,7 @@ impl MainServer {
         mut wait_shutdown: Receiver<()>,
         service: BoxCloneService<
             SegmentData,
-            Result<(), TransportErr>,
+            tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
             Box<dyn Error + Send + Sync>,
         >,
         config: Arc<GlobalConfig>,
@@ -226,7 +226,7 @@ impl MainServer {
             async move {
                 loop {
                     tokio::select! {
-                        _ = sleep(Duration::from_secs(10)) => {
+                        _ = sleep(Duration::from_secs(3)) => {
                             trace!("Sent tick event to TagPollHandler");
 
                             // 1: Periodically check fsm life scope
@@ -234,6 +234,7 @@ impl MainServer {
                             Self::clear_mailbox(res_v, index_dir.clone());
 
                             // 2: Periodically Tick Notify fsm mailbox
+                            tracing::trace!("Start to periodically tick all the idle mailbox");
                             let _ = router_tick.notify_all_idle_mailbox();
                         }
                         _ = recv.recv() => {

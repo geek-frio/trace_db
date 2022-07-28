@@ -244,7 +244,7 @@ where
             Ok(r) => {
                 let iter = r.iter();
                 for (_, mail) in iter {
-                    mail.notify(&self.normal_scheduler);
+                    mail.tick(&self.normal_scheduler);
                 }
                 Ok(())
             }

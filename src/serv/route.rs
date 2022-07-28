@@ -44,7 +44,8 @@ where
                                 trace_id = ?segment_callback.data.trace_id
                             )
                             .entered();
-                            trace!(parent: &segment_callback.span, "Has received the segment, try to route to mailbox.");
+
+                            trace!(trace_id = ?segment_callback.data.trace_id, "Has received the segment, try to route to mailbox.");
 
                             let mailkey_addr = segment_callback.data.biz_timestamp.with_index_addr();
 
