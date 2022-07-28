@@ -328,6 +328,7 @@ async fn batch_req(
 ) -> Stat {
     let mut recvs = Vec::new();
 
+    let cur = std::time::Instant::now();
     for segment in batch.datas.into_iter() {
         let service = service.ready().await.unwrap();
         let resp = service.call(segment).await;
@@ -343,10 +344,20 @@ async fn batch_req(
             }
         }
     }
+    tracing::info!(
+        "Send all the requests cost:{} ms",
+        cur.elapsed().as_millis()
+    );
+    let cur = std::time::Instant::now();
 
-    if recvs.len() > 0 {
-        let _ = recvs.pop().unwrap().await;
-    }
+    // if recvs.len() > 0 {
+    //     let _ = recvs.pop().unwrap().await;
+
+    //     tracing::info!(
+    //         "batch request complete! Wait complete cost:{}",
+    //         cur.elapsed().as_millis()
+    //     );
+    // }
 
     gen_ok_stat()
 }

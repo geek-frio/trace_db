@@ -82,7 +82,10 @@ impl FsmExecutor for TagFsm {
                 Ok(msg) => {
                     *counter += 1;
 
-                    trace!("Received a new msg");
+                    trace!(
+                        "Received a new msg, seq_id:{}",
+                        msg.data.get_meta().get_seqId()
+                    );
                     msg_buf.push(msg);
 
                     if msg_buf.len() >= self.batch_size {
@@ -97,11 +100,15 @@ impl FsmExecutor for TagFsm {
                 }
             }
         }
+        tracing::info!("Receiver length:{}", self.receiver.len());
         keep_process
     }
 
     fn handle_tasks(&mut self, msg_buf: &mut Vec<Self::Msg>, msg_cnt: &mut usize) {
         let slice = msg_buf.as_slice();
+        let before_msg_cnt = *msg_cnt;
+
+        tracing::info!("Start to add msg to tag engine..");
         for i in *msg_cnt..msg_buf.len() {
             if i < *msg_cnt {
                 continue;
@@ -120,15 +127,20 @@ impl FsmExecutor for TagFsm {
 
             *msg_cnt += 1;
         }
+        tracing::info!(
+            "{} 's msgs has been added to tag engine",
+            *msg_cnt - before_msg_cnt
+        );
 
         // FIXME: For performance, we callback data when data is in cache
         while let Some(msg) = msg_buf.pop() {
             let span = &msg.span;
             let _entered = span.enter();
+            tracing::info!("seqid has notified:{}", msg.data.get_meta().get_seqId());
 
-            msg.callback
-                .callback(CallbackStat::Ok(msg.data.clone().into()));
+            msg.callback.callback(CallbackStat::Ok(msg.data.into()));
         }
+        tracing::info!("{} 's msgs has been notified", *msg_cnt - before_msg_cnt);
     }
 
     fn commit(&mut self, _msgs: &mut Vec<Self::Msg>) {

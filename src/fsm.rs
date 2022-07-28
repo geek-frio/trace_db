@@ -1,3 +1,5 @@
+use backtrace::Backtrace;
+
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
 use crate::com::mail::BasicMailbox;
 use crate::sched::FsmScheduler;
@@ -31,7 +33,10 @@ impl<N: Fsm> FsmState<N> {
 
     pub fn notify<S: FsmScheduler<F = N>>(&self, s: &S, mailbox: Cow<'_, BasicMailbox<N>>) {
         match self.take_fsm() {
-            None => {}
+            None => {
+                let bt = Backtrace::new();
+                tracing::info!("fsm taken failed!:{:?}", bt);
+            }
             Some(mut n) => {
                 n.set_mailbox(mailbox);
                 s.schedule(n)
@@ -63,11 +68,13 @@ impl<N: Fsm> FsmState<N> {
         );
 
         if res.is_err() {
+            tracing::info!("Taken failed!");
             return None;
         }
 
         let p = self.data.swap(ptr::null_mut(), Ordering::AcqRel);
         if !p.is_null() {
+            tracing::info!("Taken success!");
             Some(unsafe { Box::from_raw(p) })
         } else {
             panic!("inconsistent status and data, something should be wrong.");

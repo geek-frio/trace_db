@@ -75,11 +75,6 @@ impl RequestScheduler {
             return Err(TransportErr::LocalChanFullOrClosed);
         }
 
-        tracing::info!(
-            "Call request elapse time is:{}",
-            call_start.elapsed().as_millis()
-        );
-
         return Ok(r);
     }
 }

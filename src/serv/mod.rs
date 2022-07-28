@@ -230,12 +230,12 @@ impl MainServer {
                             trace!("Sent tick event to TagPollHandler");
 
                             // 1: Periodically check fsm life scope
-                            let res_v = (&mut router_tick).remove_expired_mailbox();
-                            Self::clear_mailbox(res_v, index_dir.clone());
+                            // let res_v = (&mut router_tick).remove_expired_mailbox();
+                            // Self::clear_mailbox(res_v, index_dir.clone());
 
                             // 2: Periodically Tick Notify fsm mailbox
                             tracing::trace!("Start to periodically tick all the idle mailbox");
-                            let _ = router_tick.notify_all_idle_mailbox();
+                            // let _ = router_tick.notify_all_idle_mailbox();
                         }
                         _ = recv.recv() => {
                             info!("Tick task received shutdown event, shutdown!");
