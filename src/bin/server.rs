@@ -6,9 +6,6 @@ use tracing::info_span;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct Args {
-    #[clap(short, long, default_value = "127.0.0.1")]
-    ip: String,
-
     #[clap(short, long)]
     config: String,
 }
@@ -21,7 +18,9 @@ fn main() {
     let global_config = Arc::new(ConfigManager::load(args.config.into()));
 
     let (shutdown_sender, _recv) = tokio::sync::broadcast::channel(1);
-    let mut main_server = MainServer::new(global_config, args.ip);
+
+    let local_ip = local_ip_address::local_ip().expect("Get current ip failed!");
+    let mut main_server = MainServer::new(global_config, local_ip.to_string());
 
     TOKIO_RUN.block_on(async move {
         main_server.block_start(shutdown_sender).await;

@@ -1,4 +1,4 @@
-use super::{ShutdownEvent, ShutdownSignal};
+use super::ShutdownEvent;
 use crate::com::ack::{AckCallback, CallbackStat};
 use crate::com::pkt::PktHeader;
 use crate::serv::CONN_MANAGER;
@@ -392,6 +392,7 @@ mod test_remote_msg_poller {
     use self::mock_handshake::HandshakeStream;
     use super::*;
     use crate::log::init_console_logger;
+    use crate::serv::ShutdownSignal;
     use crate::tag::engine::TagEngineError;
     use futures::Sink;
     use skproto::tracing::{Meta, Meta_RequestType};

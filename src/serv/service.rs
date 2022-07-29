@@ -1,6 +1,5 @@
 use super::bus::RemoteMsgPoller;
 use super::ShutdownEvent;
-use super::ShutdownSignal;
 use crate::client::trans::TransportErr;
 use crate::com::index::ConvertIndexAddr;
 use crate::com::index::IndexAddr;
