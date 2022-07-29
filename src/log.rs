@@ -27,6 +27,15 @@ pub fn init_console_logger() {
     });
 }
 
+pub fn init_console_logger_with_level(level: LevelFilter) {
+    INIT_LOGGER.call_once(|| {
+        let stdout_log = tracing_subscriber::fmt::layer().pretty();
+        let subscriber = Registry::default().with(stdout_log.with_filter(level));
+
+        tracing::subscriber::set_global_default(subscriber).expect("Console log init failed!");
+    });
+}
+
 pub fn init_tracing_logger(cfg: Arc<GlobalConfig>, mut signal: ShutdownSignal) {
     INIT_LOGGER.call_once(|| {
         let stdout_log = tracing_subscriber::fmt::layer().pretty();
@@ -57,6 +66,8 @@ pub fn init_tracing_logger(cfg: Arc<GlobalConfig>, mut signal: ShutdownSignal) {
                 TOKIO_RUN.spawn(async move {
                     let _ = signal.recv.recv().await;
                     let _ = shut_downsender.send(MsgEvent::Shutdown).await;
+
+                    tracing::info!("ShutdownSignal is dropped for logger");
                 });
 
                 let json_log = tracing_subscriber::fmt::layer().json().with_writer(maker);

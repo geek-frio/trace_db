@@ -1,4 +1,5 @@
 use super::bus::RemoteMsgPoller;
+use super::ShutdownEvent;
 use super::ShutdownSignal;
 use crate::client::trans::TransportErr;
 use crate::com::index::ConvertIndexAddr;
@@ -32,6 +33,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::sleep;
 use tower::util::BoxCloneService;
 use tower::Service;
+use tower::ServiceExt;
 use tracing::error;
 
 #[derive(Clone)]
@@ -41,11 +43,11 @@ pub struct SkyTracingService {
     index_map: Arc<Mutex<HashMap<IndexAddr, Index>>>,
     service: BoxCloneService<
         SegmentData,
-        Result<(), TransportErr>,
+        tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
         Box<dyn std::error::Error + Send + Sync>,
     >,
     searcher: Searcher<SkyTracingClient>,
-    shutdown_signal: ShutdownSignal,
+    broad_shutdown_sender: tokio::sync::broadcast::Sender<ShutdownEvent>,
     config: Arc<GlobalConfig>,
 }
 
@@ -54,12 +56,12 @@ impl SkyTracingService {
         batch_system_sender: UnboundedSender<SegmentDataCallback>,
         service: BoxCloneService<
             SegmentData,
-            Result<(), TransportErr>,
+            tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
             Box<dyn std::error::Error + Send + Sync>,
         >,
         config: Arc<GlobalConfig>,
         searcher: Searcher<SkyTracingClient>,
-        shutdown_signal: ShutdownSignal,
+        broad_shutdown_sender: tokio::sync::broadcast::Sender<ShutdownEvent>,
     ) -> SkyTracingService {
         let index_map = Arc::new(Mutex::new(HashMap::default()));
         let service = SkyTracingService {
@@ -69,7 +71,7 @@ impl SkyTracingService {
             service,
             config,
             searcher,
-            shutdown_signal: shutdown_signal,
+            broad_shutdown_sender,
         };
         service
     }
@@ -172,9 +174,9 @@ impl SkyTracing for SkyTracingService {
         stream: ::grpcio::RequestStream<SegmentData>,
         sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
-        let shutdown_signal = self.shutdown_signal.clone();
+        let shutdown_recv = self.broad_shutdown_sender.subscribe();
         let msg_poller =
-            RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone(), shutdown_signal);
+            RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone(), shutdown_recv);
 
         TOKIO_RUN.spawn(async move {
             let poll_res = msg_poller.loop_poll().await;
@@ -206,17 +208,17 @@ impl SkyTracing for SkyTracingService {
             return;
         }
 
-        let mailaddr = req.seg_range.unwrap().addr;
+        let biztime = req.seg_range.unwrap().addr;
         let res_index = Self::check_create_idx(
             &self.index_map,
             &self.config.index_dir,
-            mailaddr.with_index_addr(),
+            biztime.with_index_addr(),
         );
 
         match res_index {
             Ok(_) => {
                 let guard = self.index_map.lock().unwrap();
-                let idx = guard.get(&mailaddr).unwrap();
+                let idx = guard.get(&biztime).unwrap();
 
                 let res = search(idx, &self.tracing_schema, &req.query, req.offset, req.limit);
                 match res {
@@ -241,12 +243,13 @@ impl SkyTracing for SkyTracingService {
 
     fn batch_req_segments(
         &mut self,
-        ctx: ::grpcio::RpcContext,
+        _ctx: ::grpcio::RpcContext,
         req: BatchSegmentData,
         sink: ::grpcio::UnarySink<Stat>,
     ) {
         let service = self.service.clone();
-        ctx.spawn(async move {
+
+        TOKIO_RUN.spawn(async move {
             select! {
                 _ = sleep(Duration::from_secs(8)) => {
                     sink.fail(RpcStatus::new(RpcStatusCode::ABORTED));
@@ -319,18 +322,44 @@ impl SkyTracing for SkyTracingService {
 async fn batch_req(
     mut service: BoxCloneService<
         SegmentData,
-        Result<(), TransportErr>,
+        tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
         Box<dyn std::error::Error + Send + Sync>,
     >,
     batch: BatchSegmentData,
 ) -> Stat {
+    let mut recvs = Vec::new();
+
+    let cur = std::time::Instant::now();
     for segment in batch.datas.into_iter() {
+        let service = service.ready().await.unwrap();
         let resp = service.call(segment).await;
-        if let Err(_e) = resp {
-            let stat = gen_err_stat("Unknow err");
-            return stat;
+
+        match resp {
+            Ok(recv) => {
+                recvs.push(recv);
+            }
+            Err(_e) => {
+                error!("Request error, break current batch request");
+                let stat = gen_err_stat("Unknow err");
+                return stat;
+            }
         }
     }
+    tracing::info!(
+        "Send all the requests cost:{} ms",
+        cur.elapsed().as_millis()
+    );
+    let cur = std::time::Instant::now();
+
+    if recvs.len() > 0 {
+        let _ = recvs.pop().unwrap().await;
+
+        tracing::info!(
+            "batch request complete! Wait complete cost:{}",
+            cur.elapsed().as_millis()
+        );
+    }
+
     gen_ok_stat()
 }
 

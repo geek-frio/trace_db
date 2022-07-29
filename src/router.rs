@@ -109,21 +109,26 @@ impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
         msg: N::Message,
         create_fsm: fn(MailKeyAddress, &str) -> Result<(N, Sender<N::Message>), TagEngineError>,
     ) -> Result<(), RouteErr<N::Message>> {
-        info!("Start to retrieve mailbox");
-        let res = self.send_msg(addr.into(), msg, &self.normal_scheduler);
+        let addr_num = addr.convert_to_index_addr_key();
+
+        let res = self.send_msg(addr_num, msg, &self.normal_scheduler);
+
         match res {
             Ok(_) => Ok(()),
             Err(msg) => {
-                let res = create_fsm(addr.clone(), &self.conf.index_dir);
+                let res = create_fsm(addr, &self.conf.index_dir);
+
                 if let Err(e) = res {
+                    tracing::warn!("Create fsm failed, will not regist this mailbox, e:{:?}", e);
                     return Err(RouteErr(msg, e));
                 }
 
                 let (fsm, fsm_sender) = res.unwrap();
                 let mailbox = self.create_mailbox(fsm, fsm_sender);
 
-                self.register(addr.into(), mailbox);
-                let res_send = self.send_msg(addr.into(), msg, &self.normal_scheduler);
+                self.register(addr.convert_to_index_addr_key(), mailbox);
+
+                let res_send = self.send_msg(addr_num, msg, &self.normal_scheduler);
 
                 match res_send {
                     Ok(_) => Ok(()),
@@ -199,7 +204,10 @@ where
             let res_send = mailbox.send(msg, s);
             return match res_send {
                 Ok(_) => Ok(()),
-                Err(e) => Err(e.0),
+                Err(e) => {
+                    tracing::warn!("1: Mailbox send failed! e:{:?}", e);
+                    Err(e.0)
+                }
             };
         }
 
@@ -210,6 +218,7 @@ where
             let b = match boxes.map.get_mut(&addr) {
                 Some(mailbox) => mailbox.clone(),
                 None => {
+                    tracing::warn!("Not find addr:{} related mailbox", addr);
                     return Err(msg);
                 }
             };
@@ -235,7 +244,7 @@ where
             Ok(r) => {
                 let iter = r.iter();
                 for (_, mail) in iter {
-                    mail.notify(&self.normal_scheduler);
+                    mail.tick(&self.normal_scheduler);
                 }
                 Ok(())
             }
@@ -372,7 +381,7 @@ mod tests {
                 panic!();
             }
         }
-        router.close(1234i64.with_index_addr().into());
+        router.close(1234i64.with_index_addr().convert_to_index_addr_key());
 
         assert_eq!(0, router.alive_cnt().load(Ordering::Relaxed));
 
@@ -380,7 +389,9 @@ mod tests {
         let mail_addr = gen_valid_mailkeyadd();
         let (tag_fsm, fsm_sender) = Router::create_tag_fsm(mail_addr.clone(), "/tmp").unwrap();
         let mailbox = router.create_mailbox(tag_fsm, fsm_sender);
-        router.register(mail_addr.into(), mailbox);
+
+        router.register(mail_addr.convert_to_index_addr_key(), mailbox);
+
         trace!(
             "router caches ref count:{}",
             router.caches.try_borrow_mut().is_ok()
@@ -390,7 +401,7 @@ mod tests {
         let fsm_sche = NormalScheduler { sender: s };
 
         let msg = gen_segcallback(1, 1);
-        let res_send = router.send_msg(mail_addr.into(), msg.0, &fsm_sche);
+        let res_send = router.send_msg(mail_addr.convert_to_index_addr_key(), msg.0, &fsm_sche);
 
         assert!(res_send.is_ok());
         let res_fsm = r.recv();
@@ -406,7 +417,7 @@ mod tests {
             }
         }
 
-        router.close(mail_addr.into());
+        router.close(mail_addr.convert_to_index_addr_key());
         assert_eq!(0, router.alive_cnt().load(Ordering::Relaxed));
     }
 
@@ -420,7 +431,7 @@ mod tests {
             let (fsm1, sender1) = Router::create_tag_fsm(m1.clone(), "/tmp").unwrap();
             let box1 = router.create_mailbox(fsm1, sender1);
 
-            v.push((m1.into(), box1));
+            v.push((m1.convert_to_index_addr_key(), box1));
         }
         router.register_all(v);
 
@@ -437,7 +448,7 @@ mod tests {
             let (fsm1, sender1) = Router::create_tag_fsm(m1.clone(), "/tmp").unwrap();
             let box1 = router.create_mailbox(fsm1, sender1);
 
-            router.register(m1.into(), box1);
+            router.register(m1.convert_to_index_addr_key(), box1);
         }
 
         // Create 4 expired Fsm
@@ -446,7 +457,7 @@ mod tests {
             let (fsm1, sender1) = Router::create_tag_fsm(m1.clone(), "/tmp").unwrap();
             let box1 = router.create_mailbox(fsm1, sender1);
 
-            router.register(m1.into(), box1);
+            router.register(m1.convert_to_index_addr_key(), box1);
         }
 
         let res = router.remove_expired_mailbox();

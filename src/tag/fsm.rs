@@ -3,6 +3,7 @@ use crate::com::{
     mail::BasicMailbox,
 };
 use crate::fsm::Fsm;
+use backtrace::Backtrace;
 use crossbeam_channel::Receiver;
 use skproto::tracing::SegmentData;
 use std::borrow::Cow;
@@ -10,9 +11,6 @@ use tracing::{error, trace, Span};
 
 use super::engine::TracingTagEngine;
 
-impl Drop for TagFsm {
-    fn drop(&mut self) {}
-}
 pub struct SegmentDataCallback {
     pub data: SegmentData,
     pub callback: AckCallback,
@@ -74,18 +72,29 @@ pub(crate) trait FsmExecutor {
     fn remain_msgs(&self) -> usize;
 }
 
+impl Drop for TagFsm {
+    fn drop(&mut self) {
+        let bt = Backtrace::new();
+        tracing::info!("TagFsm is dropped, backtrace is:{:?}", bt);
+    }
+}
+
 impl FsmExecutor for TagFsm {
     type Msg = SegmentDataCallback;
 
     fn try_fill_batch(&mut self, msg_buf: &mut Vec<Self::Msg>, counter: &mut usize) -> bool {
         let mut keep_process = false;
 
+        let mut retry_num = 0;
         loop {
             match self.receiver.try_recv() {
                 Ok(msg) => {
                     *counter += 1;
 
-                    trace!("Received a new msg");
+                    trace!(
+                        "Received a new msg, seq_id:{}",
+                        msg.data.get_meta().get_seqId()
+                    );
                     msg_buf.push(msg);
 
                     if msg_buf.len() >= self.batch_size {
@@ -95,16 +104,26 @@ impl FsmExecutor for TagFsm {
                     }
                 }
                 Err(_) => {
-                    trace!("Mailbox's msgs has consumed");
+                    if retry_num < 3 {
+                        trace!("Mailbox's msgs has consumed");
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+
+                        retry_num += 1;
+                        continue;
+                    }
                     break;
                 }
             }
         }
+        tracing::info!("Mailbox remain msgs length:{}", self.receiver.len());
         keep_process
     }
 
     fn handle_tasks(&mut self, msg_buf: &mut Vec<Self::Msg>, msg_cnt: &mut usize) {
         let slice = msg_buf.as_slice();
+        let before_msg_cnt = *msg_cnt;
+
+        tracing::info!("Start to add msg to tag engine..");
         for i in *msg_cnt..msg_buf.len() {
             if i < *msg_cnt {
                 continue;
@@ -123,37 +142,52 @@ impl FsmExecutor for TagFsm {
 
             *msg_cnt += 1;
         }
+        tracing::info!(
+            "{} 's msgs has been added to tag engine",
+            *msg_cnt - before_msg_cnt
+        );
+
+        // FIXME: For performance, we callback data when data is in cache
+        while let Some(msg) = msg_buf.pop() {
+            let span = &msg.span;
+            let _entered = span.enter();
+            tracing::info!("seqid has notified:{}", msg.data.get_meta().get_seqId());
+
+            msg.callback.callback(CallbackStat::Ok(msg.data.into()));
+        }
+        tracing::info!("{} 's msgs has been notified", *msg_cnt - before_msg_cnt);
     }
 
-    fn commit(&mut self, msgs: &mut Vec<Self::Msg>) {
+    fn commit(&mut self, _msgs: &mut Vec<Self::Msg>) {
         let res = self.engine.flush();
         match res {
             Err(e) => {
                 error!(%e, "Flush data failed!");
-                while let Some(msg) = msgs.pop() {
-                    let span = &msg.span;
-                    let _entered = span.enter();
+                // while let Some(msg) = msgs.pop() {
+                //     let span = &msg.span;
+                //     let _entered = span.enter();
 
-                    msg.callback
-                        .callback(CallbackStat::IOErr(e.clone(), msg.data.clone().into()));
+                //     // msg.callback
+                //     //     .callback(CallbackStat::IOErr(e.clone(), msg.data.clone().into()));
 
-                    error!("call back error to client");
-                }
+                //     error!("call back error to client");
+                // }
             }
             Ok(_tantivy_id) => {
-                while let Some(msg) = msgs.pop() {
-                    let span = &msg.span;
-                    let _entered = span.enter();
+                tracing::info!("Flush data success");
+                // while let Some(msg) = msgs.pop() {
+                //     let span = &msg.span;
+                //     let _entered = span.enter();
 
-                    msg.callback
-                        .callback(CallbackStat::Ok(msg.data.clone().into()));
+                //     // msg.callback
+                //     //     .callback(CallbackStat::Ok(msg.data.clone().into()));
 
-                    trace!(
-                        trace_id = msg.data.get_trace_id(),
-                        seq_id = msg.data.get_meta().get_seqId(),
-                        "segment has been callback notify success"
-                    );
-                }
+                //     trace!(
+                //         trace_id = msg.data.get_trace_id(),
+                //         seq_id = msg.data.get_meta().get_seqId(),
+                //         "segment has been callback notify success"
+                //     );
+                // }
             }
         }
     }
@@ -185,6 +219,7 @@ impl Fsm for TagFsm {
     }
 
     fn tag_tick(&mut self) {
+        tracing::info!("tick true fsm");
         self.tick = true;
     }
 
@@ -193,7 +228,8 @@ impl Fsm for TagFsm {
     }
 
     fn untag_tick(&mut self) {
-        self.tick = true;
+        tracing::info!("fsm tick is uncommentted");
+        self.tick = false;
     }
 
     fn chan_msgs(&self) -> usize {

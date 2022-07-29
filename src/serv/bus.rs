@@ -1,4 +1,4 @@
-use super::ShutdownSignal;
+use super::{ShutdownEvent, ShutdownSignal};
 use crate::com::ack::{AckCallback, CallbackStat};
 use crate::com::pkt::PktHeader;
 use crate::serv::CONN_MANAGER;
@@ -24,7 +24,7 @@ pub struct RemoteMsgPoller<L, S> {
     source_stream: L,
     sink: S,
     local_sender: UnboundedSender<SegmentDataCallback>,
-    shutdown_signal: ShutdownSignal,
+    broad_shutdown_receiver: tokio::sync::broadcast::Receiver<ShutdownEvent>,
 }
 
 impl<L, S> RemoteMsgPoller<L, S>
@@ -63,9 +63,12 @@ where
 
         meta.set_connId(pkt.conn_id);
         meta.set_seqId(pkt.seq_id);
+        meta.set_resend_count(pkt.resend_count + 1);
         meta.set_field_type(Meta_RequestType::NEED_RESEND);
+
         seg_res.set_meta(meta);
 
+        tracing::info!("retry response is:{:?}", seg_res);
         sink_handle.send_event(SinkEvent::NeedResend((seg_res, WriteFlags::default())));
     }
 
@@ -88,7 +91,7 @@ where
     // 2. Have received shutdown signal;
     pub(crate) async fn loop_poll(mut self) -> Result<(), AnyError> {
         let mut stream = self.source_stream.fuse();
-        let mut shut_recv = self.shutdown_signal;
+        let mut shut_recv = self.broad_shutdown_receiver;
         let sender = &mut self.local_sender;
 
         let (handler, actor) = SinkActor::spawn(self.sink);
@@ -112,12 +115,13 @@ where
             tokio::select! {
                 seg = stream.next() => {
                     if let Some(seg) = seg {
+
                         let (callback_sender, callback_receiver) = tokio::sync::oneshot::channel();
                         let redirect_res = Self::redirect_batch_exec(seg, sender, callback_sender).await;
 
-                        if let Err(_) = redirect_res {
-                            error!("Poll grpc request failed!");
-                            continue;
+                        if let Err(e) = redirect_res {
+                            error!("Poll grpc request failed!e:{:?}", e);
+                            break;
                         }
 
                         let sink_handle = handler.clone();
@@ -132,7 +136,7 @@ where
                                     Self::sink_success_response(pkt, sink_handle);
                                 },
                                 CallbackStat::IOErr(e, pkt) => {
-                                    error!(%e, "data flushed to tanvity failed! Notify client to retry");
+                                    error!(%e, "data flushed to tanvity failed! Notify client to retry, pkt:{:?}", pkt);
                                     Self::sink_retry_response(pkt, sink_handle);
                                 },
                                 CallbackStat::ExpiredData(pkt) => {
@@ -145,7 +149,7 @@ where
                         });
                     }
                 },
-                _ = shut_recv.recv.recv() => {
+                _ = shut_recv.recv() => {
                     info!("Received shutdown signal, ignore all the data in the stream");
                     break;
                 },
@@ -237,6 +241,7 @@ where
         while let Some(event) = recv.recv().await {
             match event {
                 SinkEvent::HandshakeSuccess((resp, flags)) => {
+                    info!("Send handshake success to remote client");
                     sink.send((resp, flags)).await?;
                 }
                 SinkEvent::NeedResend((resp, flags)) => {
@@ -326,9 +331,12 @@ impl<'a> SegmentCallbackWrap for ExecutorStat<'a> {
             }
 
             ExecutorStat::Trans(s) => {
+                let seq_id = (&s.data).get_meta().get_seqId();
+
                 let span = span!(Level::TRACE, "trans_receiver_consume", data = ?s.data);
                 let data = SegmentDataCallback::new(s.data, AckCallback::new(s.callback), span);
 
+                trace!("Send new data to batch system:{}", seq_id);
                 let _ = s.batch_handle.send(data);
                 return ExecutorStat::Last;
             }
@@ -368,13 +376,13 @@ where
         source: L,
         sink: S,
         local_sender: UnboundedSender<SegmentDataCallback>,
-        shutdown_signal: ShutdownSignal,
+        broad_shutdown_receiver: tokio::sync::broadcast::Receiver<ShutdownEvent>,
     ) -> RemoteMsgPoller<L, S> {
         RemoteMsgPoller {
             source_stream: source,
             sink,
             local_sender,
-            shutdown_signal,
+            broad_shutdown_receiver,
         }
     }
 }
@@ -383,10 +391,8 @@ where
 mod test_remote_msg_poller {
     use self::mock_handshake::HandshakeStream;
     use super::*;
-    use crate::com::gen::{_gen_data_binary, _gen_tag};
     use crate::log::init_console_logger;
     use crate::tag::engine::TagEngineError;
-    use chrono::Local;
     use futures::Sink;
     use skproto::tracing::{Meta, Meta_RequestType};
     use std::pin::Pin;
@@ -479,7 +485,7 @@ mod test_remote_msg_poller {
         let (local_sender, local_recveiver) = tokio::sync::mpsc::unbounded_channel();
         let (broad_sender, _broad_recv) = tokio::sync::broadcast::channel(1);
 
-        let (shutdown_signal, _recv) = ShutdownSignal::chan(broad_sender);
+        let (_shutdown_signal, _recv) = ShutdownSignal::chan(broad_sender.clone());
 
         let (sink_send, sink_res) = tokio::sync::mpsc::unbounded_channel();
         (
@@ -487,7 +493,7 @@ mod test_remote_msg_poller {
                 source_stream: HandshakeStream { is_ready: false },
                 sink: TestSink { send: sink_send },
                 local_sender,
-                shutdown_signal,
+                broad_shutdown_receiver: broad_sender.subscribe(),
             },
             local_recveiver,
             sink_res,
@@ -520,32 +526,9 @@ mod test_remote_msg_poller {
     }
 
     mod normal_req {
-        use crate::serv::ShutdownEvent;
+        use crate::{com::test_util::mock_seg, serv::ShutdownEvent};
 
         use super::*;
-
-        pub fn mock_seg(conn_id: i32, api_id: i32, seq_id: i64) -> SegmentData {
-            let mut segment = SegmentData::new();
-            let mut meta = Meta::new();
-            meta.connId = conn_id;
-            meta.field_type = Meta_RequestType::TRANS;
-            meta.seqId = seq_id;
-
-            let now = Local::now();
-            meta.set_send_timestamp(now.timestamp_nanos() as u64);
-
-            let uuid = uuid::Uuid::new_v4();
-
-            segment.set_meta(meta);
-            segment.set_trace_id(uuid.to_string());
-            segment.set_api_id(api_id);
-            segment.set_payload(_gen_data_binary());
-            segment.set_zone(_gen_tag(3, 5, 'a'));
-            segment.set_biz_timestamp(now.timestamp_millis() as u64);
-            segment.set_seg_id(uuid.to_string());
-            segment.set_ser_key(_gen_tag(4, 3, 's'));
-            segment
-        }
 
         pub struct NormalReq {
             is_ready: bool,
@@ -591,7 +574,7 @@ mod test_remote_msg_poller {
                     source_stream: NormalReq::new(),
                     sink: TestSink { send: sink_send },
                     local_sender,
-                    shutdown_signal,
+                    broad_shutdown_receiver: broad_sender.subscribe(),
                 },
                 local_recveiver,
                 sink_res,

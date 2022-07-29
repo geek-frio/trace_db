@@ -143,18 +143,24 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
         let mut flag = true;
 
         'a: loop {
-            info!("loop");
-
+            tracing::info!("batch loop...");
             for _ in 0..self.max_batch_size {
                 let fsm = if let Ok(fsm) = self.fsm_receiver.try_recv() {
                     fsm
                 } else if flag {
                     flag = false;
 
-                    let res_fsm = self.fsm_receiver.recv();
-                    match res_fsm {
-                        Ok(fsm) => fsm,
-                        Err(_e) => break 'a,
+                    tracing::info!("block receiv new fsm");
+
+                    // We block wait new fsm only in blank case
+                    if batch.len() == 0 {
+                        let res_fsm = self.fsm_receiver.recv();
+                        match res_fsm {
+                            Ok(fsm) => fsm,
+                            Err(_e) => break 'a,
+                        }
+                    } else {
+                        break;
                     }
                 } else {
                     flag = true;
@@ -164,29 +170,34 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 match fsm {
                     FsmTypes::Normal(fsm) => {
                         let mut normal_fsm = NormalFsm::new(fsm);
-                        let res = self.handler.handle(&mut normal_fsm);
 
+                        tracing::info!("Has received new fsm, handle!");
+                        let res = self.handler.handle(&mut normal_fsm);
+                        tracing::info!("Handle finished!");
                         if normal_fsm.as_ref().is_stopped() && normal_fsm.as_ref().chan_msgs() > 0 {
+                            tracing::info!("Has already stopped, but still have msgs, reschedule");
                             self.router.normal_scheduler.schedule(normal_fsm.fsm);
                         } else if let HandleResult::StopAt {
                             remain_size: progress,
                         } = res
                         {
-                            info!(
-                                "remain_size:{}, progres:{}",
-                                progress,
-                                normal_fsm.as_ref().chan_msgs()
-                            );
+                            tracing::info!("Enter into stopAt branch logic");
                             if normal_fsm.as_ref().chan_msgs() > progress {
+                                tracing::info!(
+                                    "normal fsm remaining msgs is bigger than progress, remaining msgs:{}, progress:{}",
+                                    normal_fsm.as_ref().chan_msgs(), progress);
                                 self.router.normal_scheduler.schedule(normal_fsm.fsm);
                             } else {
+                                tracing::info!("push into batch");
                                 batch.push(normal_fsm);
                             }
                         } else {
+                            tracing::info!("push into batch");
                             batch.push(normal_fsm);
                         }
                     }
                     FsmTypes::Empty => {
+                        tracing::info!("it's empty fsm");
                         if self.fsm_receiver.len() > 0 {
                             self.router.normal_scheduler.shutdown();
                         } else {
@@ -202,7 +213,33 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 .collect();
             self.handler.end(&mut fsm_vec);
 
-            batch.clear();
+            // Release fsm batch to mailbox
+            while let Some(mut item) = batch.pop() {
+                let mailbox = item.fsm.take_mailbox();
+                if let Some(mailbox) = mailbox {
+                    mailbox.release(item.fsm);
+                    tracing::info!("release this fsm");
+
+                    // Check time range between [after poll msgs] to [release] if there is notify event
+                    // If there is reschedule this fsm
+                    if mailbox.len() > 0 {
+                        tracing::info!(
+                            "Have found new msgs bewteen [after poll msgs] to [release]!, So we reschedual this fsm"
+                        );
+
+                        let fsm = mailbox.take_fsm();
+
+                        if let Some(mut fsm) = fsm {
+                            tracing::info!("reschedule this fsm");
+                            fsm.set_mailbox(std::borrow::Cow::Borrowed(&mailbox));
+
+                            self.router.normal_scheduler.schedule(fsm);
+                        } else {
+                            tracing::info!("want to reschedule, but failed!")
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -251,12 +288,17 @@ where
         let normal = normal.as_mut();
         // batch got msg, batch consume
         let keep_process = normal.try_fill_batch(&mut self.msg_buf, &mut self.counter);
-        normal.handle_tasks(&mut self.msg_buf, &mut self.msg_cnt);
+
+        // normal.handle_tasks(&mut self.msg_buf, &mut self.msg_cnt);
+
+        normal.handle_tasks(&mut self.msg_buf, &mut 0usize);
+        tracing::info!("Currently counter is:{}", self.counter);
+
         if normal.is_tick() {
             trace!(
                 counter = self.counter,
                 msg_cnt = self.msg_cnt,
-                "We have got a Tick Event"
+                "We have got a Tick Event, and commit all the waiting to flush msgs!"
             );
             normal.commit(&mut self.msg_buf);
             self.msg_cnt = 0;

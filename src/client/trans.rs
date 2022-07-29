@@ -1,8 +1,4 @@
-use futures::{
-    future::FutureExt, // for `.fuse()`
-    pin_mut,
-    select,
-};
+use futures::pin_mut;
 use skproto::tracing::Meta;
 use skproto::tracing::Meta_RequestType;
 use std::collections::HashMap;
@@ -23,6 +19,7 @@ use skproto::tracing::{SegmentData, SegmentRes};
 use tokio::sync::oneshot::Sender as OneSender;
 
 use crate::com::ring::RingQueue;
+use crate::com::util::NoneFuture;
 
 pub struct Transport<Si, St> {
     sink: Si,
@@ -59,54 +56,97 @@ pub struct RequestScheduler {
 }
 
 impl RequestScheduler {
-    pub async fn request(&mut self, seg: SegmentData) -> Result<(), TransportErr> {
+    pub async fn request(
+        &mut self,
+        seg: SegmentData,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), TransportErr>>, TransportErr> {
         if self.shutdown.load(Ordering::Relaxed) {
             return Err(TransportErr::Shutdown);
         }
+
         let (s, r) = tokio::sync::oneshot::channel();
         let res = self.sender.send((s, seg)).await;
+
         if let Err(_) = res {
+            tracing::warn!("LocalChanFullOrClosed");
             return Err(TransportErr::LocalChanFullOrClosed);
         }
-        let r = r.await;
-        match r {
-            Ok(r) => r,
-            Err(_e) => Err(TransportErr::RecvErr),
-        }
+
+        return Ok(r);
     }
 }
 
 impl<Si, St> Transport<Si, St>
 where
     Si: Sink<(SegmentData, WriteFlags)> + Send + Unpin + 'static,
+    Si::Error: Send,
     St: Stream<Item = Result<SegmentRes, grpcio::Error>> + Send + Unpin + 'static,
 {
-    pub fn init(sink: Si, mut st: St) -> RequestScheduler {
+    pub async fn handshake(sink: &mut Si, recv: &mut St) -> Result<SegmentRes, anyhow::Error> {
+        let mut segment = SegmentData::new();
+        segment
+            .mut_meta()
+            .set_field_type(Meta_RequestType::HANDSHAKE);
+
+        let res = sink.send((segment, WriteFlags::default())).await;
+
+        match res {
+            Ok(_) => {
+                let resp = recv.next().await;
+                match resp {
+                    Some(r) => match r {
+                        Ok(resp) => {
+                            tracing::info!("handshake resp is:{:?}", resp);
+                            Ok(resp)
+                        }
+                        Err(e) => Err(e.into()),
+                    },
+                    None => Err(anyhow::Error::msg("Receiving handshake resp failed!")),
+                }
+            }
+            Err(_e) => Err(anyhow::Error::msg("Handshake send failed!")),
+        }
+    }
+
+    pub fn init(mut sink: Si, mut st: St) -> RequestScheduler {
         let (sender, mut recv) = tokio::sync::mpsc::channel(10000);
         let task_stat = Arc::new(AtomicBool::new(false));
         let task_stat_change = task_stat.clone();
+
         tokio::spawn(async move {
+            let res_hand = Self::handshake(&mut sink, &mut st).await;
+
+            if res_hand.is_err() {
+                error!("Hanshake failed, transport quit!");
+                return;
+            }
+
+            let conn_id = res_hand.unwrap().get_meta().get_connId();
+
             let mut trans = Transport {
                 sink,
                 st: PhantomData::<St>,
                 ring: Default::default(),
                 callback_map: HashMap::new(),
             };
-            let t1 = recv.recv().fuse();
-            let t2 = st.next().fuse();
-            pin_mut!(t1, t2);
+
+            let mut stream_close = false;
+            let mut sink_close = false;
 
             loop {
-                let mut stream_close = false;
-                let mut sink_close = false;
+                let t1 = recv.recv();
+                let t2 = NoneFuture::new(st.next(), stream_close);
 
-                select! {
+                pin_mut!(t1, t2);
+
+                tokio::select! {
                     seg_res = t1 => {
                         match seg_res {
                             Some((sender, seg)) => {
-                                trans.request(seg, sender).await;
+                                trans.request(seg, sender, conn_id).await;
                             }
                             None => {
+                                tracing::warn!("sink is closed!");
                                 sink_close = true;
                             }
                         }
@@ -114,12 +154,20 @@ where
                     },
                     resp = t2 => {
                         match Self::unwrap_poll_resp(resp) {
-                            Err(_) => {stream_close =true;},
+                            Err(_) => {
+                                stream_close = true;
+                            },
                             Ok(resp) => {
                                 trans.poll_resp(resp).await;
                             }
                         }
                     },
+                    else => {
+                        tracing::info!("conn_id:{}, transport has closed", conn_id);
+
+                        stream_close = true;
+                        sink_close = true;
+                    }
                 }
 
                 if stream_close {
@@ -145,17 +193,22 @@ where
     ) -> Result<SegmentRes, anyhow::Error> {
         match resp {
             Some(r) => Ok(r?),
-            None => Err(anyhow::Error::msg("")),
+            None => Err(anyhow::Error::msg("shutdown")),
         }
     }
 
     // We don't need response for tracing data request, and only care about the send status of this request
     pub async fn request(
         &mut self,
-        segment: SegmentData,
+        mut segment: SegmentData,
         sender: tokio::sync::oneshot::Sender<Result<(), TransportErr>>,
+        conn_id: i32,
     ) {
+        segment.mut_meta().set_connId(conn_id);
         let seq_id = self.ring.async_push(segment.clone()).await.unwrap();
+
+        segment.mut_meta().set_seqId(seq_id);
+
         let res = self.sink.send((segment, WriteFlags::default())).await;
         match res {
             Err(_e) => {
@@ -167,52 +220,77 @@ where
         }
     }
 
-    pub async fn poll_resp(&mut self, item: SegmentRes) {
-        let seq_id = item.get_meta().get_seqId();
-        match item.get_meta().field_type {
+    pub async fn poll_resp(&mut self, resp: SegmentRes) {
+        let seq_id = resp.get_meta().get_seqId();
+
+        match resp.get_meta().field_type {
             Meta_RequestType::NEED_RESEND => {
                 let iter = self.ring.not_ack_iter_mut();
 
+                tracing::info!("resp resp :resp :resp :resp :{:?}", resp);
                 for item in iter {
-                    let mut segment = item.clone();
-                    let mut meta = Meta::new();
+                    if item.1 == seq_id {
+                        let mut segment = item.0.clone();
+                        let mut meta = Meta::new();
 
-                    meta.set_field_type(Meta_RequestType::NEED_RESEND);
-                    meta.set_seqId(seq_id);
+                        meta.set_field_type(Meta_RequestType::NEED_RESEND);
+                        meta.set_seqId(seq_id);
 
-                    let resend_count = meta.resend_count;
-                    if resend_count >= 3 {
-                        let s = self.callback_map.remove(&seq_id);
-                        if let Some(s) = s {
-                            let _ = s.send(Err(TransportErr::RetryLimit));
-                            return;
+                        let resend_count = resp.get_meta().resend_count + 1;
+
+                        tracing::info!(
+                            "Response resend count is:{:?}, seq_id is:{}",
+                            resend_count,
+                            seq_id
+                        );
+
+                        if resend_count >= 3 {
+                            tracing::warn!(
+                                "Has overceed retry limit times, resend count is:{}",
+                                resend_count
+                            );
+
+                            let s = self.callback_map.remove(&seq_id);
+                            if let Some(s) = s {
+                                let _ = s.send(Err(TransportErr::RetryLimit));
+                            }
+
+                            self.ack_seq_id(seq_id, &resp);
+                        } else {
+                            meta.set_resend_count(resend_count + 1);
+                            segment.set_meta(meta);
+
+                            let _ = self.sink.send((segment, WriteFlags::default())).await;
                         }
-                    }
-                    meta.set_resend_count(resend_count + 1);
-                    segment.set_meta(meta);
 
-                    let _ = self.sink.send((segment, WriteFlags::default())).await;
+                        break;
+                    }
                 }
             }
             Meta_RequestType::TRANS_ACK => {
-                let seq_id = item.get_meta().get_seqId();
-                let res = self.ring.ack(seq_id);
+                let seq_id = resp.get_meta().get_seqId();
 
-                match res {
-                    Ok(v) => {
-                        for seq_id in v.into_iter() {
-                            let s = self.callback_map.remove(&seq_id);
-                            if let Some(s) = s {
-                                let _ = s.send(Ok(()));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!(ack_id = seq_id, %e, ?item, "Ack has met some problem");
+                self.ack_seq_id(seq_id, &resp);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn ack_seq_id(&mut self, seq_id: i64, resp: &SegmentRes) {
+        let res = self.ring.ack(seq_id);
+
+        match res {
+            Ok(v) => {
+                for seq_id in v.into_iter() {
+                    let s = self.callback_map.remove(&seq_id);
+                    if let Some(s) = s {
+                        let _ = s.send(Ok(()));
                     }
                 }
             }
-            _ => unreachable!(),
+            Err(e) => {
+                error!(ack_id = seq_id, %e, ?resp, "Ack has met some problem");
+            }
         }
     }
 }

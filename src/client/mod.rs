@@ -12,8 +12,8 @@ mod service;
 pub mod trans;
 
 pub struct TracingConnection<Status, Req, Resp> {
-    sink: Option<StreamingCallSink<Req>>,
-    recv: Option<ClientDuplexReceiver<Resp>>,
+    pub sink: Option<StreamingCallSink<Req>>,
+    pub recv: Option<ClientDuplexReceiver<Resp>>,
     marker: PhantomData<Status>,
 }
 
@@ -38,7 +38,7 @@ where
     }
 
     pub async fn handshake(
-        mut self,
+        self,
         check_hand_resp: impl Fn(Resp, Req) -> (bool, i32),
         gen_hand_pkg: impl Fn() -> Req,
     ) -> Result<TracingConnection<HandShaked, Req, Resp>, AnyError> {
@@ -46,12 +46,10 @@ where
             return Err(AnyError::msg("sink and receiver is not properly inited!"));
         }
 
-        let sink = std::mem::replace(&mut (self.sink), None);
-        let recv = std::mem::replace(&mut (self.recv), None);
-        let mut sink = sink.unwrap();
-        let mut recv = recv.unwrap();
-        let pkt = gen_hand_pkg();
+        let mut sink = self.sink.unwrap();
+        let mut recv = self.recv.unwrap();
 
+        let pkt = gen_hand_pkg();
         let res = sink.send((pkt.clone(), WriteFlags::default())).await;
 
         match res {
@@ -78,7 +76,10 @@ where
                     None => Err(AnyError::msg("Receiving handshake resp failed!")),
                 }
             }
-            Err(e) => Err(e.into()),
+            Err(e) => {
+                tracing::error!("adfasfafadsfdsafdasfdasfdafadsfdasfdase:{:?}", e);
+                Err(e.into())
+            }
         }
     }
 }

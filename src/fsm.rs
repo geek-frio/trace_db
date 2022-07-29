@@ -34,6 +34,16 @@ impl<N: Fsm> FsmState<N> {
             None => {}
             Some(mut n) => {
                 n.set_mailbox(mailbox);
+                s.schedule(n)
+            }
+        }
+    }
+
+    pub fn tick<S: FsmScheduler<F = N>>(&self, s: &S, mailbox: Cow<'_, BasicMailbox<N>>) {
+        match self.take_fsm() {
+            None => {}
+            Some(mut n) => {
+                n.set_mailbox(mailbox);
                 n.tag_tick();
                 s.schedule(n)
             }
@@ -76,6 +86,7 @@ impl<N: Fsm> FsmState<N> {
             match res {
                 Ok(_) => return,
                 Err(NOTIFYSTATE_DROP) => {
+                    tracing::warn!("Notified drop!!!!!!!!!!");
                     let ptr = self.data.swap(ptr::null_mut(), Ordering::AcqRel);
                     unsafe {
                         Box::from_raw(ptr);

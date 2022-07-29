@@ -7,7 +7,7 @@ use std::error::Error;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Once};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::batch::{BatchSystem, FsmTypes};
 use crate::client::cluster::{
@@ -129,13 +129,18 @@ impl MainServer {
         self.start_periodical_keep_alive_addr(shutdown_signal.subscribe());
         let router = self.start_batch_system_for_segment(shutdown_signal.subscribe());
         self.start_bridge_channel(segment_receiver, router, shutdown_signal.subscribe());
+
+        let broad_shutdown_sender = shutdown_signal.sender;
+        let drop_sender = shutdown_signal.drop_notify;
+
+        drop(drop_sender);
         self.start_grpc(
             segment_sender.clone(),
             wait_recv,
             service,
             self.global_config.clone(),
             searcher,
-            shutdown_signal,
+            broad_shutdown_sender,
         )
         .await;
 
@@ -174,6 +179,7 @@ impl MainServer {
                     }
                 }
             }
+            tracing::info!("ShutdownSignal is dropped.start_periodical_keep_alive_addr");
         });
     }
 
@@ -183,14 +189,15 @@ impl MainServer {
         mut wait_shutdown: Receiver<()>,
         service: BoxCloneService<
             SegmentData,
-            Result<(), TransportErr>,
+            tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
             Box<dyn Error + Send + Sync>,
         >,
         config: Arc<GlobalConfig>,
         searcher: Searcher<SkyTracingClient>,
-        shutdown_signal: ShutdownSignal,
+        broad_shutdown_sender: tokio::sync::broadcast::Sender<ShutdownEvent>,
     ) {
-        let skytracing = SkyTracingService::new(sender, service, config, searcher, shutdown_signal);
+        let skytracing =
+            SkyTracingService::new(sender, service, config, searcher, broad_shutdown_sender);
 
         let service = create_sky_tracing(skytracing);
         let env = Environment::new(1);
@@ -226,7 +233,7 @@ impl MainServer {
             async move {
                 loop {
                     tokio::select! {
-                        _ = sleep(Duration::from_secs(10)) => {
+                        _ = sleep(Duration::from_secs(3)) => {
                             trace!("Sent tick event to TagPollHandler");
 
                             // 1: Periodically check fsm life scope
@@ -234,11 +241,18 @@ impl MainServer {
                             Self::clear_mailbox(res_v, index_dir.clone());
 
                             // 2: Periodically Tick Notify fsm mailbox
+                            tracing::trace!("Start to periodically tick all the idle mailbox");
+
+                            let cur = Instant::now();
+
+                            tracing::info!("Start to notify all idle mailbox...");
                             let _ = router_tick.notify_all_idle_mailbox();
+                            tracing::info!("Tag tick all mailbox success,cost:{}", cur.elapsed().as_millis());
                         }
                         _ = recv.recv() => {
                             info!("Tick task received shutdown event, shutdown!");
                             drop(send);
+                            info!("ShutdownSignal is dropped, start_batch_system_for_segment");
                             return;
                         }
                         else => {
