@@ -257,6 +257,8 @@ impl Watch for ClusterActiveWatcher {
                 }
             }
         }
+        tracing::info!("drop_notify is dropped in ClusterActiveWatcher");
+
         drop(drop_notify);
         Ok(())
     }

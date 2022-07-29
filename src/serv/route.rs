@@ -86,7 +86,7 @@ where
 
                             info!("Batch system bridge route task has shutdown..");
                             drop(drop_notify);
-
+                            info!("ShutdownSignal is dropped! loop_poll");
                             break Ok(());
                         }
                         _ => {

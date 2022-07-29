@@ -1,4 +1,5 @@
 use super::bus::RemoteMsgPoller;
+use super::ShutdownEvent;
 use super::ShutdownSignal;
 use crate::client::trans::TransportErr;
 use crate::com::index::ConvertIndexAddr;
@@ -46,7 +47,7 @@ pub struct SkyTracingService {
         Box<dyn std::error::Error + Send + Sync>,
     >,
     searcher: Searcher<SkyTracingClient>,
-    shutdown_signal: ShutdownSignal,
+    broad_shutdown_sender: tokio::sync::broadcast::Sender<ShutdownEvent>,
     config: Arc<GlobalConfig>,
 }
 
@@ -60,7 +61,7 @@ impl SkyTracingService {
         >,
         config: Arc<GlobalConfig>,
         searcher: Searcher<SkyTracingClient>,
-        shutdown_signal: ShutdownSignal,
+        broad_shutdown_sender: tokio::sync::broadcast::Sender<ShutdownEvent>,
     ) -> SkyTracingService {
         let index_map = Arc::new(Mutex::new(HashMap::default()));
         let service = SkyTracingService {
@@ -70,7 +71,7 @@ impl SkyTracingService {
             service,
             config,
             searcher,
-            shutdown_signal: shutdown_signal,
+            broad_shutdown_sender,
         };
         service
     }
@@ -173,9 +174,9 @@ impl SkyTracing for SkyTracingService {
         stream: ::grpcio::RequestStream<SegmentData>,
         sink: ::grpcio::DuplexSink<SegmentRes>,
     ) {
-        let shutdown_signal = self.shutdown_signal.clone();
+        let shutdown_recv = self.broad_shutdown_sender.subscribe();
         let msg_poller =
-            RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone(), shutdown_signal);
+            RemoteMsgPoller::new(stream.fuse(), sink, self.sender.clone(), shutdown_recv);
 
         TOKIO_RUN.spawn(async move {
             let poll_res = msg_poller.loop_poll().await;

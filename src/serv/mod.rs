@@ -129,13 +129,18 @@ impl MainServer {
         self.start_periodical_keep_alive_addr(shutdown_signal.subscribe());
         let router = self.start_batch_system_for_segment(shutdown_signal.subscribe());
         self.start_bridge_channel(segment_receiver, router, shutdown_signal.subscribe());
+
+        let broad_shutdown_sender = shutdown_signal.sender;
+        let drop_sender = shutdown_signal.drop_notify;
+
+        drop(drop_sender);
         self.start_grpc(
             segment_sender.clone(),
             wait_recv,
             service,
             self.global_config.clone(),
             searcher,
-            shutdown_signal,
+            broad_shutdown_sender,
         )
         .await;
 
@@ -174,6 +179,7 @@ impl MainServer {
                     }
                 }
             }
+            tracing::info!("ShutdownSignal is dropped.start_periodical_keep_alive_addr");
         });
     }
 
@@ -188,9 +194,10 @@ impl MainServer {
         >,
         config: Arc<GlobalConfig>,
         searcher: Searcher<SkyTracingClient>,
-        shutdown_signal: ShutdownSignal,
+        broad_shutdown_sender: tokio::sync::broadcast::Sender<ShutdownEvent>,
     ) {
-        let skytracing = SkyTracingService::new(sender, service, config, searcher, shutdown_signal);
+        let skytracing =
+            SkyTracingService::new(sender, service, config, searcher, broad_shutdown_sender);
 
         let service = create_sky_tracing(skytracing);
         let env = Environment::new(1);
@@ -245,6 +252,7 @@ impl MainServer {
                         _ = recv.recv() => {
                             info!("Tick task received shutdown event, shutdown!");
                             drop(send);
+                            info!("ShutdownSignal is dropped, start_batch_system_for_segment");
                             return;
                         }
                         else => {

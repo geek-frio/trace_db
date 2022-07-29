@@ -1,4 +1,4 @@
-use super::ShutdownSignal;
+use super::{ShutdownEvent, ShutdownSignal};
 use crate::com::ack::{AckCallback, CallbackStat};
 use crate::com::pkt::PktHeader;
 use crate::serv::CONN_MANAGER;
@@ -24,7 +24,7 @@ pub struct RemoteMsgPoller<L, S> {
     source_stream: L,
     sink: S,
     local_sender: UnboundedSender<SegmentDataCallback>,
-    shutdown_signal: ShutdownSignal,
+    broad_shutdown_receiver: tokio::sync::broadcast::Receiver<ShutdownEvent>,
 }
 
 impl<L, S> RemoteMsgPoller<L, S>
@@ -91,7 +91,7 @@ where
     // 2. Have received shutdown signal;
     pub(crate) async fn loop_poll(mut self) -> Result<(), AnyError> {
         let mut stream = self.source_stream.fuse();
-        let mut shut_recv = self.shutdown_signal;
+        let mut shut_recv = self.broad_shutdown_receiver;
         let sender = &mut self.local_sender;
 
         let (handler, actor) = SinkActor::spawn(self.sink);
@@ -149,7 +149,7 @@ where
                         });
                     }
                 },
-                _ = shut_recv.recv.recv() => {
+                _ = shut_recv.recv() => {
                     info!("Received shutdown signal, ignore all the data in the stream");
                     break;
                 },
@@ -376,13 +376,13 @@ where
         source: L,
         sink: S,
         local_sender: UnboundedSender<SegmentDataCallback>,
-        shutdown_signal: ShutdownSignal,
+        broad_shutdown_receiver: tokio::sync::broadcast::Receiver<ShutdownEvent>,
     ) -> RemoteMsgPoller<L, S> {
         RemoteMsgPoller {
             source_stream: source,
             sink,
             local_sender,
-            shutdown_signal,
+            broad_shutdown_receiver,
         }
     }
 }
@@ -485,7 +485,7 @@ mod test_remote_msg_poller {
         let (local_sender, local_recveiver) = tokio::sync::mpsc::unbounded_channel();
         let (broad_sender, _broad_recv) = tokio::sync::broadcast::channel(1);
 
-        let (shutdown_signal, _recv) = ShutdownSignal::chan(broad_sender);
+        let (_shutdown_signal, _recv) = ShutdownSignal::chan(broad_sender.clone());
 
         let (sink_send, sink_res) = tokio::sync::mpsc::unbounded_channel();
         (
@@ -493,7 +493,7 @@ mod test_remote_msg_poller {
                 source_stream: HandshakeStream { is_ready: false },
                 sink: TestSink { send: sink_send },
                 local_sender,
-                shutdown_signal,
+                broad_shutdown_receiver: broad_sender.subscribe(),
             },
             local_recveiver,
             sink_res,
@@ -574,7 +574,7 @@ mod test_remote_msg_poller {
                     source_stream: NormalReq::new(),
                     sink: TestSink { send: sink_send },
                     local_sender,
-                    shutdown_signal,
+                    broad_shutdown_receiver: broad_sender.subscribe(),
                 },
                 local_recveiver,
                 sink_res,

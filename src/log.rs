@@ -66,6 +66,8 @@ pub fn init_tracing_logger(cfg: Arc<GlobalConfig>, mut signal: ShutdownSignal) {
                 TOKIO_RUN.spawn(async move {
                     let _ = signal.recv.recv().await;
                     let _ = shut_downsender.send(MsgEvent::Shutdown).await;
+
+                    tracing::info!("ShutdownSignal is dropped for logger");
                 });
 
                 let json_log = tracing_subscriber::fmt::layer().json().with_writer(maker);
