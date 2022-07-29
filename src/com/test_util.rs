@@ -53,7 +53,9 @@ pub fn mock_seg_with_hour(conn_id: i32, api_id: i32, seq_id: i64, hours: i64) ->
     segment.set_payload(_gen_data_binary());
     segment.set_zone(_gen_tag(3, 5, 'a'));
 
-    let before_timestamp = now.checked_sub_signed(chrono::Duration::hours(1)).unwrap();
+    let before_timestamp = now
+        .checked_sub_signed(chrono::Duration::hours(hours))
+        .unwrap();
 
     segment.set_biz_timestamp(before_timestamp.timestamp_millis() as u64);
     segment.set_seg_id(uuid.to_string());

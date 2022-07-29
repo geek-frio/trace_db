@@ -7,7 +7,7 @@ use std::error::Error;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Once};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::batch::{BatchSystem, FsmTypes};
 use crate::client::cluster::{
@@ -230,12 +230,17 @@ impl MainServer {
                             trace!("Sent tick event to TagPollHandler");
 
                             // 1: Periodically check fsm life scope
-                            // let res_v = (&mut router_tick).remove_expired_mailbox();
-                            // Self::clear_mailbox(res_v, index_dir.clone());
+                            let res_v = (&mut router_tick).remove_expired_mailbox();
+                            Self::clear_mailbox(res_v, index_dir.clone());
 
                             // 2: Periodically Tick Notify fsm mailbox
                             tracing::trace!("Start to periodically tick all the idle mailbox");
-                            // let _ = router_tick.notify_all_idle_mailbox();
+
+                            let cur = Instant::now();
+
+                            tracing::info!("Start to notify all idle mailbox...");
+                            let _ = router_tick.notify_all_idle_mailbox();
+                            tracing::info!("Tag tick all mailbox success,cost:{}", cur.elapsed().as_millis());
                         }
                         _ = recv.recv() => {
                             info!("Tick task received shutdown event, shutdown!");

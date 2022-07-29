@@ -336,7 +336,7 @@ impl<'a> SegmentCallbackWrap for ExecutorStat<'a> {
                 let span = span!(Level::TRACE, "trans_receiver_consume", data = ?s.data);
                 let data = SegmentDataCallback::new(s.data, AckCallback::new(s.callback), span);
 
-                info!("Send new data to batch system:{}", seq_id);
+                trace!("Send new data to batch system:{}", seq_id);
                 let _ = s.batch_handle.send(data);
                 return ExecutorStat::Last;
             }

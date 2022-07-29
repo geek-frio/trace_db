@@ -229,8 +229,10 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
 
                         let fsm = mailbox.take_fsm();
 
-                        if let Some(fsm) = fsm {
+                        if let Some(mut fsm) = fsm {
                             tracing::info!("reschedule this fsm");
+                            fsm.set_mailbox(std::borrow::Cow::Borrowed(&mailbox));
+
                             self.router.normal_scheduler.schedule(fsm);
                         } else {
                             tracing::info!("want to reschedule, but failed!")
@@ -238,7 +240,6 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                     }
                 }
             }
-            tracing::info!("Continue to next loop");
         }
     }
 }

@@ -47,13 +47,23 @@ impl TracingTagEngine {
             Ok(index) => {
                 let res_writer = index.writer(100_100_000);
                 match res_writer {
-                    Ok(writer) => Ok(TracingTagEngine {
-                        index_writer: writer,
-                        index,
-                        mailkey: addr,
-                    }),
+                    Ok(writer) => {
+                        tracing::info!(
+                            "addr:{} writer create success!",
+                            addr.convert_to_index_addr_key()
+                        );
+                        Ok(TracingTagEngine {
+                            index_writer: writer,
+                            index,
+                            mailkey: addr,
+                        })
+                    }
                     Err(e) => {
-                        error!("Index writer create failed!e:{:?}", e);
+                        error!(
+                            "Index writer create failed!e:{:?}, addr:{}",
+                            e,
+                            addr.convert_to_index_addr_key()
+                        );
                         Err(TagEngineError::IndexDirCreateFailed)
                     }
                 }

@@ -6,7 +6,6 @@ use std::marker::PhantomData;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use tracing::error;
@@ -64,8 +63,6 @@ impl RequestScheduler {
         if self.shutdown.load(Ordering::Relaxed) {
             return Err(TransportErr::Shutdown);
         }
-
-        let call_start = Instant::now();
 
         let (s, r) = tokio::sync::oneshot::channel();
         let res = self.sender.send((s, seg)).await;

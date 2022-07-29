@@ -3,6 +3,7 @@ use crate::com::{
     mail::BasicMailbox,
 };
 use crate::fsm::Fsm;
+use backtrace::Backtrace;
 use crossbeam_channel::Receiver;
 use skproto::tracing::SegmentData;
 use std::borrow::Cow;
@@ -71,12 +72,20 @@ pub(crate) trait FsmExecutor {
     fn remain_msgs(&self) -> usize;
 }
 
+impl Drop for TagFsm {
+    fn drop(&mut self) {
+        let bt = Backtrace::new();
+        tracing::info!("TagFsm is dropped, backtrace is:{:?}", bt);
+    }
+}
+
 impl FsmExecutor for TagFsm {
     type Msg = SegmentDataCallback;
 
     fn try_fill_batch(&mut self, msg_buf: &mut Vec<Self::Msg>, counter: &mut usize) -> bool {
         let mut keep_process = false;
 
+        let mut retry_num = 0;
         loop {
             match self.receiver.try_recv() {
                 Ok(msg) => {
@@ -95,12 +104,18 @@ impl FsmExecutor for TagFsm {
                     }
                 }
                 Err(_) => {
-                    trace!("Mailbox's msgs has consumed");
+                    if retry_num < 3 {
+                        trace!("Mailbox's msgs has consumed");
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+
+                        retry_num += 1;
+                        continue;
+                    }
                     break;
                 }
             }
         }
-        tracing::info!("Receiver length:{}", self.receiver.len());
+        tracing::info!("Mailbox remain msgs length:{}", self.receiver.len());
         keep_process
     }
 

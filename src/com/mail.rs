@@ -3,7 +3,6 @@
 use crate::fsm::Fsm;
 use crate::fsm::FsmState;
 use crate::sched::FsmScheduler;
-use backtrace::Backtrace;
 use crossbeam_channel::{SendError, Sender};
 use std::borrow::Cow;
 use std::sync::atomic::AtomicUsize;
@@ -36,16 +35,10 @@ impl<Owner: Fsm> BasicMailbox<Owner> {
     }
 
     pub fn release(&self, fsm: Box<Owner>) {
-        let bt = Backtrace::new();
-        tracing::info!("fsm is released here, bt:{:?}", bt);
-
         self.state.release(fsm);
     }
 
     pub fn take_fsm(&self) -> Option<Box<Owner>> {
-        let bt = Backtrace::new();
-
-        tracing::info!("fsm is taked here, bt:{:?}", bt);
         self.state.take_fsm()
     }
 

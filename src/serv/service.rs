@@ -350,14 +350,14 @@ async fn batch_req(
     );
     let cur = std::time::Instant::now();
 
-    // if recvs.len() > 0 {
-    //     let _ = recvs.pop().unwrap().await;
+    if recvs.len() > 0 {
+        let _ = recvs.pop().unwrap().await;
 
-    //     tracing::info!(
-    //         "batch request complete! Wait complete cost:{}",
-    //         cur.elapsed().as_millis()
-    //     );
-    // }
+        tracing::info!(
+            "batch request complete! Wait complete cost:{}",
+            cur.elapsed().as_millis()
+        );
+    }
 
     gen_ok_stat()
 }

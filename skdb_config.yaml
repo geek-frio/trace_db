@@ -1,6 +1,7 @@
 grpc_port: 9999
 redis_addr: 127.0.0.1:6379
-index_dir: /tmp
+index_dir: /tmp/skdb
 env: local
 log_path: .
 app_name: skdb-server
+server_ip: 127.0.0.1
