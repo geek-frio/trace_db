@@ -15,14 +15,17 @@ struct StartArgs {
     command: Command,
 }
 
+/// 采用配置文件的方式启动skdb server
 #[derive(Parser, Debug)]
 struct FileConfig {
     #[clap(short = 'p', help = "config file path to start skdb server")]
     path: String,
 }
 
+/// 环境变量或者args参数的方式启动skdb server
 #[derive(Parser, Debug)]
 struct EnvConfig {
+    /// 配置listen的grpc port
     #[clap(
         name = "grpc",
         env = "SKDB_GRPC_PORT",
@@ -31,18 +34,23 @@ struct EnvConfig {
     )]
     grpc_port: u32,
 
+    /// 配置服务发现依赖的redis地址
     #[clap(name = "redis", env = "SKDB_REDIS_ADDR", short = 'r')]
     redis_addr: String,
 
+    /// 配置索引所在的index_dir地址
     #[clap(name = "index", env = "SKDB_IDX_DIR", short = 'i')]
     index_dir: String,
 
+    /// 配置启动环境(local, dev, pre, pro 四种可能)
     #[clap(name = "env", env = "SKDB_ENV", short = 'e')]
     env: String,
 
+    /// 日志输出目录
     #[clap(name = "log", env = "SKDB_LOG", default_value = "./", short = 'l')]
     log_path: String,
 
+    /// 启动服务名称配置
     #[clap(
         name = "serv_name",
         env = "SKDB_SERVER_NAME",
