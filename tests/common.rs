@@ -42,6 +42,11 @@ pub fn get_test_grpc_client() -> SkyTracingClient {
     client.pop().unwrap().0
 }
 
+pub fn get_test_grpc_client_with_addrs(addrs: Vec<(&'static str, i32)>) -> SkyTracingClient {
+    let mut client = ClusterActiveWatcher::create_grpc_conns(addrs);
+    client.pop().unwrap().0
+}
+
 pub fn teardown(sender: Sender<ShutdownEvent>) {
     tracing::info!("Shutting down...");
     let _ = sender.send(ShutdownEvent::GracefulStop);

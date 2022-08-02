@@ -105,7 +105,6 @@ impl FsmExecutor for TagFsm {
                 }
                 Err(_) => {
                     if retry_num < 3 {
-                        trace!("Mailbox's msgs has consumed");
                         std::thread::sleep(std::time::Duration::from_millis(20));
 
                         retry_num += 1;
@@ -115,7 +114,6 @@ impl FsmExecutor for TagFsm {
                 }
             }
         }
-        tracing::info!("Mailbox remain msgs length:{}", self.receiver.len());
         keep_process
     }
 
@@ -155,7 +153,10 @@ impl FsmExecutor for TagFsm {
 
             msg.callback.callback(CallbackStat::Ok(msg.data.into()));
         }
-        tracing::info!("{} 's msgs has been notified", *msg_cnt - before_msg_cnt);
+
+        if (*msg_cnt - before_msg_cnt) > 0 {
+            tracing::info!("{} 's msgs has been notified", *msg_cnt - before_msg_cnt);
+        }
     }
 
     fn commit(&mut self, _msgs: &mut Vec<Self::Msg>) {
@@ -228,7 +229,6 @@ impl Fsm for TagFsm {
     }
 
     fn untag_tick(&mut self) {
-        tracing::info!("fsm tick is uncommentted");
         self.tick = false;
     }
 
