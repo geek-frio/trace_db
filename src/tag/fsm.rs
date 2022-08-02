@@ -121,7 +121,6 @@ impl FsmExecutor for TagFsm {
         let slice = msg_buf.as_slice();
         let before_msg_cnt = *msg_cnt;
 
-        tracing::info!("Start to add msg to tag engine..");
         for i in *msg_cnt..msg_buf.len() {
             if i < *msg_cnt {
                 continue;
@@ -159,7 +158,7 @@ impl FsmExecutor for TagFsm {
         }
     }
 
-    fn commit(&mut self, _msgs: &mut Vec<Self::Msg>) {
+    fn commit(&mut self, msgs: &mut Vec<Self::Msg>) {
         let res = self.engine.flush();
         match res {
             Err(e) => {
@@ -175,7 +174,7 @@ impl FsmExecutor for TagFsm {
                 // }
             }
             Ok(_tantivy_id) => {
-                tracing::info!("Flush data success");
+                tracing::info!("Flush data success, flushed size is:{}", msgs.len());
                 // while let Some(msg) = msgs.pop() {
                 //     let span = &msg.span;
                 //     let _entered = span.enter();

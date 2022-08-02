@@ -105,7 +105,7 @@ impl MainServer {
 
         let (shutdown_signal, wait_recv) = ShutdownSignal::chan(broad_sender.clone());
 
-        init_tracing_logger(self.global_config.clone(), shutdown_signal.subscribe());
+        init_tracing_logger(self.global_config.clone(), shutdown_signal.subscribe()).await;
 
         let ctrl_broad = broad_sender;
         ctrlc::set_handler(move || {

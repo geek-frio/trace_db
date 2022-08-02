@@ -1,4 +1,4 @@
-use clap::{ArgEnum, Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use skdb::{
     conf::{ConfigManager, GlobalConfig},
     serv::MainServer,

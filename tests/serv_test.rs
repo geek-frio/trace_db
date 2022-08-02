@@ -1,12 +1,8 @@
 mod common;
 
 use common::*;
-use skdb::{
-    log::{init_console_logger, init_console_logger_with_level},
-    random_mock_batch,
-};
+use skdb::{log::init_console_logger_with_level, random_mock_batch};
 use std::time::Duration;
-use tracing::log::LevelFilter;
 
 #[test]
 #[ignore]
