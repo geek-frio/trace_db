@@ -39,7 +39,14 @@ fn test_inte_too_many_write() {
 fn test_write_only_client() {
     init_console_logger_with_level(tracing::level_filters::LevelFilter::TRACE);
 
-    let client = get_test_grpc_client_with_addrs(vec![("192.168.121.171:9991", 1)]);
+    let local_ip = local_ip_address::local_ip().unwrap().to_string();
+    let s = format!("{}:9991", local_ip);
+    let addrs = vec![&s]
+        .into_iter()
+        .map(|s| (s.as_str(), 1))
+        .collect::<Vec<(&str, i32)>>();
+
+    let client = get_test_grpc_client_with_addrs(addrs);
 
     for i in 1..100 {
         let batch = random_mock_batch(50);

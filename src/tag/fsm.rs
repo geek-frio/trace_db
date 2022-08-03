@@ -131,12 +131,6 @@ impl FsmExecutor for TagFsm {
             let _entered = span.enter();
 
             self.engine.add_record(&msg.data);
-            trace!(
-                trace_id = msg.data.get_trace_id(),
-                seq_id = msg.data.get_meta().get_seqId(),
-                "Segment has added to Tag Engine, but not be flushed!"
-            );
-
             *msg_cnt += 1;
         }
         tracing::info!(

@@ -40,6 +40,14 @@ mock-multi: test-start-local-redis
         done ; \
 	fi
 
+mock-multi-write-test: mock-multi
+	@sleep 5
+	@echo "Start integration test case test_write_only_client..."
+	cargo test test_write_only_client --features fail/failpoints -- --nocapture --ignored --test-threads 1
+	@echo "Integration test case test_write_only_client execute finished..."
+	@echo "Start to kill skdb server..."
+	pkill -f skdb_server
+
 kill-server: 
 	pkill -f skdb_server 
 
