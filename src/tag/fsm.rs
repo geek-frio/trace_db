@@ -105,7 +105,6 @@ impl FsmExecutor for TagFsm {
                 }
                 Err(_) => {
                     if retry_num < 3 {
-                        trace!("Mailbox's msgs has consumed");
                         std::thread::sleep(std::time::Duration::from_millis(20));
 
                         retry_num += 1;
@@ -115,7 +114,6 @@ impl FsmExecutor for TagFsm {
                 }
             }
         }
-        tracing::info!("Mailbox remain msgs length:{}", self.receiver.len());
         keep_process
     }
 
@@ -123,7 +121,6 @@ impl FsmExecutor for TagFsm {
         let slice = msg_buf.as_slice();
         let before_msg_cnt = *msg_cnt;
 
-        tracing::info!("Start to add msg to tag engine..");
         for i in *msg_cnt..msg_buf.len() {
             if i < *msg_cnt {
                 continue;
@@ -134,12 +131,6 @@ impl FsmExecutor for TagFsm {
             let _entered = span.enter();
 
             self.engine.add_record(&msg.data);
-            trace!(
-                trace_id = msg.data.get_trace_id(),
-                seq_id = msg.data.get_meta().get_seqId(),
-                "Segment has added to Tag Engine, but not be flushed!"
-            );
-
             *msg_cnt += 1;
         }
         tracing::info!(
@@ -155,10 +146,13 @@ impl FsmExecutor for TagFsm {
 
             msg.callback.callback(CallbackStat::Ok(msg.data.into()));
         }
-        tracing::info!("{} 's msgs has been notified", *msg_cnt - before_msg_cnt);
+
+        if (*msg_cnt - before_msg_cnt) > 0 {
+            tracing::info!("{} 's msgs has been notified", *msg_cnt - before_msg_cnt);
+        }
     }
 
-    fn commit(&mut self, _msgs: &mut Vec<Self::Msg>) {
+    fn commit(&mut self, msgs: &mut Vec<Self::Msg>) {
         let res = self.engine.flush();
         match res {
             Err(e) => {
@@ -174,7 +168,7 @@ impl FsmExecutor for TagFsm {
                 // }
             }
             Ok(_tantivy_id) => {
-                tracing::info!("Flush data success");
+                tracing::info!("Flush data success, flushed size is:{}", msgs.len());
                 // while let Some(msg) = msgs.pop() {
                 //     let span = &msg.span;
                 //     let _entered = span.enter();
@@ -228,7 +222,6 @@ impl Fsm for TagFsm {
     }
 
     fn untag_tick(&mut self) {
-        tracing::info!("fsm tick is uncommentted");
         self.tick = false;
     }
 

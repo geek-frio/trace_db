@@ -244,6 +244,13 @@ impl TracingLogConsumer {
     ) -> Result<TracingLogConsumer, AnyError> {
         let mut cur_log_dir = log_dir.clone();
 
+        if !cur_log_dir.exists() {
+            let r = std::fs::create_dir_all(&cur_log_dir);
+            if r.is_ok() {
+                tracing::info!("log dir:{:?} does not exists, so create it", cur_log_dir);
+            }
+        }
+
         let writer =
             Self::create_writer(name_prefix.as_str(), &mut cur_log_dir, 1, &shut_notify).await?;
 

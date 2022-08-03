@@ -1,4 +1,4 @@
-use super::{ShutdownEvent, ShutdownSignal};
+use super::ShutdownEvent;
 use crate::com::ack::{AckCallback, CallbackStat};
 use crate::com::pkt::PktHeader;
 use crate::serv::CONN_MANAGER;
@@ -392,6 +392,7 @@ mod test_remote_msg_poller {
     use self::mock_handshake::HandshakeStream;
     use super::*;
     use crate::log::init_console_logger;
+    use crate::serv::ShutdownSignal;
     use crate::tag::engine::TagEngineError;
     use futures::Sink;
     use skproto::tracing::{Meta, Meta_RequestType};
@@ -566,7 +567,7 @@ mod test_remote_msg_poller {
             let (local_sender, local_recveiver) = tokio::sync::mpsc::unbounded_channel();
             let (broad_sender, _broad_recv) = tokio::sync::broadcast::channel(1);
 
-            let (shutdown_signal, _recv) = ShutdownSignal::chan(broad_sender.clone());
+            let (_shutdown_signal, _recv) = ShutdownSignal::chan(broad_sender.clone());
 
             let (sink_send, sink_res) = tokio::sync::mpsc::unbounded_channel();
             (

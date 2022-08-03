@@ -171,9 +171,7 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                     FsmTypes::Normal(fsm) => {
                         let mut normal_fsm = NormalFsm::new(fsm);
 
-                        tracing::info!("Has received new fsm, handle!");
                         let res = self.handler.handle(&mut normal_fsm);
-                        tracing::info!("Handle finished!");
                         if normal_fsm.as_ref().is_stopped() && normal_fsm.as_ref().chan_msgs() > 0 {
                             tracing::info!("Has already stopped, but still have msgs, reschedule");
                             self.router.normal_scheduler.schedule(normal_fsm.fsm);
@@ -181,18 +179,15 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                             remain_size: progress,
                         } = res
                         {
-                            tracing::info!("Enter into stopAt branch logic");
                             if normal_fsm.as_ref().chan_msgs() > progress {
                                 tracing::info!(
                                     "normal fsm remaining msgs is bigger than progress, remaining msgs:{}, progress:{}",
                                     normal_fsm.as_ref().chan_msgs(), progress);
                                 self.router.normal_scheduler.schedule(normal_fsm.fsm);
                             } else {
-                                tracing::info!("push into batch");
                                 batch.push(normal_fsm);
                             }
                         } else {
-                            tracing::info!("push into batch");
                             batch.push(normal_fsm);
                         }
                     }
