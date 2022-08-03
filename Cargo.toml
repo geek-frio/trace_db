@@ -38,7 +38,7 @@ tower = { version = "0.4.12", features = ["limit", "buffer", "util", "discover",
 chashmap = "2.2.2"
 futures-util = "0.3.21"
 tantivy-query-grammar = "0.15.0"
-ctrlc = "3.2.2"
+ctrlc = { version = "3.2.2", features = ["termination"] }
 once_cell = "1.13"
 fail = "0.4"
 num-traits = "0.2"
