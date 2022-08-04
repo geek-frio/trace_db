@@ -447,7 +447,7 @@ mod tests {
 
         // let mut engine = TracingTagEngine::new_for_test().unwrap();
 
-        for i in 0..10 {
+        for _ in 0..10 {
             for j in 0..10 {
                 let now = Local::now();
                 let mut record = SegmentData::new();
@@ -459,7 +459,6 @@ mod tests {
                 record.set_trace_id(uuid.to_string());
                 init.call_once(|| {
                     captured_val.push_str(&uuid.to_string());
-                    println!("i:{}; j:{}; uuid:{}", i, j, uuid.to_string());
 
                     checked_trace_id = uuid.to_string();
                 });

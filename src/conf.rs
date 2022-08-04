@@ -46,15 +46,3 @@ impl ConfigManager {
         serde_yaml::from_reader::<_, GlobalConfig>(r.as_slice()).expect("Load config file failed!")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_load_config() {
-        let p = <PathBuf as From<String>>::from("/tmp/skdb_test.yaml".to_string());
-        let global: GlobalConfig = ConfigManager::load(p);
-        println!("global:{:?}", global);
-    }
-}

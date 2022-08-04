@@ -52,7 +52,7 @@ kill-server:
 	pkill -f skdb_server 
 
 test: 
-	cargo test $(name) --features fail/failpoints -- --nocapture
+	CLOSE_LOG=1 cargo test $(name) --features fail/failpoints -- --nocapture
 
 testi: 
 	cargo test $(name) --features fail/failpoints -- --nocapture --ignored --test-threads 1

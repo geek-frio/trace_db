@@ -186,6 +186,7 @@ mod tests {
         setup();
 
         let temp = std::env::temp_dir();
+        let temp = temp.join("abc");
 
         let root_dir_name = format!(
             "{}",
@@ -195,12 +196,15 @@ mod tests {
         let root_dir = temp.join(root_dir_name);
         tracing::info!("root dir is:{:?}", root_dir);
 
-        std::fs::create_dir(&root_dir).unwrap();
+        if !root_dir.exists() {
+            tracing::info!("Waiting to create dir is:{:?}", root_dir);
+            std::fs::create_dir_all(&root_dir).unwrap();
+        }
 
-        let expired_dir1 = create_expired_dir_name(16);
+        let expired_dir1 = create_expired_dir_name(31);
         let _ = std::fs::create_dir(root_dir.join(expired_dir1));
 
-        let expired_dir2 = create_expired_dir_name(17);
+        let expired_dir2 = create_expired_dir_name(32);
         let _ = std::fs::create_dir(root_dir.join(expired_dir2));
 
         let not_expired_dir3 = create_expired_dir_name(1);
