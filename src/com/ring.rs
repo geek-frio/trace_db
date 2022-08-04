@@ -1,6 +1,5 @@
 use std::{
-    cmp::Reverse,
-    collections::{linked_list::Iter, linked_list::IterMut, BinaryHeap, LinkedList},
+    collections::{linked_list::Iter, linked_list::IterMut, LinkedList},
     sync::Arc,
 };
 
