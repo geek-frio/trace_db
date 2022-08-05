@@ -1,6 +1,5 @@
 use std::{
-    cmp::Reverse,
-    collections::{linked_list::Iter, linked_list::IterMut, BinaryHeap, LinkedList},
+    collections::{linked_list::Iter, linked_list::IterMut, LinkedList},
     sync::Arc,
 };
 
@@ -17,8 +16,6 @@ where
     size: usize,
     notify: Option<Arc<Notify>>,
     data: LinkedList<Element<T>>,
-
-    ack_queue: BinaryHeap<Reverse<i64>>,
 }
 
 impl<T> Default for RingQueue<T>
@@ -74,7 +71,6 @@ where
             size,
             notify: None,
             data: LinkedList::new(),
-            ack_queue: BinaryHeap::new(),
         }
     }
 
@@ -108,17 +104,6 @@ where
     pub fn ack(&mut self, ack_id: i64) -> Result<Vec<i64>, RingQueueError> {
         if ack_id > self.cur_id {
             return Err(RingQueueError::InvalidAckId(self.cur_id, self.start_id));
-        }
-        self.ack_queue.push(Reverse(ack_id));
-
-        let mut ack_id = self.start_id;
-        while let Some(&id) = self.ack_queue.peek() {
-            if id.0 - ack_id == 1 {
-                ack_id = id.0;
-                self.ack_queue.pop();
-            } else {
-                break;
-            }
         }
 
         let poped_size = ack_id - self.start_id + 1;
@@ -228,10 +213,14 @@ where
 
 #[cfg(test)]
 mod ring1_test {
+    use crate::log::init_console_logger;
+
     use super::*;
 
     #[test]
-    fn test_basics() {
+    fn test_ring1_test_basics() {
+        init_console_logger();
+
         let mut queue = RingQueue::<i64>::new(10);
         let mut pushed_ids = vec![];
 
@@ -243,9 +232,10 @@ mod ring1_test {
         assert!(queue.push(10).is_err());
 
         // 2.Test AckAll
-        let _ = queue.ack(10);
+        let r = queue.ack(10);
+        tracing::info!("ack result:{:?}", r);
+
         assert!(queue.not_acked_len() == 0);
-        println!("queue is:{:?}", queue);
 
         // 3.Test Ack one by one
         for i in 1..100000 {
@@ -262,7 +252,6 @@ mod ring1_test {
                 queue.ack(id).unwrap();
             }
         }
-        println!("queue is:{:?}", queue);
         assert!(0 == queue.not_acked_len());
 
         let mut queue = RingQueue::<i64>::new(100);
@@ -274,14 +263,5 @@ mod ring1_test {
         let iter = queue.range_iter(90);
         let a = iter.collect::<Vec<(&i64, i64)>>();
         assert_eq!(a.len(), 11);
-
-        let mut queue = RingQueue::<i64>::new(10);
-        queue.push(1).unwrap();
-        let id = queue.push(2).unwrap();
-        queue.push(3).unwrap();
-
-        let _ = queue.ack(id);
-        println!("current queue is:{:?}", queue);
-        println!("i64 max:{}", i64::MAX)
     }
 }

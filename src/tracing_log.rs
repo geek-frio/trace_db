@@ -348,7 +348,7 @@ mod tracing_log {
         for file in created_files {
             let r = tokio::fs::remove_file(file.as_path()).await;
             if let Err(e) = r {
-                println!("Drop file error, e:{:?}", e);
+                tracing::info!("Drop aile error, e:{:?}", e);
             }
         }
     }

@@ -111,11 +111,11 @@ impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
     ) -> Result<(), RouteErr<N::Message>> {
         let addr_num = addr.convert_to_index_addr_key();
 
-        let res = self.send_msg(addr_num, msg, &self.normal_scheduler);
+        let stat = self.send_msg(addr_num, msg, &self.normal_scheduler);
 
-        match res {
-            Ok(_) => Ok(()),
-            Err(msg) => {
+        match stat {
+            SendStat::SendSuccess => Ok(()),
+            SendStat::MailboxNotExist(msg) | SendStat::MailboxSendErr(msg) => {
                 let res = create_fsm(addr, &self.conf.index_dir);
 
                 if let Err(e) = res {
@@ -128,11 +128,15 @@ impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
 
                 self.register(addr.convert_to_index_addr_key(), mailbox);
 
-                let res_send = self.send_msg(addr_num, msg, &self.normal_scheduler);
-
-                match res_send {
-                    Ok(_) => Ok(()),
-                    Err(msg) => Err(RouteErr(msg, TagEngineError::ReceiverDroppped)),
+                let stat = self.send_msg(addr_num, msg, &self.normal_scheduler);
+                match stat {
+                    SendStat::SendSuccess => Ok(()),
+                    SendStat::MailboxNotExist(msg) | SendStat::MailboxSendErr(msg) => {
+                        Err(RouteErr(
+                            msg,
+                            TagEngineError::Other("Mailbox & TagFsm create failed".to_string()),
+                        ))
+                    }
                 }
             }
         }
@@ -165,6 +169,12 @@ impl<N: Fsm, S: FsmScheduler<F = N> + Clone> RouteMsg<N> for Router<N, S> {
     }
 }
 
+pub enum SendStat<Msg> {
+    SendSuccess,
+    MailboxNotExist(Msg),
+    MailboxSendErr(Msg),
+}
+
 impl<N: Fsm, S> Router<N, S>
 where
     S: FsmScheduler<F = N> + Clone,
@@ -191,22 +201,22 @@ where
         self.shutdown.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn send_msg(
-        &self,
-        addr: IndexAddr,
-        msg: N::Message,
-        s: &S,
-    ) -> Result<(), N::Message> {
+    pub(crate) fn send_msg(&self, addr: IndexAddr, msg: N::Message, s: &S) -> SendStat<N::Message> {
         let mut caches_ref = self.caches.borrow_mut();
 
+        // Try cache map get
         let mailbox = caches_ref.get(&addr);
         if let Some(mailbox) = mailbox {
-            let res_send = mailbox.send(msg, s);
-            return match res_send {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    tracing::warn!("1: Mailbox send failed! e:{:?}", e);
-                    Err(e.0)
+            let send_res = mailbox.send(msg, s);
+            return match send_res {
+                Ok(_) => SendStat::SendSuccess,
+                Err(msg) => {
+                    caches_ref.remove(&addr);
+
+                    let mut boxes = self.normals.lock().unwrap();
+                    boxes.map.remove(&addr);
+
+                    SendStat::MailboxSendErr(msg.0)
                 }
             };
         }
@@ -219,24 +229,75 @@ where
                 Some(mailbox) => mailbox.clone(),
                 None => {
                     tracing::warn!("Not find addr:{} related mailbox", addr);
-                    return Err(msg);
+                    return SendStat::MailboxNotExist(msg);
                 }
             };
             (cnt, b)
         };
 
+        // Resize Cache Map
         if cnt > caches_ref.capacity() || cnt < caches_ref.capacity() / 2 {
             caches_ref.resize(cnt);
         }
 
         let res_send = mailbox.send(msg, s);
         if let Err(e) = res_send {
-            return Err(e.0);
-        }
+            let mut boxes = self.normals.lock().unwrap();
+            boxes.map.remove(&addr);
 
+            return SendStat::MailboxSendErr(e.0);
+        }
         caches_ref.insert(addr, mailbox);
-        Ok(())
+
+        SendStat::SendSuccess
     }
+
+    // pub(crate) fn send_msg(
+    //     &self,
+    //     addr: IndexAddr,
+    //     msg: N::Message,
+    //     s: &S,
+    // ) -> Result<(), N::Message> {
+    //     let mut caches_ref = self.caches.borrow_mut();
+
+    //     let mailbox = caches_ref.get(&addr);
+    //     if let Some(mailbox) = mailbox {
+    //         let res_send = mailbox.send(msg, s);
+    //         return match res_send {
+    //             Ok(_) => Ok(()),
+    //             Err(e) => {
+    //                 tracing::warn!("1: Mailbox send failed! e:{:?}", e);
+    //                 Err(e.0)
+    //             }
+    //         };
+    //     }
+
+    //     let (cnt, mailbox) = {
+    //         let mut boxes = self.normals.lock().unwrap();
+    //         let cnt = boxes.map.len();
+
+    //         let b = match boxes.map.get_mut(&addr) {
+    //             Some(mailbox) => mailbox.clone(),
+    //             None => {
+    //                 tracing::warn!("Not find addr:{} related mailbox", addr);
+    //                 return Err(msg);
+    //             }
+    //         };
+    //         (cnt, b)
+    //     };
+
+    //     if cnt > caches_ref.capacity() || cnt < caches_ref.capacity() / 2 {
+    //         caches_ref.resize(cnt);
+    //     }
+
+    //     let res_send = mailbox.send(msg, s);
+    //     if let Err(e) = res_send {
+    //         return Err(e.0);
+    //     }
+
+    //     caches_ref.insert(addr, mailbox);
+    //     Ok(())
+    // }
 
     pub fn notify_all_idle_mailbox(&self) -> Result<(), AnyError> {
         let res = self.normals.lock();
@@ -347,7 +408,7 @@ mod tests {
             test_util::{gen_expired_mailkeyadd, gen_segcallback, gen_valid_mailkeyadd},
         },
         log::init_console_logger,
-        router::RouteMsg,
+        router::{RouteMsg, SendStat},
         sched::NormalScheduler,
         tag::fsm::{FsmExecutor, TagFsm},
     };
@@ -403,7 +464,13 @@ mod tests {
         let msg = gen_segcallback(1, 1);
         let res_send = router.send_msg(mail_addr.convert_to_index_addr_key(), msg.0, &fsm_sche);
 
-        assert!(res_send.is_ok());
+        match res_send {
+            SendStat::SendSuccess => {}
+            _ => {
+                unreachable!()
+            }
+        }
+
         let res_fsm = r.recv();
         assert!(res_fsm.is_ok());
 

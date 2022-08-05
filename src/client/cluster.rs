@@ -370,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "Use gnu make to start redis service first"]
     fn test_cluster_active_watcher_query_redis() {
         setup();
         gen_virtual_servers(3);
@@ -499,7 +499,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Need to mock redis service in local machine"]
+    #[ignore = "Need to mock redis service in local machine, use gnu make to start redis service first"]
     async fn test_block_watch() {
         setup();
 
@@ -585,7 +585,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_observer() {
-        init_console_logger();
+        async_init_console_logger().await;
 
         let (send, mut recv) = tokio::sync::mpsc::channel(1024);
 

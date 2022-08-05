@@ -154,6 +154,7 @@ where
                     break;
                 },
                 else => {
+                    tracing::info!("Else branch, loop poll finished!");
                     break;
                 },
             }
@@ -391,7 +392,7 @@ where
 mod test_remote_msg_poller {
     use self::mock_handshake::HandshakeStream;
     use super::*;
-    use crate::log::init_console_logger;
+    use crate::log::async_init_console_logger;
     use crate::serv::ShutdownSignal;
     use crate::tag::engine::TagEngineError;
     use futures::Sink;
@@ -401,8 +402,8 @@ mod test_remote_msg_poller {
     use std::task::Poll;
     use tokio::sync::mpsc::UnboundedReceiver;
 
-    fn setup() {
-        init_console_logger();
+    async fn setup() {
+        async_init_console_logger().await;
     }
 
     fn teardown() {
@@ -487,6 +488,7 @@ mod test_remote_msg_poller {
         let (broad_sender, _broad_recv) = tokio::sync::broadcast::channel(1);
 
         let (_shutdown_signal, _recv) = ShutdownSignal::chan(broad_sender.clone());
+        Box::leak(Box::new(_shutdown_signal));
 
         let (sink_send, sink_res) = tokio::sync::mpsc::unbounded_channel();
         (
@@ -503,12 +505,17 @@ mod test_remote_msg_poller {
 
     #[tokio::test]
     async fn test_handshake_logic() {
-        setup();
+        setup().await;
 
         let (poller, _local_recv, mut sink_recv) = init_remote_poller();
 
+        let (send, recv) = tokio::sync::oneshot::channel::<()>();
+
         tokio::spawn(async move {
-            let _ = poller.loop_poll().await;
+            let _abc = poller.loop_poll().await;
+            let _ = recv.await;
+
+            tracing::info!("Loop poll finished...");
         });
         let seg = sink_recv.recv().await;
 
@@ -517,6 +524,8 @@ mod test_remote_msg_poller {
                 let meta = s.get_meta();
                 assert_eq!(meta.get_field_type(), Meta_RequestType::HANDSHAKE);
                 assert!(meta.get_connId() > 0);
+
+                let _ = send.send(());
             }
             None => {
                 unreachable!();
@@ -586,7 +595,7 @@ mod test_remote_msg_poller {
 
     #[tokio::test]
     async fn test_normal_req_basic_ok() {
-        setup();
+        setup().await;
         let (poller, mut local_recv, mut sink_recv, _shutdown_sender) =
             normal_req::init_remote_poller();
 
@@ -621,7 +630,7 @@ mod test_remote_msg_poller {
     #[tokio::test]
     async fn test_retry_resp() {
         info!("testing retry resp");
-        setup();
+        setup().await;
 
         let (poller, mut local_recv, mut sink_recv, _shutdown_sender) =
             normal_req::init_remote_poller();

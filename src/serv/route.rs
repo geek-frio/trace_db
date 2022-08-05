@@ -120,7 +120,7 @@ mod tests {
     use crate::{
         batch::FsmTypes,
         com::{ack::CallbackStat, test_util::gen_segcallback},
-        log::init_console_logger,
+        log::async_init_console_logger,
         router::Router,
         sched::NormalScheduler,
         serv::{ShutdownEvent, ShutdownSignal},
@@ -140,8 +140,8 @@ mod tests {
         batch_receiver: BatchActor,
     }
 
-    fn setup() -> Init {
-        init_console_logger();
+    async fn setup() -> Init {
+        async_init_console_logger().await;
 
         let (s, r) = crossbeam_channel::unbounded::<FsmTypes<TagFsm>>();
 
@@ -166,7 +166,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_expired_segdata() {
-        let mut init = setup();
+        let mut init = setup().await;
 
         let (seg_callback, receiver) = gen_segcallback(40, 60);
 
@@ -186,7 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_normal_msg() {
-        let mut init = setup();
+        let mut init = setup().await;
 
         let (seg_callback, _receiver) = gen_segcallback(10, 10);
 
@@ -205,7 +205,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_shutdown_graceful() {
-        let mut init = setup();
+        let mut init = setup().await;
 
         let shutdown = init.shutdown.clone();
 
@@ -220,7 +220,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_shutdown_force() {
-        let mut init = setup();
+        let mut init = setup().await;
 
         let shutdown = init.shutdown.clone();
 

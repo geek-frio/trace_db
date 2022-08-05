@@ -36,7 +36,7 @@ mock-multi: test-start-local-redis
             eval "nohup cargo run --bin server -- env -e dev -g 999"$$num2\
 				" -i /tmp/skdb"$$num2" -l /tmp/skdb"$$num2" -n skdb_server"$$num2" -r 127.0.0.1:6379 > /dev/null 2>&1 &" \
 				&& ((num2 = num2 + 1)) \
-				&& echo $$num2; \
+				&& echo "Starting server"$$num2" ..."; \
         done ; \
 	fi
 
@@ -52,7 +52,7 @@ kill-server:
 	pkill -f skdb_server 
 
 test: 
-	cargo test $(name) --features fail/failpoints -- --nocapture
+	CLOSE_LOG=1 cargo test $(name) --features fail/failpoints -- --nocapture
 
 testi: 
 	cargo test $(name) --features fail/failpoints -- --nocapture --ignored --test-threads 1

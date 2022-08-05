@@ -14,6 +14,12 @@ use crate::{
 static INIT_LOGGER_ONCE: OnceCell<()> = tokio::sync::OnceCell::const_new();
 
 pub fn init_console_logger() {
+    let val = std::env::var("CLOSE_LOG");
+
+    if val.is_ok() {
+        return;
+    }
+
     TOKIO_RUN.block_on(async {
         INIT_LOGGER_ONCE
             .get_or_init(|| async {
@@ -26,6 +32,22 @@ pub fn init_console_logger() {
             })
             .await;
     })
+}
+
+pub async fn async_init_console_logger() {
+    let val = std::env::var("CLOSE_LOG");
+
+    if val.is_ok() {
+        return;
+    }
+    INIT_LOGGER_ONCE
+        .get_or_init(|| async {
+            let stdout_log = tracing_subscriber::fmt::layer().pretty();
+            let subscriber = Registry::default().with(stdout_log.with_filter(LevelFilter::TRACE));
+
+            tracing::subscriber::set_global_default(subscriber).expect("Console log init failed!");
+        })
+        .await;
 }
 
 pub fn init_console_logger_with_level(level: LevelFilter) {

@@ -163,12 +163,12 @@ impl TracingTagEngine {
     pub fn flush(&mut self) -> Result<u64, TagEngineError> {
         let res = self.index_writer.commit();
 
-        // only for unittest
-        fail::fail_point!("flush-err", |_| {
-            Err(TagEngineError::RecordsCommitError(
-                "failed to flush".to_string(),
-            ))
-        });
+        // // only for unittest
+        // fail::fail_point!("flush-err", |_| {
+        //     Err(TagEngineError::RecordsCommitError(
+        //         "failed to flush".to_string(),
+        //     ))
+        // });
 
         match res {
             Ok(commit_idx) => return Ok(commit_idx),
@@ -203,18 +203,6 @@ mod tests {
     }
 
     #[test]
-    fn create_multiple_dir_test() {
-        println!(
-            "Create result is:{:?}",
-            std::fs::create_dir_all("/tmp/test1/abc1")
-        );
-        println!(
-            "Retry create result is:{:?}",
-            std::fs::create_dir_all("/tmp/test1/abc1")
-        );
-    }
-
-    #[test]
     fn test_normal_write() {
         setup();
 
@@ -224,7 +212,7 @@ mod tests {
         let mut captured_val = String::new();
         let mut checked_trace_id = String::new();
 
-        for i in 0..10 {
+        for _ in 0..10 {
             for j in 0..100 {
                 let now = Local::now();
                 let mut record = SegmentData::new();
@@ -236,7 +224,6 @@ mod tests {
                 record.set_trace_id(uuid.to_string());
                 init.call_once(|| {
                     captured_val.push_str(&uuid.to_string());
-                    println!("i:{}; j:{}; uuid:{}", i, j, uuid.to_string());
 
                     checked_trace_id = uuid.to_string();
                 });
