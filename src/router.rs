@@ -8,7 +8,6 @@ use crate::tag::engine::{TagEngineError, TracingTagEngine};
 use crate::tag::fsm::TagFsm;
 use anyhow::Error as AnyError;
 use crossbeam_channel::Sender;
-use protobuf::wire_format::Tag;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::hash_map::Iter;

@@ -3,7 +3,6 @@ use crate::com::{
     mail::BasicMailbox,
 };
 use crate::fsm::Fsm;
-use backtrace::Backtrace;
 use crossbeam_channel::Receiver;
 use skproto::tracing::SegmentData;
 use std::borrow::Cow;
@@ -231,10 +230,7 @@ impl Fsm for TagFsm {
 mod tests {
     use super::SegmentDataCallback;
     use super::*;
-    use crate::{
-        com::test_util::gen_segcallback, log::init_console_logger, router::Router,
-        tag::engine::TagEngineError,
-    };
+    use crate::{com::test_util::gen_segcallback, log::init_console_logger, router::Router};
     use crossbeam_channel::Sender;
 
     fn setup(batch_size: usize) -> (TagFsm, Sender<SegmentDataCallback>) {
