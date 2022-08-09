@@ -152,7 +152,7 @@ impl MailKeyAddress {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicI32;
+    use std::{panic, sync::atomic::AtomicI32};
 
     use crate::log::init_console_logger;
 
@@ -196,25 +196,30 @@ mod tests {
         let root_dir = temp.join(root_dir_name);
         tracing::info!("root dir is:{:?}", root_dir);
 
-        if !root_dir.exists() {
-            tracing::info!("Waiting to create dir is:{:?}", root_dir);
-            std::fs::create_dir_all(&root_dir).unwrap();
-        }
+        let result = panic::catch_unwind(|| {
+            if !root_dir.exists() {
+                tracing::info!("Waiting to create dir is:{:?}", root_dir);
+                std::fs::create_dir_all(&root_dir).unwrap();
+            }
 
-        let expired_dir1 = create_expired_dir_name(31);
-        let _ = std::fs::create_dir(root_dir.join(expired_dir1));
+            let expired_dir1 = create_expired_dir_name(31);
+            let _ = std::fs::create_dir(root_dir.join(expired_dir1));
 
-        let expired_dir2 = create_expired_dir_name(32);
-        let _ = std::fs::create_dir(root_dir.join(expired_dir2));
+            let expired_dir2 = create_expired_dir_name(32);
+            let _ = std::fs::create_dir(root_dir.join(expired_dir2));
 
-        let not_expired_dir3 = create_expired_dir_name(1);
-        let _ = std::fs::create_dir(root_dir.join(not_expired_dir3));
+            let not_expired_dir3 = create_expired_dir_name(1);
+            let _ = std::fs::create_dir(root_dir.join(not_expired_dir3));
 
-        let _ = std::fs::create_dir(root_dir.join("12345"));
+            let _ = std::fs::create_dir(root_dir.join("12345"));
 
-        let expired_items = MailKeyAddress::list_expired_dir_items(&root_dir).unwrap();
-        assert_eq!(expired_items.len(), 2);
+            let expired_items = MailKeyAddress::list_expired_dir_items(&root_dir).unwrap();
+            assert_eq!(expired_items.len(), 2);
+        });
 
         teardown(&root_dir);
+        if result.is_err() {
+            panic!("Failed!");
+        }
     }
 }
