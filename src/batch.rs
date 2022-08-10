@@ -284,8 +284,6 @@ where
         // batch got msg, batch consume
         let keep_process = normal.try_fill_batch(&mut self.msg_buf, &mut self.counter);
 
-        // normal.handle_tasks(&mut self.msg_buf, &mut self.msg_cnt);
-
         normal.handle_tasks(&mut self.msg_buf, &mut 0usize);
         tracing::info!("Currently counter is:{}", self.counter);
 
