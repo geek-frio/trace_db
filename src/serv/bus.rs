@@ -164,36 +164,40 @@ where
 
     async fn redirect_batch_exec<'a>(
         data: GrpcResult<SegmentData>,
-        mail: &'a mut UnboundedSender<SegmentDataCallback>,
+        _mail: &'a mut UnboundedSender<SegmentDataCallback>,
         callback: tokio::sync::oneshot::Sender<CallbackStat>,
     ) -> Result<(), AnyError> {
-        match data {
-            Ok(segment_data) => {
-                let mut segment_processor: ExecutorStat<'a> =
-                    segment_data.with_process(mail, callback).into();
-                loop {
-                    let exec_rs =
-                        <ExecutorStat<'a> as SegmentCallbackWrap>::exec(segment_processor).await;
+        // match data {
+        //     Ok(segment_data) => {
+        //         let mut segment_processor: ExecutorStat<'a> =
+        //             segment_data.with_process(mail, callback).into();
+        //         loop {
+        //             let exec_rs =
+        //                 <ExecutorStat<'a> as SegmentCallbackWrap>::exec(segment_processor).await;
 
-                    match exec_rs {
-                        ExecutorStat::HandShake(o)
-                        | ExecutorStat::NeedTrans(o)
-                        | ExecutorStat::Trans(o) => {
-                            segment_processor = o.into();
-                            continue;
-                        }
-                        ExecutorStat::Last => break,
-                    }
-                }
-            }
-            Err(e) => match e {
-                GrpcError::Codec(_) | GrpcError::InvalidMetadata(_) => {
-                    warn!("Invalid rpc remote request, e:{}, not influence loop poll, we just skip this request", e);
-                    return Ok(());
-                }
-                _ => return Err(e.into()),
-            },
-        }
+        //             match exec_rs {
+        //                 ExecutorStat::HandShake(o)
+        //                 | ExecutorStat::NeedTrans(o)
+        //                 | ExecutorStat::Trans(o) => {
+        //                     segment_processor = o.into();
+        //                     continue;
+        //                 }
+        //                 ExecutorStat::Last => break,
+        //             }
+        //         }
+        //     }
+        //     Err(e) => match e {
+        //         GrpcError::Codec(_) | GrpcError::InvalidMetadata(_) => {
+        //             warn!("Invalid rpc remote request, e:{}, not influence loop poll, we just skip this request", e);
+        //             return Ok(());
+        //         }
+        //         _ => return Err(e.into()),
+        //     },
+        // }
+
+        callback
+            .send(CallbackStat::Ok(data.unwrap().into()))
+            .unwrap();
         Ok(())
     }
 }
