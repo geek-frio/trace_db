@@ -71,8 +71,9 @@ where
         let handler = TagPollHandler {
             msg_buf: Vec::new(),
             counter: 0,
-            last_time: None,
+            last_time: Some(Instant::now()),
             msg_cnt: 0,
+            last_count: 0,
         };
 
         let mut poller = Poller::new(
@@ -97,8 +98,9 @@ where
     pub fn spawn(&mut self, name_prefix: String) {
         let _span = info_span!("spawn", %name_prefix, pool_size = self.pool_size);
         self.name_prefix = name_prefix.clone();
+        tracing::warn!("Starting poller");
         for i in 0..self.pool_size {
-            info!("Starting Index: {} poller", i);
+            tracing::warn!("Starting Index: {} poller", i);
             self.start_poller(format!("{}-{}", name_prefix, i), self.max_batch_size);
         }
     }
@@ -264,6 +266,7 @@ struct TagPollHandler<N: FsmExecutor> {
     counter: usize,
     last_time: Option<Instant>,
     msg_cnt: usize,
+    last_count: usize,
 }
 
 impl<N> PollHandler<N> for TagPollHandler<N>
@@ -272,10 +275,10 @@ where
     N::Msg: Send,
 {
     fn begin(&mut self, _batch_size: usize) {
-        if self.last_time.is_none() {
-            self.last_time = Some(Instant::now());
-            return;
-        }
+        // if self.last_time.is_none() {
+        //     self.last_time = Some(Instant::now());
+        //     return;
+        // }
     }
 
     fn handle(&mut self, normal: &mut impl AsMut<N>) -> HandleResult {
@@ -287,6 +290,18 @@ where
         normal.handle_tasks(&mut self.msg_buf, &mut 0usize);
         tracing::info!("Currently counter is:{}", self.counter);
 
+        if self.last_time.is_some() {
+            let elapsed_secs = self.last_time.as_ref().unwrap().elapsed().as_secs();
+
+            if elapsed_secs >= 1 {
+                tracing::warn!(
+                    "TagPollHandler Qps is:{}",
+                    (self.counter - self.last_count) / elapsed_secs as usize
+                );
+                self.last_time = Some(Instant::now());
+                self.last_count = self.counter;
+            }
+        }
         if normal.is_tick() {
             trace!(
                 counter = self.counter,
@@ -420,8 +435,9 @@ mod tests {
         let poll_handler = TagPollHandler::<MockFsm> {
             msg_buf: Vec::new(),
             counter: 0,
-            last_time: None,
+            last_time: Some(Instant::now()),
             msg_cnt: 0,
+            last_count: 0,
         };
         let mock_fsm = MockFsm {
             tick: false,

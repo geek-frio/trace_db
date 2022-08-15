@@ -69,7 +69,9 @@ impl Stream for ClusterPassive {
                         Ok((conn, client)) => {
                             self.clients.insert(id, client);
 
-                            let sink = conn.sink.unwrap();
+                            let mut sink = conn.sink.unwrap();
+                            sink.enhance_batch(true);
+
                             let stream = conn.recv.unwrap();
 
                             let sched = Transport::init(sink, stream);
@@ -103,8 +105,8 @@ pub fn make_service_with(
     Box<dyn Error + Send + Sync>,
 > {
     let s = ServiceBuilder::new()
-        .buffer(100)
-        .concurrency_limit(10)
+        .buffer(100000)
+        // .concurrency_limit(5000)
         .service(Balance::new(cluster));
     let s = BoxCloneService::new(s);
     s

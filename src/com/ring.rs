@@ -1,11 +1,14 @@
 use std::{
     collections::{linked_list::Iter, linked_list::IterMut, LinkedList},
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
 };
 
+use once_cell::sync::OnceCell;
 use tokio::sync::Notify;
 
 pub(crate) const DEFAULT_WIN_SIZE: u32 = 64 * 100;
+static WAIT_FLAG: OnceCell<std::sync::atomic::AtomicBool> = OnceCell::new();
+
 #[derive(Debug)]
 pub struct RingQueue<T>
 where
@@ -65,6 +68,7 @@ where
     T: std::fmt::Debug,
 {
     pub fn new(size: usize) -> RingQueue<T> {
+        WAIT_FLAG.get_or_init(|| AtomicBool::new(false));
         RingQueue {
             start_id: 1,
             cur_id: 0,
@@ -92,7 +96,20 @@ where
         if self.is_full() {
             let notify = Arc::new(Notify::new());
             self.notify = Some(notify.clone());
+            tracing::warn!("阻塞了哦！");
+
+            let wait_flag = WAIT_FLAG.get().unwrap();
+            wait_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+
+            tracing::warn!(
+                "WAIT_FLAG value:{}",
+                WAIT_FLAG
+                    .get()
+                    .unwrap()
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            );
             notify.notified().await;
+            tracing::warn!("再被唤醒了哦！");
         }
         let id = self.allocate()?;
 

@@ -371,8 +371,10 @@ where
             Poll::Ready(opt) => match opt {
                 None => {
                     if self.closed {
+                        tracing::warn!("PendingPendingPendingPendingPending");
                         Poll::Pending
                     } else {
+                        tracing::warn!("NoneNoneNoneNoneNone");
                         Poll::Ready(None)
                     }
                 }

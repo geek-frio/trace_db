@@ -222,7 +222,7 @@ impl MainServer {
         let atomic = AtomicUsize::new(1);
         let router = Router::new(fsm_sche, Arc::new(atomic), self.global_config.clone());
 
-        let mut batch_system = BatchSystem::new(router.clone(), r, 1, 500);
+        let mut batch_system = BatchSystem::new(router.clone(), r, 4, 500);
         batch_system.spawn("Tag Poller".to_string());
         let mut router_tick = router.clone();
         let mut recv = shutdown_signal.recv;

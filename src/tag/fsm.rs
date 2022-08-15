@@ -123,8 +123,8 @@ impl FsmExecutor for TagFsm {
             }
 
             let msg = &slice[i];
-            let span = &msg.span;
-            let _entered = span.enter();
+            // let span = &msg.span;
+            // let _entered = span.enter();
 
             self.engine.add_record(&msg.data);
             *msg_cnt += 1;
@@ -136,8 +136,8 @@ impl FsmExecutor for TagFsm {
 
         // FIXME: For performance, we callback data when data is in cache
         while let Some(msg) = msg_buf.pop() {
-            let span = &msg.span;
-            let _entered = span.enter();
+            // let span = &msg.span;
+            // let _entered = span.enter();
             tracing::info!("seqid has notified:{}", msg.data.get_meta().get_seqId());
 
             msg.callback.callback(CallbackStat::Ok(msg.data.into()));

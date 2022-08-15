@@ -13,6 +13,7 @@ use anyhow::Error as AnyError;
 use futures::StreamExt;
 use grpcio::RpcStatus;
 use grpcio::RpcStatusCode;
+use once_cell::sync::OnceCell;
 use skproto::tracing::*;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -29,6 +30,7 @@ use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
 use tokio::select;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::oneshot::Receiver;
 use tokio::time::sleep;
 use tower::util::BoxCloneService;
 use tower::Service;
@@ -247,6 +249,23 @@ impl SkyTracing for SkyTracingService {
         sink: ::grpcio::UnarySink<Stat>,
     ) {
         let service = self.service.clone();
+        static counter: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        static once: OnceCell<()> = OnceCell::new();
+
+        once.get_or_init(|| {
+            std::thread::spawn(|| {
+                let mut old = 0;
+                loop {
+                    let cur = (&counter).load(std::sync::atomic::Ordering::Relaxed);
+
+                    tracing::warn!("grpc process qps:{}", cur - old);
+
+                    old = cur;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            });
+        });
+        let batch_len = req.datas.len() as i64;
 
         TOKIO_RUN.spawn(async move {
             select! {
@@ -254,6 +273,7 @@ impl SkyTracing for SkyTracingService {
                     sink.fail(RpcStatus::new(RpcStatusCode::ABORTED));
                 }
                 stat = batch_req(service, req) => {
+                    (&counter).fetch_add(batch_len, std::sync::atomic::Ordering::Relaxed);
                     let _ = sink.success(stat).await;
                 }
             }
@@ -324,12 +344,12 @@ async fn batch_req(
         tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
         Box<dyn std::error::Error + Send + Sync>,
     >,
-    batch: BatchSegmentData,
+    mut batch: BatchSegmentData,
 ) -> Stat {
     let mut recvs = Vec::new();
 
-    let cur = std::time::Instant::now();
     for segment in batch.datas.into_iter() {
+        // recvs.push(ready_call(service.clone(), segment));
         let service = service.ready().await.unwrap();
         let resp = service.call(segment).await;
 
@@ -344,22 +364,22 @@ async fn batch_req(
             }
         }
     }
-    tracing::info!(
-        "Send all the requests cost:{} ms",
-        cur.elapsed().as_millis()
-    );
-    let cur = std::time::Instant::now();
-
-    if recvs.len() > 0 {
-        let _ = recvs.pop().unwrap().await;
-
-        tracing::info!(
-            "batch request complete! Wait complete cost:{}",
-            cur.elapsed().as_millis()
-        );
-    }
+    // futures::future::join_all(recvs).await;
 
     gen_ok_stat()
+}
+
+async fn ready_call(
+    mut service: BoxCloneService<
+        SegmentData,
+        tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
+        Box<dyn std::error::Error + Send + Sync>,
+    >,
+    segment: SegmentData,
+) -> Result<Receiver<Result<(), TransportErr>>, Box<dyn std::error::Error + Send + Sync>> {
+    let service = service.ready().await.unwrap();
+    let resp = service.call(segment).await;
+    resp
 }
 
 fn gen_ok_stat() -> Stat {

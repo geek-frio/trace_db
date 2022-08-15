@@ -50,7 +50,7 @@ impl Service<SegmentData> for EndpointService {
         let broken_notify = self.broken_notify.clone();
         let id = self.id;
         Box::pin(async move {
-            let r = sched.request(req).await;
+            let r = sched.request(req);
             if let Err(e) = r.as_ref() {
                 match e {
                     &TransportErr::Shutdown

@@ -67,11 +67,12 @@ impl MailKeyAddress {
             Some(val) => {
                 let datetime = Utc.timestamp_millis(val);
                 Ok(format!(
-                    "{:0>2}{:0>2}{:0>2}{}",
+                    "{:0>2}{:0>2}{:0>2}{}{}",
                     datetime.month(),
                     datetime.day(),
                     datetime.hour(),
-                    datetime.minute() / 15
+                    datetime.minute() / 15,
+                    val % 5,
                 ))
             }
             None => Err(anyhow::Error::msg(
@@ -85,11 +86,12 @@ impl MailKeyAddress {
 
         let datetime = Utc.timestamp_millis(val);
         let s = format!(
-            "{:0>2}{:0>2}{:0>2}{}",
+            "{:0>2}{:0>2}{:0>2}{}{}",
             datetime.month(),
             datetime.day(),
             datetime.hour(),
-            datetime.minute() / 15
+            datetime.minute() / 15,
+            val % 5,
         );
 
         s.parse::<IndexAddr>().unwrap()
@@ -125,11 +127,12 @@ impl MailKeyAddress {
                 .unwrap();
 
             let bound_start_file_name = format!(
-                "{:0>2}{:0>2}{:0>2}{}",
+                "{:0>2}{:0>2}{:0>2}{}{}",
                 bound_start.month(),
                 bound_start.day(),
                 bound_start.hour(),
-                bound_start.minute() / 15
+                bound_start.minute() / 15,
+                0,
             );
 
             tracing::info!("left: {}, right:{}", name, bound_start_file_name);

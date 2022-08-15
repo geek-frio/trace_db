@@ -39,7 +39,6 @@ where
 
         meta.connId = conn_id;
         meta.field_type = Meta_RequestType::HANDSHAKE;
-        info!(meta = ?meta, %conn_id, resp = ?resp, "Send handshake resp");
         resp.set_meta(meta);
 
         sink_handle.send_event(SinkEvent::HandshakeSuccess((resp, WriteFlags::default())));
@@ -68,7 +67,6 @@ where
 
         seg_res.set_meta(meta);
 
-        tracing::info!("retry response is:{:?}", seg_res);
         sink_handle.send_event(SinkEvent::NeedResend((seg_res, WriteFlags::default())));
     }
 
@@ -94,6 +92,25 @@ where
         let mut shut_recv = self.broad_shutdown_receiver;
         let sender = &mut self.local_sender;
 
+        let arc_counter = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+
+        let temp = arc_counter.clone();
+        tokio::spawn(async move {
+            let mut last_count = 0i64;
+
+            loop {
+                let cur_count = temp.load(std::sync::atomic::Ordering::Relaxed);
+
+                tracing::warn!(
+                    "当前RemoteMsgPoller receiver消费qps:{}",
+                    cur_count - last_count
+                );
+
+                last_count = cur_count;
+
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        });
         let (handler, actor) = SinkActor::spawn(self.sink);
 
         // In charge of receiving sink response to client
@@ -111,12 +128,18 @@ where
             }
         });
 
+        let mut cur = std::time::Instant::now();
         loop {
             tokio::select! {
                 seg = stream.next() => {
+                    if cur.elapsed().as_secs() > 3 {
+                        tracing::warn!("still running");
+                        cur = std::time::Instant::now();
+                    }
                     if let Some(seg) = seg {
 
                         let (callback_sender, callback_receiver) = tokio::sync::oneshot::channel();
+                        (&arc_counter).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let redirect_res = Self::redirect_batch_exec(seg, sender, callback_sender).await;
 
                         if let Err(e) = redirect_res {
@@ -125,79 +148,82 @@ where
                         }
 
                         let sink_handle = handler.clone();
-                        TOKIO_RUN.spawn(async move{
-                            let call_state = callback_receiver.await.unwrap();
-
-                            match call_state {
-                                CallbackStat::Handshake(conn_id) => {
-                                    Self::sink_handshake_response(conn_id, sink_handle);
+                        tokio::spawn(async {
+                            if let Ok(call_state) = callback_receiver.await {
+                                match call_state {
+                                    CallbackStat::Handshake(conn_id) => {
+                                        Self::sink_handshake_response(conn_id, sink_handle);
+                                    }
+                                    CallbackStat::Ok(pkt) => {
+                                        Self::sink_success_response(pkt, sink_handle);
+                                    },
+                                    CallbackStat::IOErr(e, pkt) => {
+                                        error!(%e, "data flushed to tanvity failed! Notify client to retry, pkt:{:?}", pkt);
+                                        Self::sink_retry_response(pkt, sink_handle);
+                                    },
+                                    CallbackStat::ExpiredData(pkt) => {
+                                        Self::sink_success_response(pkt, sink_handle);
+                                    }
+                                    CallbackStat::ShuttingDown(seg_data) => {
+                                        Self::sink_reconnect(seg_data, sink_handle);
+                                    }
                                 }
-                                CallbackStat::Ok(pkt) => {
-                                    Self::sink_success_response(pkt, sink_handle);
-                                },
-                                CallbackStat::IOErr(e, pkt) => {
-                                    error!(%e, "data flushed to tanvity failed! Notify client to retry, pkt:{:?}", pkt);
-                                    Self::sink_retry_response(pkt, sink_handle);
-                                },
-                                CallbackStat::ExpiredData(pkt) => {
-                                    Self::sink_success_response(pkt, sink_handle);
-                                }
-                                CallbackStat::ShuttingDown(seg_data) => {
-                                    Self::sink_reconnect(seg_data, sink_handle);
-                                }
+                            }else{
+                                // tracing::warn!("Callback receiver is dropped!");
                             }
                         });
                     }
                 },
                 _ = shut_recv.recv() => {
-                    info!("Received shutdown signal, ignore all the data in the stream");
+                    warn!("Received shutdown signal, ignore all the data in the stream");
                     break;
                 },
                 else => {
-                    tracing::info!("Else branch, loop poll finished!");
+                    tracing::warn!("Else branch, loop poll finished!");
                     break;
                 },
             }
         }
+        warn!("Has breaked");
         Ok(())
     }
 
     async fn redirect_batch_exec<'a>(
         data: GrpcResult<SegmentData>,
-        _mail: &'a mut UnboundedSender<SegmentDataCallback>,
+        mail: &'a mut UnboundedSender<SegmentDataCallback>,
         callback: tokio::sync::oneshot::Sender<CallbackStat>,
     ) -> Result<(), AnyError> {
-        // match data {
-        //     Ok(segment_data) => {
-        //         let mut segment_processor: ExecutorStat<'a> =
-        //             segment_data.with_process(mail, callback).into();
-        //         loop {
-        //             let exec_rs =
-        //                 <ExecutorStat<'a> as SegmentCallbackWrap>::exec(segment_processor).await;
+        match data {
+            Ok(segment_data) => {
+                let mut segment_processor: ExecutorStat<'a> =
+                    segment_data.with_process(mail, callback).into();
+                loop {
+                    let exec_rs =
+                        <ExecutorStat<'a> as SegmentCallbackWrap>::exec(segment_processor).await;
 
-        //             match exec_rs {
-        //                 ExecutorStat::HandShake(o)
-        //                 | ExecutorStat::NeedTrans(o)
-        //                 | ExecutorStat::Trans(o) => {
-        //                     segment_processor = o.into();
-        //                     continue;
-        //                 }
-        //                 ExecutorStat::Last => break,
-        //             }
-        //         }
-        //     }
-        //     Err(e) => match e {
-        //         GrpcError::Codec(_) | GrpcError::InvalidMetadata(_) => {
-        //             warn!("Invalid rpc remote request, e:{}, not influence loop poll, we just skip this request", e);
-        //             return Ok(());
-        //         }
-        //         _ => return Err(e.into()),
-        //     },
-        // }
+                    match exec_rs {
+                        ExecutorStat::HandShake(o)
+                        | ExecutorStat::NeedTrans(o)
+                        | ExecutorStat::Trans(o) => {
+                            segment_processor = o.into();
+                            continue;
+                        }
+                        ExecutorStat::Last => break,
+                    }
+                }
+            }
+            Err(e) => match e {
+                GrpcError::Codec(_) | GrpcError::InvalidMetadata(_) => {
+                    warn!("Invalid rpc remote request, e:{}, not influence loop poll, we just skip this request", e);
+                    return Ok(());
+                }
+                _ => return Err(e.into()),
+            },
+        }
 
-        callback
-            .send(CallbackStat::Ok(data.unwrap().into()))
-            .unwrap();
+        // callback
+        //     .send(CallbackStat::Ok(data.unwrap().into()))
+        //     .unwrap();
         Ok(())
     }
 }
@@ -336,13 +362,13 @@ impl<'a> SegmentCallbackWrap for ExecutorStat<'a> {
             }
 
             ExecutorStat::Trans(s) => {
-                let seq_id = (&s.data).get_meta().get_seqId();
+                // let seq_id = (&s.data).get_meta().get_seqId();
 
                 let span = span!(Level::TRACE, "trans_receiver_consume", data = ?s.data);
                 let data = SegmentDataCallback::new(s.data, AckCallback::new(s.callback), span);
 
-                trace!("Send new data to batch system:{}", seq_id);
                 let _ = s.batch_handle.send(data);
+                // data.callback.callback(CallbackStat::Ok(data.data.into()));
                 return ExecutorStat::Last;
             }
 
