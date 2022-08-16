@@ -89,8 +89,8 @@ where
         let mut shut_recv = self.broad_shutdown_receiver;
         let sender = &mut self.local_sender;
 
+        // Monitor task qps use
         let arc_counter = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
-
         let temp = arc_counter.clone();
         tokio::spawn(async move {
             let mut last_count = 0i64;
@@ -108,8 +108,8 @@ where
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         });
-        let (handler, actor) = SinkActor::spawn(self.sink);
 
+        let (handler, actor) = SinkActor::spawn(self.sink);
         // In charge of receiving sink response to client
         TOKIO_RUN.spawn(async move {
             let r = actor.run().await;
@@ -137,6 +137,7 @@ where
 
                         let (callback_sender, callback_receiver) = tokio::sync::oneshot::channel();
                         (&arc_counter).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
                         let redirect_res = Self::redirect_batch_exec(seg, sender, callback_sender).await;
 
                         if let Err(e) = redirect_res {
@@ -144,7 +145,10 @@ where
                             break;
                         }
 
+
+                        let pkt_header = redirect_res.unwrap();
                         let sink_handle = handler.clone();
+
                         tokio::spawn(async {
                             if let Ok(call_state) = callback_receiver.await {
                                 match call_state {
@@ -166,7 +170,8 @@ where
                                     }
                                 }
                             }else{
-                                // tracing::warn!("Callback receiver is dropped!");
+                                tracing::warn!("Callback receiver is dropped!pkt_header:{:?}", pkt_header);
+                                Self::sink_retry_response(pkt_header, sink_handle);
                             }
                         });
                     }
@@ -181,7 +186,6 @@ where
                 },
             }
         }
-        warn!("Has breaked");
         Ok(())
     }
 
@@ -189,9 +193,10 @@ where
         data: GrpcResult<SegmentData>,
         mail: &'a mut UnboundedSender<SegmentDataCallback>,
         callback: tokio::sync::oneshot::Sender<CallbackStat>,
-    ) -> Result<(), AnyError> {
+    ) -> Result<PktHeader, AnyError> {
         match data {
             Ok(segment_data) => {
+                let pkt_header: PktHeader = (&segment_data).into();
                 let mut segment_processor: ExecutorStat<'a> =
                     segment_data.with_process(mail, callback).into();
                 loop {
@@ -205,23 +210,18 @@ where
                             segment_processor = o.into();
                             continue;
                         }
-                        ExecutorStat::Last => break,
+                        ExecutorStat::Last => break Ok(pkt_header),
                     }
                 }
             }
             Err(e) => match e {
                 GrpcError::Codec(_) | GrpcError::InvalidMetadata(_) => {
                     warn!("Invalid rpc remote request, e:{}, not influence loop poll, we just skip this request", e);
-                    return Ok(());
+                    Err(anyhow::Error::msg("Invalid request"))
                 }
-                _ => return Err(e.into()),
+                _ => Err(e.into()),
             },
         }
-
-        // callback
-        //     .send(CallbackStat::Ok(data.unwrap().into()))
-        //     .unwrap();
-        Ok(())
     }
 }
 
