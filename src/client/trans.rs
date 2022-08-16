@@ -8,7 +8,6 @@ use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::mpsc::Sender;
 use tracing::error;
 
 use futures::Stream;
@@ -48,7 +47,7 @@ pub enum TransportErr {
 }
 
 #[derive(Clone)]
-pub struct RequestScheduler {
+pub struct RequestHandler {
     sender: tokio::sync::mpsc::UnboundedSender<(
         tokio::sync::oneshot::Sender<Result<(), TransportErr>>,
         SegmentData,
@@ -57,7 +56,7 @@ pub struct RequestScheduler {
     counter: Arc<AtomicI64>,
 }
 
-impl RequestScheduler {
+impl RequestHandler {
     pub fn request(
         &mut self,
         seg: SegmentData,
@@ -111,7 +110,7 @@ where
         }
     }
 
-    pub fn init(mut sink: Si, mut st: St) -> RequestScheduler {
+    pub fn init(mut sink: Si, mut st: St) -> RequestHandler {
         let (sender, mut recv) = tokio::sync::mpsc::unbounded_channel();
         let task_stat = Arc::new(AtomicBool::new(false));
         let task_stat_change = task_stat.clone();
@@ -158,6 +157,8 @@ where
 
                 pin_mut!(t1, t2);
 
+                // window 打满后，请求会堆积在转发端 channel 之中
+                //  等待新的ack发来以后解除 is_full
                 if window_is_full && !stream_close {
                     let resp = t2.await;
                     match Self::unwrap_poll_resp(resp) {
@@ -165,7 +166,7 @@ where
                             stream_close = true;
                         }
                         Ok(resp) => {
-                            trans.poll_resp(resp).await;
+                            trans.handle_resp(resp).await;
                             window_is_full = false;
                         }
                     }
@@ -183,7 +184,6 @@ where
                                     sink_close = true;
                                 }
                             }
-
                         },
                         resp = t2 => {
                             match Self::unwrap_poll_resp(resp) {
@@ -191,7 +191,7 @@ where
                                     stream_close = true;
                                 },
                                 Ok(resp) => {
-                                    trans.poll_resp(resp).await;
+                                    trans.handle_resp(resp).await;
                                 }
                             }
                         },
@@ -210,7 +210,6 @@ where
                 }
 
                 if sink_close && stream_close {
-                    tracing::warn!("发送方准备退出");
                     task_stat_change.store(true, Ordering::Relaxed);
                     return;
                 }
@@ -219,18 +218,7 @@ where
 
         let counter = Arc::new(AtomicI64::new(0));
 
-        let temp_counter = counter.clone();
-
-        tokio::spawn(async move {
-            loop {
-                // tracing::warn!(
-                //     "Send counter is:{}",
-                //     temp_counter.load(std::sync::atomic::Ordering::Relaxed)
-                // );
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        });
-        RequestScheduler {
+        RequestHandler {
             sender,
             shutdown: task_stat,
             counter: counter,
@@ -268,7 +256,7 @@ where
 
         let res = self.sink.send((segment, flags)).await;
         match res {
-            Err(e) => {
+            Err(_) => {
                 tracing::warn!("sink send msg failed!");
                 let _ = sender.send(Err(TransportErr::SinkChanErr));
             }
@@ -279,7 +267,7 @@ where
         true
     }
 
-    pub async fn poll_resp(&mut self, resp: SegmentRes) {
+    pub async fn handle_resp(&mut self, resp: SegmentRes) {
         let seq_id = resp.get_meta().get_seqId();
 
         match resp.get_meta().field_type {
@@ -296,7 +284,7 @@ where
 
                         let resend_count = resp.get_meta().resend_count + 1;
 
-                        tracing::info!(
+                        tracing::trace!(
                             "Response resend count is:{:?}, seq_id is:{}",
                             resend_count,
                             seq_id

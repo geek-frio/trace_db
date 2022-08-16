@@ -249,31 +249,34 @@ impl SkyTracing for SkyTracingService {
         sink: ::grpcio::UnarySink<Stat>,
     ) {
         let service = self.service.clone();
-        static counter: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-        static once: OnceCell<()> = OnceCell::new();
 
-        once.get_or_init(|| {
+        // 统计grpc处理的qps数量
+        static GRPC_COUNTER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        static MONITOR: OnceCell<()> = OnceCell::new();
+
+        MONITOR.get_or_init(|| {
             std::thread::spawn(|| {
                 let mut old = 0;
                 loop {
-                    let cur = (&counter).load(std::sync::atomic::Ordering::Relaxed);
+                    let cur = (&GRPC_COUNTER).load(std::sync::atomic::Ordering::Relaxed);
 
-                    tracing::warn!("grpc process qps:{}", cur - old);
+                    tracing::warn!("GRPC接口 Batch_Req_Segments 当前处理的qps:{}", cur - old);
 
                     old = cur;
                     std::thread::sleep(std::time::Duration::from_secs(1));
                 }
             });
         });
-        let batch_len = req.datas.len() as i64;
 
+        let batch_len = req.datas.len() as i64;
         TOKIO_RUN.spawn(async move {
             select! {
                 _ = sleep(Duration::from_secs(8)) => {
                     sink.fail(RpcStatus::new(RpcStatusCode::ABORTED));
                 }
+
                 stat = batch_req(service, req) => {
-                    (&counter).fetch_add(batch_len, std::sync::atomic::Ordering::Relaxed);
+                    (&GRPC_COUNTER).fetch_add(batch_len, std::sync::atomic::Ordering::Relaxed);
                     let _ = sink.success(stat).await;
                 }
             }
@@ -344,18 +347,17 @@ async fn batch_req(
         tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
         Box<dyn std::error::Error + Send + Sync>,
     >,
-    mut batch: BatchSegmentData,
+    batch: BatchSegmentData,
 ) -> Stat {
-    let mut recvs = Vec::new();
+    let mut resps = Vec::new();
 
     for segment in batch.datas.into_iter() {
-        // recvs.push(ready_call(service.clone(), segment));
         let service = service.ready().await.unwrap();
         let resp = service.call(segment).await;
 
         match resp {
             Ok(recv) => {
-                recvs.push(recv);
+                resps.push(recv);
             }
             Err(_e) => {
                 error!("Request error, break current batch request");
@@ -364,23 +366,28 @@ async fn batch_req(
             }
         }
     }
-    // futures::future::join_all(recvs).await;
+
+    // Data is called one by one, so we only
+    while let Some(recv) = resps.pop() {
+        let _ = recv.await;
+        break;
+    }
 
     gen_ok_stat()
 }
 
-async fn ready_call(
-    mut service: BoxCloneService<
-        SegmentData,
-        tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
-        Box<dyn std::error::Error + Send + Sync>,
-    >,
-    segment: SegmentData,
-) -> Result<Receiver<Result<(), TransportErr>>, Box<dyn std::error::Error + Send + Sync>> {
-    let service = service.ready().await.unwrap();
-    let resp = service.call(segment).await;
-    resp
-}
+// async fn ready_call(
+//     mut service: BoxCloneService<
+//         SegmentData,
+//         tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
+//         Box<dyn std::error::Error + Send + Sync>,
+//     >,
+//     segment: SegmentData,
+// ) -> Result<Receiver<Result<(), TransportErr>>, Box<dyn std::error::Error + Send + Sync>> {
+//     let service = service.ready().await.unwrap();
+//     let resp = service.call(segment).await;
+//     resp
+// }
 
 fn gen_ok_stat() -> Stat {
     let mut stat = Stat::new();
