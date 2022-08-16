@@ -36,8 +36,8 @@ fn main() -> Result<(), anyhow::Error> {
     let mut addrs = Vec::new();
     addrs.push(addr);
 
-    let batch_size = 20;
-    let concurrent_num = 10;
+    let batch_size = 30;
+    let concurrent_num = 20;
 
     let (send, recv) = crossbeam_channel::unbounded::<BatchSegmentData>();
 
@@ -47,35 +47,37 @@ fn main() -> Result<(), anyhow::Error> {
     let task_exec_time = config.time;
 
     // Task Spawner
-    std::thread::spawn(move || {
-        let start_time = Instant::now();
-        loop {
-            if start_time.elapsed().as_secs() > task_exec_time {
-                tracing::info!("所有待发送数据已经发送完毕。");
-                break;
+    for _ in 0..3 {
+        let temp_send = send.clone();
+        std::thread::spawn(move || {
+            let start_time = Instant::now();
+            loop {
+                if start_time.elapsed().as_secs() > task_exec_time {
+                    tracing::info!("所有待发送数据已经发送完毕。");
+                    break;
+                }
+
+                let loop_size = config.qps / batch_size / 10 / 3;
+
+                for _ in 0..loop_size {
+                    let batch = random_mock_batch(batch_size);
+
+                    temp_send.send(batch).unwrap();
+
+                    counter += batch_size;
+                }
+
+                if now.elapsed() > std::time::Duration::from_secs(1) {
+                    tracing::info!("已经发送 {} 条数据", counter);
+
+                    now = std::time::Instant::now();
+                    counter = 0;
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(100))
             }
-
-            let loop_size = config.qps / batch_size / 10;
-
-            for _ in 0..loop_size {
-                let batch = random_mock_batch(batch_size);
-
-                send.send(batch).unwrap();
-
-                counter += batch_size;
-            }
-
-            if now.elapsed() > std::time::Duration::from_secs(1) {
-                tracing::info!("已经发送 {} 条数据", counter);
-
-                now = std::time::Instant::now();
-                counter = 0;
-            }
-
-            std::thread::sleep(std::time::Duration::from_millis(100))
-        }
-    });
-
+        });
+    }
     let (notify, wait) = std::sync::mpsc::channel::<()>();
 
     let moni_recv = recv.clone();

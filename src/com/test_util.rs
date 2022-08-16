@@ -63,12 +63,39 @@ pub fn mock_seg_with_hour(conn_id: i32, api_id: i32, seq_id: i64, hours: i64) ->
     segment
 }
 
+pub fn mock_seg_with_minutes(conn_id: i32, api_id: i32, seq_id: i64, minutes: i64) -> SegmentData {
+    let mut segment = SegmentData::new();
+    let mut meta = Meta::new();
+    meta.connId = conn_id;
+    meta.field_type = Meta_RequestType::TRANS;
+    meta.seqId = seq_id;
+
+    let now = Local::now();
+    meta.set_send_timestamp(now.timestamp_nanos() as u64);
+
+    let uuid = uuid::Uuid::new_v4();
+
+    segment.set_meta(meta);
+    segment.set_trace_id(uuid.to_string());
+    segment.set_api_id(api_id);
+    segment.set_payload(_gen_data_binary());
+    segment.set_zone(_gen_tag(3, 5, 'a'));
+
+    let before_timestamp = now
+        .checked_sub_signed(chrono::Duration::minutes(minutes))
+        .unwrap();
+
+    segment.set_biz_timestamp(before_timestamp.timestamp_millis() as u64);
+    segment.set_seg_id(uuid.to_string());
+    segment.set_ser_key(_gen_tag(4, 3, 's'));
+    segment
+}
 pub fn random_mock_batch(size: usize) -> BatchSegmentData {
     let mut batch = BatchSegmentData::new();
 
     let mut v = Vec::new();
     for i in 1..size + 1 {
-        let seg = mock_seg_with_hour(1 as i32, i as i32, i as i64, i as i64);
+        let seg = mock_seg_with_minutes(1 as i32, i as i32, i as i64, i as i64);
         v.push(seg);
     }
     batch.set_datas(v.into());

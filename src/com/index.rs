@@ -72,7 +72,7 @@ impl MailKeyAddress {
                     datetime.day(),
                     datetime.hour(),
                     datetime.minute() / 15,
-                    val % 5,
+                    val % 10,
                 ))
             }
             None => Err(anyhow::Error::msg(
@@ -91,7 +91,7 @@ impl MailKeyAddress {
             datetime.day(),
             datetime.hour(),
             datetime.minute() / 15,
-            val % 5,
+            val % 10,
         );
 
         s.parse::<IndexAddr>().unwrap()
