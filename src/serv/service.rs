@@ -30,7 +30,6 @@ use tantivy_common::BinarySerializable;
 use tantivy_query_grammar::*;
 use tokio::select;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::oneshot::Receiver;
 use tokio::time::sleep;
 use tower::util::BoxCloneService;
 use tower::Service;
@@ -135,7 +134,7 @@ impl SkyTracingService {
                 }
             }
         }
-        todo!()
+        seg
     }
 }
 

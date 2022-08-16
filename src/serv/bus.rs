@@ -11,16 +11,13 @@ use futures::{Stream, StreamExt};
 use futures_sink::Sink;
 use grpcio::Error as GrpcError;
 use grpcio::{Result as GrpcResult, WriteFlags};
-use pin_project::pin_project;
 use skproto::tracing::{Meta, Meta_RequestType, SegmentData, SegmentRes};
 use std::error::Error;
 use std::fmt::Debug;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info, span, trace, warn, Level};
 
-#[pin_project]
 pub struct RemoteMsgPoller<L, S> {
-    #[pin]
     source_stream: L,
     sink: S,
     local_sender: UnboundedSender<SegmentDataCallback>,
