@@ -1,11 +1,14 @@
 use crate::conf::GlobalConfig;
 use crate::redis::RedisTTLSet;
-use crate::serv::ShutdownSignal;
+use crate::serv::bus::RemoteMsgPoller;
+use crate::serv::{ShutdownEvent, ShutdownSignal};
+use crate::tag::fsm::SegmentDataCallback;
 use async_trait::async_trait;
 use chashmap::CHashMap;
 use futures::never::Never;
 use futures::{ready, Stream};
 use grpcio::{ChannelBuilder, Environment};
+use local_ip_address::linux::local_ip;
 use once_cell::sync::OnceCell;
 use redis::Client as RedisClient;
 use skproto::tracing::{SegmentData, SkyTracingClient};
@@ -25,6 +28,7 @@ use tower::ServiceBuilder;
 use tracing::{error, info};
 
 use super::grpc_cli::split_client;
+use super::local_trans::{LocalSink, LocalStream, RemoteStream};
 use super::service::EndpointService;
 use super::trans::{Transport, TransportErr};
 
@@ -32,17 +36,23 @@ pub struct ClusterPassive {
     recv: Receiver<ClientEvent>,
     clients: Arc<CHashMap<i32, SkyTracingClient>>,
     conn_broken_notify: tokio::sync::mpsc::Sender<i32>,
+    send: tokio::sync::mpsc::UnboundedSender<SegmentDataCallback>,
+    shutdown_recv: tokio::sync::broadcast::Receiver<ShutdownEvent>,
 }
 
 impl ClusterPassive {
     pub fn new(
         recv: Receiver<ClientEvent>,
         conn_broken_notify: tokio::sync::mpsc::Sender<i32>,
+        send: tokio::sync::mpsc::UnboundedSender<SegmentDataCallback>,
+        shutdown_recv: tokio::sync::broadcast::Receiver<ShutdownEvent>,
     ) -> ClusterPassive {
         ClusterPassive {
             recv,
             clients: Arc::new(CHashMap::new()),
             conn_broken_notify,
+            send,
+            shutdown_recv,
         }
     }
 }
@@ -53,7 +63,7 @@ pub enum ClientEvent {
     NewClient((i32, SkyTracingClient)),
 }
 
-static LOCAL_SERVICE_CTRL: OnceCell<EndpointService> = once_cell::sync::OnceCell::new();
+static LOCAL_SERVICE_CTRL: OnceCell<()> = once_cell::sync::OnceCell::new();
 impl Stream for ClusterPassive {
     type Item = Result<Change<i32, EndpointService>, Never>;
 
@@ -61,10 +71,38 @@ impl Stream for ClusterPassive {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
+        // Return local service only once
+        if LOCAL_SERVICE_CTRL.get().is_none() {
+            let _ = LOCAL_SERVICE_CTRL.get_or_init(|| {});
+
+            let (local_send1, remote_recv1) = tokio::sync::mpsc::unbounded_channel();
+            let (remote_send2, local_recv2) = tokio::sync::mpsc::unbounded_channel();
+
+            let local_sink = LocalSink::new(local_send1);
+            let local_stream = LocalStream::new(local_recv2);
+            let request_handler = Transport::init(local_sink, local_stream);
+            // Not exists real connection, so we will never use this broken notify
+            let (broken_notify, _) = tokio::sync::mpsc::channel(1);
+            let end_point = EndpointService::new(request_handler, broken_notify, 1);
+
+            // Start remote msg poller
+            let remote_stream = RemoteStream::new(remote_recv1);
+            let remote_msg_poller = RemoteMsgPoller::new(source, sink, local_sender, broad_shutdown_receiver)
+            // tokio::spawn(future)
+            // 1: 提前返回event
+            // 2: 原本的event需要进行再次进行poll获取
+            cx.waker().wake_by_ref();
+            return Poll::Ready(Some(Ok(Change::Insert(1, end_point))));
+        }
+
         let chg_opt = ready!(self.recv.poll_recv(cx));
         match chg_opt {
             Some(chg) => match chg {
                 ClientEvent::NewClient((id, client)) => {
+                    // We skip local tcp service
+                    if id == 1 {
+                        return Poll::Pending;
+                    }
                     let res = split_client(client);
                     match res {
                         Ok((conn, client)) => {
@@ -113,7 +151,10 @@ pub fn make_service_with(
     s
 }
 
-pub fn make_service() -> (
+pub fn make_service(
+    bridge_send: tokio::sync::mpsc::UnboundedSender<SegmentDataCallback>,
+    shutdown_recv: tokio::sync::broadcast::Receiver<ShutdownEvent>,
+) -> (
     BoxCloneService<
         SegmentData,
         tokio::sync::oneshot::Receiver<Result<(), TransportErr>>,
@@ -125,7 +166,7 @@ pub fn make_service() -> (
     let (send, recv) = tokio::sync::mpsc::channel(1024);
     let (broken_notify, broken_recv) = tokio::sync::mpsc::channel::<i32>(1024);
 
-    let passive = ClusterPassive::new(recv, broken_notify);
+    let passive = ClusterPassive::new(recv, broken_notify, bridge_send, shutdown_recv);
     let s = make_service_with(passive);
     (s, send, broken_recv)
 }
@@ -189,7 +230,7 @@ pub struct ClusterActiveWatcher {
 impl ClusterActiveWatcher {
     pub fn new(client: RedisClient) -> ClusterActiveWatcher {
         ClusterActiveWatcher {
-            counter: AtomicI32::new(1),
+            counter: AtomicI32::new(2),
             watcher_started: Arc::new(AtomicBool::new(false)),
             client: client,
         }
@@ -308,7 +349,20 @@ impl ClusterActiveWatcher {
         let add: Vec<(String, i32)> = addrs
             .iter()
             .filter(|s| !old.contains_key(*s))
-            .map(|s| (s.to_string(), self.counter.fetch_add(1, Ordering::Relaxed)))
+            .map(|s| {
+                let mut ip_port = s.split(":");
+                let ip = ip_port.next().unwrap();
+
+                let cur_ip = local_ip().unwrap().to_string();
+
+                tracing::warn!("Split ip is:{}", ip);
+                // We reserve id 1 for local transport
+                if &cur_ip == ip || ip == "127.0.0.1" {
+                    (s.to_string(), 1)
+                } else {
+                    (s.to_string(), self.counter.fetch_add(1, Ordering::Relaxed))
+                }
+            })
             .collect();
         (del, add)
     }

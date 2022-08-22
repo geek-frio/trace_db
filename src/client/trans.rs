@@ -84,6 +84,15 @@ where
     Si::Error: Send,
     St: Stream<Item = Result<SegmentRes, grpcio::Error>> + Send + Unpin + 'static,
 {
+    pub fn new(sink: Si) -> Transport<Si, St> {
+        Transport {
+            sink,
+            st: PhantomData,
+            ring: Default::default(),
+            callback_map: HashMap::new(),
+        }
+    }
+
     pub async fn handshake(sink: &mut Si, recv: &mut St) -> Result<SegmentRes, anyhow::Error> {
         let mut segment = SegmentData::new();
         segment

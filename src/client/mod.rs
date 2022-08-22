@@ -8,6 +8,7 @@ use std::marker::PhantomData;
 
 pub mod cluster;
 pub mod grpc_cli;
+pub mod local_trans;
 mod service;
 pub mod trans;
 

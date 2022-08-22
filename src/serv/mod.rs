@@ -115,7 +115,10 @@ impl MainServer {
         .expect("Error setting ctrl+c handler");
 
         info!("Start to init search builder...");
-        let (service, event_sender, conn_broken_receiver) = make_service();
+        let (segment_sender, segment_receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        let (service, event_sender, conn_broken_receiver) =
+            make_service(segment_sender.clone(), shutdown_signal.subscribe().recv);
         let grpc_clients_chg_receiver = self.create_cluster_watcher(
             conn_broken_receiver,
             event_sender,
@@ -124,7 +127,6 @@ impl MainServer {
         let clis_chg_recv = create_grpc_clients_watcher(grpc_clients_chg_receiver);
 
         let searcher = Searcher::new(clis_chg_recv);
-        let (segment_sender, segment_receiver) = tokio::sync::mpsc::unbounded_channel();
 
         self.start_periodical_keep_alive_addr(shutdown_signal.subscribe());
         let router = self.start_batch_system_for_segment(shutdown_signal.subscribe());
