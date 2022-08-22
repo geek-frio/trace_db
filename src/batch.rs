@@ -145,14 +145,11 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
         let mut flag = true;
 
         'a: loop {
-            tracing::info!("batch loop...");
             for _ in 0..self.max_batch_size {
                 let fsm = if let Ok(fsm) = self.fsm_receiver.try_recv() {
                     fsm
                 } else if flag {
                     flag = false;
-
-                    tracing::info!("block receiv new fsm");
 
                     // We block wait new fsm only in blank case
                     if batch.len() == 0 {
@@ -175,14 +172,14 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
 
                         let res = self.handler.handle(&mut normal_fsm);
                         if normal_fsm.as_ref().is_stopped() && normal_fsm.as_ref().chan_msgs() > 0 {
-                            tracing::info!("Has already stopped, but still have msgs, reschedule");
+                            tracing::trace!("Has already stopped, but still have msgs, reschedule");
                             self.router.normal_scheduler.schedule(normal_fsm.fsm);
                         } else if let HandleResult::StopAt {
                             remain_size: progress,
                         } = res
                         {
                             if normal_fsm.as_ref().chan_msgs() > progress {
-                                tracing::info!(
+                                tracing::trace!(
                                     "normal fsm remaining msgs is bigger than progress, remaining msgs:{}, progress:{}",
                                     normal_fsm.as_ref().chan_msgs(), progress);
                                 self.router.normal_scheduler.schedule(normal_fsm.fsm);
@@ -194,7 +191,6 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                         }
                     }
                     FsmTypes::Empty => {
-                        tracing::info!("it's empty fsm");
                         if self.fsm_receiver.len() > 0 {
                             self.router.normal_scheduler.shutdown();
                         } else {
@@ -215,24 +211,24 @@ impl<N: Fsm, H: PollHandler<N>, S: FsmScheduler<F = N>> Poller<N, H, S> {
                 let mailbox = item.fsm.take_mailbox();
                 if let Some(mailbox) = mailbox {
                     mailbox.release(item.fsm);
-                    tracing::info!("release this fsm");
+                    tracing::trace!("release this fsm");
 
                     // Check time range between [after poll msgs] to [release] if there is notify event
                     // If there is reschedule this fsm
                     if mailbox.len() > 0 {
-                        tracing::info!(
+                        tracing::trace!(
                             "Have found new msgs bewteen [after poll msgs] to [release]!, So we reschedual this fsm"
                         );
 
                         let fsm = mailbox.take_fsm();
 
                         if let Some(mut fsm) = fsm {
-                            tracing::info!("reschedule this fsm");
+                            tracing::trace!("reschedule this fsm");
                             fsm.set_mailbox(std::borrow::Cow::Borrowed(&mailbox));
 
                             self.router.normal_scheduler.schedule(fsm);
                         } else {
-                            tracing::info!("want to reschedule, but failed!")
+                            tracing::trace!("want to reschedule, but failed!")
                         }
                     }
                 }
@@ -274,12 +270,7 @@ where
     N: 'static + Fsm + FsmExecutor,
     N::Msg: Send,
 {
-    fn begin(&mut self, _batch_size: usize) {
-        // if self.last_time.is_none() {
-        //     self.last_time = Some(Instant::now());
-        //     return;
-        // }
-    }
+    fn begin(&mut self, _batch_size: usize) {}
 
     fn handle(&mut self, normal: &mut impl AsMut<N>) -> HandleResult {
         let _poll_handler_span = trace_span!("handle");

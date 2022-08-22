@@ -125,14 +125,9 @@ where
             }
         });
 
-        let mut cur = std::time::Instant::now();
         loop {
             tokio::select! {
                 seg = stream.next() => {
-                    if cur.elapsed().as_secs() > 3 {
-                        tracing::warn!("still running");
-                        cur = std::time::Instant::now();
-                    }
                     if let Some(seg) = seg {
 
                         let (callback_sender, callback_receiver) = tokio::sync::oneshot::channel();
@@ -359,13 +354,10 @@ impl<'a> SegmentCallbackWrap for ExecutorStat<'a> {
             }
 
             ExecutorStat::Trans(s) => {
-                // let seq_id = (&s.data).get_meta().get_seqId();
-
                 let span = span!(Level::TRACE, "trans_receiver_consume", data = ?s.data);
                 let data = SegmentDataCallback::new(s.data, AckCallback::new(s.callback), span);
 
                 let _ = s.batch_handle.send(data);
-                // data.callback.callback(CallbackStat::Ok(data.data.into()));
                 return ExecutorStat::Last;
             }
 

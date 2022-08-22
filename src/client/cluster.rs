@@ -1,28 +1,28 @@
+use crate::conf::GlobalConfig;
+use crate::redis::RedisTTLSet;
+use crate::serv::ShutdownSignal;
 use async_trait::async_trait;
+use chashmap::CHashMap;
+use futures::never::Never;
+use futures::{ready, Stream};
+use grpcio::{ChannelBuilder, Environment};
+use once_cell::sync::OnceCell;
 use redis::Client as RedisClient;
+use skproto::tracing::{SegmentData, SkyTracingClient};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
-use tower::util::BoxCloneService;
-use tracing::{error, info};
-
-use crate::conf::GlobalConfig;
-use crate::redis::RedisTTLSet;
-use crate::serv::ShutdownSignal;
-use chashmap::CHashMap;
-use futures::never::Never;
-use futures::{ready, Stream};
-use grpcio::{ChannelBuilder, Environment};
-use skproto::tracing::{SegmentData, SkyTracingClient};
 use tokio::select;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
 use tower::balance::p2c::Balance;
 use tower::discover::Change;
+use tower::util::BoxCloneService;
 use tower::ServiceBuilder;
+use tracing::{error, info};
 
 use super::grpc_cli::split_client;
 use super::service::EndpointService;
@@ -53,6 +53,7 @@ pub enum ClientEvent {
     NewClient((i32, SkyTracingClient)),
 }
 
+static LOCAL_SERVICE_CTRL: OnceCell<EndpointService> = once_cell::sync::OnceCell::new();
 impl Stream for ClusterPassive {
     type Item = Result<Change<i32, EndpointService>, Never>;
 
