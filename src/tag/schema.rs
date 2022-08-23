@@ -36,11 +36,11 @@ impl Deref for SCHEMA {
             let mut schema_builder = Schema::builder();
             schema_builder.add_text_field(ZONE, STRING);
             schema_builder.add_i64_field(API_ID, INDEXED);
-            schema_builder.add_text_field(SERVICE, TEXT);
+            schema_builder.add_text_field(SERVICE, TEXT | STORED);
             schema_builder.add_u64_field(BIZTIME, STORED);
             schema_builder.add_text_field(TRACE_ID, STRING | STORED);
-            schema_builder.add_text_field(SEGID, STRING);
-            schema_builder.add_text_field(PAYLOAD, STRING);
+            schema_builder.add_text_field(SEGID, STORED);
+            schema_builder.add_text_field(PAYLOAD, STORED);
 
             let schema = schema_builder.build();
             LAZY.0.set(MaybeUninit::new(schema));

@@ -89,7 +89,7 @@ impl<N: Fsm> FsmState<N> {
                     tracing::warn!("Notified drop!!!!!!!!!!");
                     let ptr = self.data.swap(ptr::null_mut(), Ordering::AcqRel);
                     unsafe {
-                        Box::from_raw(ptr);
+                        let _ = Box::from_raw(ptr);
                     }
                     return;
                 }
@@ -98,7 +98,6 @@ impl<N: Fsm> FsmState<N> {
                 }
             };
         }
-        panic!("should not be here! previous state is not null!");
     }
 
     pub fn clear(&self) {
@@ -110,7 +109,7 @@ impl<N: Fsm> FsmState<N> {
         let ptr = self.data.swap(ptr::null_mut(), Ordering::SeqCst);
         if !ptr.is_null() {
             unsafe {
-                Box::from_raw(ptr);
+                let _ = Box::from_raw(ptr);
             }
         }
     }
@@ -121,7 +120,7 @@ impl<N> Drop for FsmState<N> {
         let ptr = self.data.swap(ptr::null_mut(), Ordering::AcqRel);
         if !ptr.is_null() {
             unsafe {
-                Box::from_raw(ptr);
+                let _ = Box::from_raw(ptr);
             }
             self.state_cnt.fetch_sub(1, Ordering::Relaxed);
         }

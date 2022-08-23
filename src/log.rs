@@ -68,7 +68,8 @@ pub async fn init_tracing_logger(cfg: Arc<GlobalConfig>, mut signal: ShutdownSig
     INIT_LOGGER_ONCE
         .get_or_init(|| async {
             let stdout_log = tracing_subscriber::fmt::layer().pretty();
-            let subscriber = Registry::default().with(stdout_log);
+
+            let subscriber = Registry::default().with(stdout_log.with_filter(LevelFilter::WARN));
 
             const SET_GLOBAL_SUBSCRIBER_ERR: &'static str = "local log init failed!";
 

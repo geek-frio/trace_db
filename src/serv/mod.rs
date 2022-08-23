@@ -115,7 +115,10 @@ impl MainServer {
         .expect("Error setting ctrl+c handler");
 
         info!("Start to init search builder...");
-        let (service, event_sender, conn_broken_receiver) = make_service();
+        let (segment_sender, segment_receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        let (service, event_sender, conn_broken_receiver) =
+            make_service(segment_sender.clone(), shutdown_signal.subscribe().recv);
         let grpc_clients_chg_receiver = self.create_cluster_watcher(
             conn_broken_receiver,
             event_sender,
@@ -124,7 +127,6 @@ impl MainServer {
         let clis_chg_recv = create_grpc_clients_watcher(grpc_clients_chg_receiver);
 
         let searcher = Searcher::new(clis_chg_recv);
-        let (segment_sender, segment_receiver) = tokio::sync::mpsc::unbounded_channel();
 
         self.start_periodical_keep_alive_addr(shutdown_signal.subscribe());
         let router = self.start_batch_system_for_segment(shutdown_signal.subscribe());
@@ -222,7 +224,7 @@ impl MainServer {
         let atomic = AtomicUsize::new(1);
         let router = Router::new(fsm_sche, Arc::new(atomic), self.global_config.clone());
 
-        let mut batch_system = BatchSystem::new(router.clone(), r, 1, 500);
+        let mut batch_system = BatchSystem::new(router.clone(), r, 4, 500);
         batch_system.spawn("Tag Poller".to_string());
         let mut router_tick = router.clone();
         let mut recv = shutdown_signal.recv;

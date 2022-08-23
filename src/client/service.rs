@@ -4,10 +4,10 @@ use futures::Future;
 use skproto::tracing::SegmentData;
 use tower::{load::Load, Service};
 
-use super::trans::{RequestScheduler, TransportErr};
+use super::trans::{RequestHandler, TransportErr};
 
 pub struct EndpointService {
-    sched: RequestScheduler,
+    sched: RequestHandler,
     broken_notify: tokio::sync::mpsc::Sender<i32>,
     id: i32,
 }
@@ -22,7 +22,7 @@ impl Load for EndpointService {
 
 impl EndpointService {
     pub fn new(
-        sched: RequestScheduler,
+        sched: RequestHandler,
         broken_notify: tokio::sync::mpsc::Sender<i32>,
         id: i32,
     ) -> EndpointService {
@@ -46,11 +46,11 @@ impl Service<SegmentData> for EndpointService {
     }
 
     fn call(&mut self, req: SegmentData) -> Self::Future {
-        let mut sched = self.sched.clone();
+        let mut req_handler = self.sched.clone();
         let broken_notify = self.broken_notify.clone();
         let id = self.id;
         Box::pin(async move {
-            let r = sched.request(req).await;
+            let r = req_handler.request(req);
             if let Err(e) = r.as_ref() {
                 match e {
                     &TransportErr::Shutdown
