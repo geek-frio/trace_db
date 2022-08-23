@@ -74,6 +74,7 @@ impl Stream for ClusterPassive {
         // Return local service only once
         if !LOCAL_SERVICE_CTRL.is_completed() {
             LOCAL_SERVICE_CTRL.call_once(|| {});
+            tracing::warn!("LOCAL service is inited");
 
             let (local_send1, remote_recv1) = tokio::sync::mpsc::unbounded_channel();
             let (remote_send2, local_recv2) = tokio::sync::mpsc::unbounded_channel();
@@ -83,6 +84,7 @@ impl Stream for ClusterPassive {
             let local_stream = LocalStream::new(local_recv2);
             let request_handler = Transport::init(local_sink, local_stream);
             //   Not exists real connection, so we will never use this broken notify
+            //   broken notify event will never happen
             let (broken_notify, _) = tokio::sync::mpsc::channel(1);
             let end_point = EndpointService::new(request_handler, broken_notify, 1);
 
@@ -93,6 +95,7 @@ impl Stream for ClusterPassive {
             let recv = (&mut self.shutdown_recv).take();
             let remote_msg_poller =
                 RemoteMsgPoller::new(remote_stream, remote_sink, self.send.clone(), recv.unwrap());
+
             tokio::spawn(async move {
                 let res = remote_msg_poller.loop_poll().await;
                 if let Err(e) = res {
@@ -100,8 +103,6 @@ impl Stream for ClusterPassive {
                 }
             });
 
-            // 1: 提前返回event
-            // 2: 原本的event需要进行再次进行poll获取
             cx.waker().wake_by_ref();
             return Poll::Ready(Some(Ok(Change::Insert(1, end_point))));
         }
