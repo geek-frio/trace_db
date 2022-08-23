@@ -1,9 +1,10 @@
-use chrono::Local;
 use futures::Stream;
 use futures_sink::Sink;
 use grpcio::WriteFlags;
 use skproto::tracing::SegmentData;
 use skproto::tracing::SegmentRes;
+use std::fmt::Display;
+use std::fmt::Write;
 use std::task::Poll;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
@@ -64,13 +65,20 @@ impl RemoteStream {
 }
 
 impl Stream for RemoteStream {
-    type Item = (SegmentData, WriteFlags);
+    type Item = grpcio::Result<SegmentData>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        self.recv.poll_recv(cx)
+        let data = self.recv.poll_recv(cx);
+        match data {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(val) => match val {
+                Some((seg, _)) => Poll::Ready(Some(grpcio::Result::Ok(seg))),
+                None => Poll::Ready(None),
+            },
+        }
     }
 }
 
@@ -103,8 +111,33 @@ pub(crate) struct RemoteSink {
     send: UnboundedSender<(SegmentRes, WriteFlags)>,
 }
 
+impl RemoteSink {
+    pub fn new(send: UnboundedSender<(SegmentRes, WriteFlags)>) -> RemoteSink {
+        RemoteSink { send }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteSinkErr {
+    val: String,
+}
+
+impl RemoteSinkErr {
+    pub fn msg(msg: String) -> RemoteSinkErr {
+        RemoteSinkErr { val: msg }
+    }
+}
+
+impl Display for RemoteSinkErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.val.as_str())
+    }
+}
+
+impl std::error::Error for RemoteSinkErr {}
+
 impl futures_sink::Sink<(SegmentRes, WriteFlags)> for RemoteSink {
-    type Error = (String, (SegmentRes, WriteFlags));
+    type Error = RemoteSinkErr;
 
     fn poll_ready(
         self: std::pin::Pin<&mut Self>,
@@ -120,7 +153,7 @@ impl futures_sink::Sink<(SegmentRes, WriteFlags)> for RemoteSink {
         let send_res = self.send.send(item);
         match send_res {
             Ok(_) => Ok(()),
-            Err(e) => Err(("local sink peer is dropped".to_string(), e.0)),
+            Err(_e) => Err(RemoteSinkErr::msg("local sink peer is dropped".to_string())),
         }
     }
 

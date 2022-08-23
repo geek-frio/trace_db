@@ -28,7 +28,7 @@ use tower::ServiceBuilder;
 use tracing::{error, info};
 
 use super::grpc_cli::split_client;
-use super::local_trans::{LocalSink, LocalStream, RemoteStream};
+use super::local_trans::{LocalSink, LocalStream, RemoteSink, RemoteStream};
 use super::service::EndpointService;
 use super::trans::{Transport, TransportErr};
 
@@ -37,7 +37,7 @@ pub struct ClusterPassive {
     clients: Arc<CHashMap<i32, SkyTracingClient>>,
     conn_broken_notify: tokio::sync::mpsc::Sender<i32>,
     send: tokio::sync::mpsc::UnboundedSender<SegmentDataCallback>,
-    shutdown_recv: tokio::sync::broadcast::Receiver<ShutdownEvent>,
+    shutdown_recv: Option<tokio::sync::broadcast::Receiver<ShutdownEvent>>,
 }
 
 impl ClusterPassive {
@@ -52,7 +52,7 @@ impl ClusterPassive {
             clients: Arc::new(CHashMap::new()),
             conn_broken_notify,
             send,
-            shutdown_recv,
+            shutdown_recv: Some(shutdown_recv),
         }
     }
 }
@@ -78,17 +78,28 @@ impl Stream for ClusterPassive {
             let (local_send1, remote_recv1) = tokio::sync::mpsc::unbounded_channel();
             let (remote_send2, local_recv2) = tokio::sync::mpsc::unbounded_channel();
 
+            // 1.Start local transport
             let local_sink = LocalSink::new(local_send1);
             let local_stream = LocalStream::new(local_recv2);
             let request_handler = Transport::init(local_sink, local_stream);
-            // Not exists real connection, so we will never use this broken notify
+            //   Not exists real connection, so we will never use this broken notify
             let (broken_notify, _) = tokio::sync::mpsc::channel(1);
             let end_point = EndpointService::new(request_handler, broken_notify, 1);
 
-            // Start remote msg poller
+            // 2.Start remote msg poller
             let remote_stream = RemoteStream::new(remote_recv1);
-            let remote_msg_poller = RemoteMsgPoller::new(source, sink, local_sender, broad_shutdown_receiver)
-            // tokio::spawn(future)
+            let remote_sink = RemoteSink::new(remote_send2);
+
+            let recv = (&mut self.shutdown_recv).take();
+            let remote_msg_poller =
+                RemoteMsgPoller::new(remote_stream, remote_sink, self.send.clone(), recv.unwrap());
+            tokio::spawn(async move {
+                let res = remote_msg_poller.loop_poll().await;
+                if let Err(e) = res {
+                    tracing::error!("Local writing service is closed, e:{:?}", e);
+                }
+            });
+
             // 1: 提前返回event
             // 2: 原本的event需要进行再次进行poll获取
             cx.waker().wake_by_ref();
