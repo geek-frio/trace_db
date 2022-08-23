@@ -63,7 +63,7 @@ pub enum ClientEvent {
     NewClient((i32, SkyTracingClient)),
 }
 
-static LOCAL_SERVICE_CTRL: OnceCell<()> = once_cell::sync::OnceCell::new();
+static LOCAL_SERVICE_CTRL: std::sync::Once = std::sync::Once::new();
 impl Stream for ClusterPassive {
     type Item = Result<Change<i32, EndpointService>, Never>;
 
@@ -72,8 +72,8 @@ impl Stream for ClusterPassive {
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         // Return local service only once
-        if LOCAL_SERVICE_CTRL.get().is_none() {
-            let _ = LOCAL_SERVICE_CTRL.get_or_init(|| {});
+        if !LOCAL_SERVICE_CTRL.is_completed() {
+            LOCAL_SERVICE_CTRL.call_once(|| {});
 
             let (local_send1, remote_recv1) = tokio::sync::mpsc::unbounded_channel();
             let (remote_send2, local_recv2) = tokio::sync::mpsc::unbounded_channel();
