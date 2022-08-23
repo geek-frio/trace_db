@@ -4,7 +4,6 @@ use grpcio::WriteFlags;
 use skproto::tracing::SegmentData;
 use skproto::tracing::SegmentRes;
 use std::fmt::Display;
-use std::fmt::Write;
 use std::task::Poll;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;

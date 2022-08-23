@@ -6,10 +6,9 @@ use crate::tag::fsm::SegmentDataCallback;
 use async_trait::async_trait;
 use chashmap::CHashMap;
 use futures::never::Never;
-use futures::{ready, Stream};
+use futures::Stream;
 use grpcio::{ChannelBuilder, Environment};
 use local_ip_address::linux::local_ip;
-use once_cell::sync::OnceCell;
 use redis::Client as RedisClient;
 use skproto::tracing::{SegmentData, SkyTracingClient};
 use std::collections::{HashMap, HashSet};
@@ -27,11 +26,11 @@ use tower::util::BoxCloneService;
 use tower::ServiceBuilder;
 use tracing::{error, info};
 
-use super::grpc_cli::split_client;
 use super::local_trans::{LocalSink, LocalStream, RemoteSink, RemoteStream};
 use super::service::EndpointService;
 use super::trans::{Transport, TransportErr};
 
+#[allow(warnings)]
 pub struct ClusterPassive {
     recv: Receiver<ClientEvent>,
     clients: Arc<CHashMap<i32, SkyTracingClient>>,
@@ -67,6 +66,7 @@ static LOCAL_SERVICE_CTRL: std::sync::Once = std::sync::Once::new();
 impl Stream for ClusterPassive {
     type Item = Result<Change<i32, EndpointService>, Never>;
 
+    #[allow(warnings)]
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -103,48 +103,49 @@ impl Stream for ClusterPassive {
                 }
             });
 
-            cx.waker().wake_by_ref();
             return Poll::Ready(Some(Ok(Change::Insert(1, end_point))));
         }
+        // 暂时禁用多个Stream传输的功能,grpc stream的实现目前看起来有性能问题
+        Poll::Pending
 
-        let chg_opt = ready!(self.recv.poll_recv(cx));
-        match chg_opt {
-            Some(chg) => match chg {
-                ClientEvent::NewClient((id, client)) => {
-                    // We skip local tcp service
-                    if id == 1 {
-                        return Poll::Pending;
-                    }
-                    let res = split_client(client);
-                    match res {
-                        Ok((conn, client)) => {
-                            self.clients.insert(id, client);
+        // let chg_opt = ready!(self.recv.poll_recv(cx));
+        // match chg_opt {
+        //     Some(chg) => match chg {
+        //         ClientEvent::NewClient((id, client)) => {
+        //             // We skip local tcp service
+        //             if id == 1 {
+        //                 return Poll::Pending;
+        //             }
+        //             let res = split_client(client);
+        //             match res {
+        //                 Ok((conn, client)) => {
+        //                     self.clients.insert(id, client);
 
-                            let mut sink = conn.sink.unwrap();
-                            sink.enhance_batch(true);
+        //                     let mut sink = conn.sink.unwrap();
+        //                     sink.enhance_batch(true);
 
-                            let stream = conn.recv.unwrap();
+        //                     let stream = conn.recv.unwrap();
 
-                            let sched = Transport::init(sink, stream);
-                            let service =
-                                EndpointService::new(sched, self.conn_broken_notify.clone(), id);
-                            return Poll::Ready(Some(Ok(Change::Insert(id, service))));
-                        }
-                        Err(_e) => {
-                            error!("Handshake error!");
-                            let _ = self.clients.remove(&id);
-                            return Poll::Pending;
-                        }
-                    }
-                }
-                ClientEvent::DropEvent(id) => {
-                    info!("Received client drop event!");
-                    let _ = self.clients.remove(&id);
-                    return Poll::Ready(Some(Ok(Change::Remove(id))));
-                }
-            },
-            None => return Poll::Pending,
-        }
+        //                     let sched = Transport::init(sink, stream);
+        //                     let service =
+        //                         EndpointService::new(sched, self.conn_broken_notify.clone(), id);
+        //                     return Poll::Ready(Some(Ok(Change::Insert(id, service))));
+        //                 }
+        //                 Err(_e) => {
+        //                     error!("Handshake error!");
+        //                     let _ = self.clients.remove(&id);
+        //                     return Poll::Pending;
+        //                 }
+        //             }
+        //         }
+        //         ClientEvent::DropEvent(id) => {
+        //             info!("Received client drop event!");
+        //             let _ = self.clients.remove(&id);
+        //             return Poll::Ready(Some(Ok(Change::Remove(id))));
+        //         }
+        //     },
+        //     None => return Poll::Pending,
+        // }
     }
 }
 

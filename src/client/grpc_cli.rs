@@ -4,6 +4,7 @@ use tracing::error;
 
 use super::{Created, TracingConnection};
 
+#[allow(warnings)]
 pub(crate) fn split_client(
     client: SkyTracingClient,
 ) -> Result<
